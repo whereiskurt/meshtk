@@ -3,7 +3,16 @@ A toolkit for virtual meshtastic nodes (ie. no radio/serial) using mqtt+protobuf
 
 > "Release early, release often." 🐇  
 
-To 'just run it': `go run cmd/meshtk.go nodeinfo announce --verbose trace` (but you'll like want to tweak the config 😉)
+To 'just run it': `go run cmd/meshtk.go nodeinfo announce --verbose trace` (but you'll like want to tweak the config 😉) 
+
+You'll start to get a tonne of MQTT message tracing like this, from the public up/down link:
+```json
+time="2025-04-05T13:38:28-04:00" level=trace msg="{mapReport: 'long_name:\"stats2\" short_name:\"st2s\" role:CLIENT_MUTE hw_model:PORTDUINO firmware_version:\"2.4.0.a04de8c6\" region:EU_868 latitude_i:510885888 longitude_i:168787968 altitude:113 position_precision:16 num_online_local_nodes:1'}"
+time="2025-04-05T13:38:28-04:00" level=trace msg="{'from': '876654321', 'topic': 'msh/PL/2/map/', 'portNum': 'MAP_REPORT_APP', 'longName': 'stats2', 'shortName': 'st2s', 'hwModel': 'PORTDUINO', 'role': 'CLIENT_MUTE', 'fwVersion': '2.4.0.a04de8c6', 'region': 'EU_868', 'modemPreset': 'LONG_FAST', 'hasDefaultCh': false, 'onlineLocalNodes': 1, 'latitude': 510885888, 'longitude': 168787968, 'altitude': 113, 'precision': 16}"
+time="2025-04-05T13:38:28-04:00" level=trace msg="{'from': 862341856, 'topic': 'msh/US/2/e/LongFast/!33664ae0', 'portNum': NODEINFO_APP, 'isEncrypted': false, 'payload': '0x0a09213333363634616530120d544f46204d65736820426173651a04544f4652220664e833664ae0282b3803'}"
+time="2025-04-05T13:38:28-04:00" level=trace msg="{'from': '862341856', 'to': '!33664ae0', 'topic': 'msh/US/2/e/LongFast/!33664ae0', 'portNum': 'NODEINFO_APP', 'longName': 'TOF Mesh Base', 'shortName': 'TOFR', 'hwModel': 'HELTEC_V3', 'role': 'ROUTER_CLIENT', 'pubkey': '[]'}"
+time="2025-04-05T13:38:28-04:00" level=error msg="failed to unmarshal decrypted data: proto: cannot parse invalid wire-format data"
+```
 
 <img width="886" alt="meshtk trace execution example" src="https://github.com/user-attachments/assets/83e6c3b5-440e-46db-8230-236f111cc10e" />
 

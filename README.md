@@ -11,7 +11,8 @@ This will add the node to the public meshtastic server and ultimately have your 
 
 > "Release early, release often." 🐇  
 
-Some status on meshtastic features in progress:
+### Status/Progress
+Some details of the on meshtastic features in progress:
 1. ✅ Works with with TTL/SSL (e.g. ssl://example.com:8883)
 1. ✅ Decrypt/encrypt messages text channels with PSK AES (ie. AQ== or [32bytes hex encoded])
 1. ✅ Creates golang meshtastic protobufs from meshtastic source repo

@@ -83,7 +83,7 @@ func (n *NodeInfoCmd) Announce(cmd *cobra.Command, argz []string) {
 
 func (n *NodeInfoCmd) DoBroadcast() {
 	fromMeshHex := n.Config.NodeInfo.ClientId
-	fromUint, err := strconv.ParseUint(fromMeshHex[1:], 16, 32) // We start at 1 to skip the '!'
+	fromUint, err := strconv.ParseUint(fromMeshHex[1:], 16, 32) // We start at 1 to skip the '!' base16 for 4 bytes
 	if err != nil {
 		n.Config.Log.Errorf("failed to parse hex id: %v", err)
 		return

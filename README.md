@@ -5,7 +5,7 @@ A toolkit for virtual meshtastic nodes (ie. no radio/serial) using mqtt+protobuf
 
 To 'just run it': `go run cmd/meshtk.go nodeinfo announce --verbose trace` (but you'll like want to tweak the config 😉) 
 
-You'll start to get a tonne of MQTT message tracing like this, from the public up/down link:
+You'll start to get a tonne of MQTT message tracing like this, from the public meshtastic mqtt server on a `#` subscription:
 ```
 time="2025-04-05T13:38:28-04:00" level=trace msg="{mapReport: 'long_name:\"stats2\" short_name:\"st2s\" role:CLIENT_MUTE hw_model:PORTDUINO firmware_version:\"2.4.0.a04de8c6\" region:EU_868 latitude_i:510885888 longitude_i:168787968 altitude:113 position_precision:16 num_online_local_nodes:1'}"
 time="2025-04-05T13:38:28-04:00" level=trace msg="{'from': '876654321', 'topic': 'msh/PL/2/map/', 'portNum': 'MAP_REPORT_APP', 'longName': 'stats2', 'shortName': 'st2s', 'hwModel': 'PORTDUINO', 'role': 'CLIENT_MUTE', 'fwVersion': '2.4.0.a04de8c6', 'region': 'EU_868', 'modemPreset': 'LONG_FAST', 'hasDefaultCh': false, 'onlineLocalNodes': 1, 'latitude': 510885888, 'longitude': 168787968, 'altitude': 113, 'precision': 16}"

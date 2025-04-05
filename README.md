@@ -3,6 +3,12 @@ A toolkit for virtual meshtastic nodes (ie. no radio/serial) using mqtt+protobuf
 
 To 'just run it': `go run cmd/meshtk.go nodeinfo announce --verbose trace` (but you'll like want to tweak the config 😉)
 
+<img width="886" alt="meshtk trace execution example" src="https://github.com/user-attachments/assets/83e6c3b5-440e-46db-8230-236f111cc10e" />
+
+This will add the node to the public meshtastic server and ultimately have your node show-up here:
+
+<img width="579" alt="meshmap showing added virtual node" src="https://github.com/user-attachments/assets/a8c3bce6-776e-4d8d-8318-a38661c0e420" />
+
 > "Release early, release often." 🐇  
 
 Some status on meshtastic features in progress:

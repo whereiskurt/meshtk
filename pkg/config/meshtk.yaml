@@ -1,0 +1,57 @@
+NodeDbPath: "./nodes.default.json"
+
+Mqtt:
+  BrokerUri: "tcp://mqtt.meshtastic.org:1883"
+  Username: "meshdev"
+  Password: "large4cats"
+  ClientId: "meshtk-abcd1234-432453"
+
+Meshtastic:
+  Channels:
+    - Slot: "primary"
+      Name: "LongFast"
+      EncryptKey: "AQ=="
+      IsEncrypted: true
+      IsPrimary: true
+
+NodeInfo:
+  ClientId: "!28a1b2c3"
+  LongName: "Mesh Toolkit 2025"
+  ShortName: "MTK"
+  HWModelId: 43
+  RoleId: 0
+  Latitude: 361354763
+  Longitude: -1151597904
+  Altitude: 420
+  Precision: 32
+  FirwareVersion: "2.5.20.4c69421"
+  Region: "US"
+  ModemPreset: "LONG_FAST"
+
+  BroadcastToAll: true
+  BroadcastOnLoad: true
+  BroadcastMessage: "Hello from MeshTK!"
+  BroadcastIntervalSec: 60
+  BroadcastNodes:
+    - "!5678DEFA"
+    - "!6789EFAB"
+
+  PKI:
+    PublicKey: "0x1b7644ea43ca427fdb7767c84b78fa2deff096716d4dd940ee6ebad8ea220126"
+    PrivateKey: "0xf02344fb50461c482de3a6f52885100ce637474e1869f44cf08698c59a0965b9"
+
+  ChannelSlot: "primary"
+  Topic: "msh/US/2/e/LongFast"
+  MapTopic: "msh/US/2/map/"
+  
+  SubscribedTopics:
+    - "#"
+    - "msh/+/2/#"
+    - "msh/+/+/2/map"
+
+
+TextMessage:
+  ChannelSlot: "primary"
+  Topic: "msh/US/2/e/LongFast"
+  
+WasSuccess: false

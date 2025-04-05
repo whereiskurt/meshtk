@@ -1,0 +1,7 @@
+NodeDbPath: "./nodes.sslexample.json"
+
+Mqtt:
+  BrokerUri: "ssl://mqtt.example.com:8883"
+  Username: "meshdev"
+  Password: "large4cats"
+  ClientId: "meshtk-abcd1234-432453"

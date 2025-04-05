@@ -1,0 +1,12 @@
+*** ./deviceonly.pb.go	Sun Mar 16 17:54:20 2025
+--- ./deviceonly.pb.new.go	Sun Mar 16 17:58:25 2025
+***************
+*** 919,925 ****
+  	file_meshtastic_telemetry_proto_init()
+  	file_meshtastic_config_proto_init()
+  	file_meshtastic_localonly_proto_init()
+- 	file_nanopb_proto_init()
+  	file_meshtastic_deviceonly_proto_msgTypes[2].OneofWrappers = []any{}
+  	type x struct{}
+  	out := protoimpl.TypeBuilder{
+--- 919,924 ----

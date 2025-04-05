@@ -1,0 +1,38 @@
+{{- define "GlobalHeader" }}
+                
+███    ███ ███████ ███████ ██   ██ ████████ ██   ██ 
+████  ████ ██      ██      ██   ██    ██    ██  ██  
+██ ████ ██ █████   ███████ ███████    ██    █████   
+██  ██  ██ ██           ██ ██   ██    ██    ██  ██  
+██      ██ ███████ ███████ ██   ██    ██    ██   ██
+        
+{{ .Release.Date }} | {{ .Release.Version }} [hash: {{ .Release.Hash }}]
+
+Toolkit for virtual meshtastic nodes using MQTT
+-----------------------------------------------------------------------------
+{{- end -}}
+
+{{ define "GlobalHelp" }}
+{{- template "GlobalHeader" . }}
+Usage: 
+  meshtk [options] <command> <subcommand> [params ...]
+
+Commands:
+  nodeinfo
+  
+{{ template "GlobalOptions" . }}
+{{ template "GlobalExamples" . }}
+{{ end }}
+
+{{ define "GlobalOptions" }}
+Global Options:
+    -c  <filename> (if not set defaults to just looking in ~/meshtk.yaml, ./meshtk.yaml)
+    -l, --log <folder> (default "log/")
+    -v, --verbose [trace,debug,info,warn,error] (default:info)
+{{- end }}
+
+{{ define "GlobalExamples" }}
+For more help:
+  $ meshtk nodeinfo help
+
+{{ end }}

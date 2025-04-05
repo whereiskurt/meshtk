@@ -1,0 +1,17 @@
+{{ define "NodeInfoHelp" }}
+{{- template "GlobalHeader" . }}
+
+Usage:
+  meshtk nodeinfo [ACTION ...] [options]
+
+Actions:
+  announce - broadcast virtual meshtastic NodeInfo to a topic
+  
+  
+Examples:
+{{ template "NodeInfoExamples" . }}
+{{ end }}
+
+{{ define "NodeInfoExamples" }}
+  $ meshtk nodeinfo announce 
+{{ end }}

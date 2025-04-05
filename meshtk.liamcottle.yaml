@@ -1,0 +1,7 @@
+NodeDbPath: "./nodes.liamcottle.json"
+
+Mqtt:
+  BrokerUri: "tcp://mqtt.meshtastic.liamcottle.net:1883"
+  Username: "uplink"
+  Password: "uplink"
+  ClientId: "meshtk-abcd1234-432453"

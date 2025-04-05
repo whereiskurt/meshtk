@@ -1,0 +1,2 @@
+#We don't want to commit cloned repo or generated code
+protobufs

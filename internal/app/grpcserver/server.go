@@ -4,19 +4,20 @@ import (
 	"context"
 	"net"
 
-	log "github.com/sirupsen/logrus"
+	"github.com/whereiskurt/meshtk/pkg/config"
 	pb "github.com/whereiskurt/meshtk/protos/security/generated"
 	"google.golang.org/grpc"
 )
 
 // grpcSecurityServer is used to implement meshtasticplugin.MeshtasticPlugin
 type grpcSecurityServer struct {
+	Config *config.Config
 	pb.UnimplementedMeshtasticPluginServer
 }
 
 // ModifyPacket implements MeshtasticPlugin.ModifyPacket
 func (s *grpcSecurityServer) ModifyPacket(ctx context.Context, req *pb.PacketRequest) (*pb.PacketResponse, error) {
-	log.Printf("Received PacketRequest: IP=%s Username=%s ClientID=%s Topic=%s Timestamp=%d",
+	s.Config.Log.Infof("Received PacketRequest: IP=%s Username=%s ClientID=%s Topic=%s Timestamp=%d",
 		req.IpAddress, req.Username, req.ClientId, req.Topic, req.Timestamp)
 
 	// Return the same payload with shouldBlock=false and blockReason="all good"
@@ -28,7 +29,6 @@ func (s *grpcSecurityServer) ModifyPacket(ctx context.Context, req *pb.PacketReq
 }
 
 func (n *GrpcServerCmd) StartServer() error {
-
 	address := n.Config.GRpcServer.SecurityAddress
 
 	lis, err := net.Listen("tcp", address)

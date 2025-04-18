@@ -1,0 +1,16 @@
+{{ define "GrpcServerHelp" }}
+{{- template "GlobalHeader" . }}
+
+Usage:
+  meshtk grpc [ACTION ...] [options]
+
+Actions:
+  security - listen and process gRPC security protobufs 
+  
+Examples:
+{{ template "GrpcServerExamples" . }}
+{{ end }}
+
+{{ define "GrpcServerExamples" }}
+  $ meshtk grpc security 
+{{ end }}

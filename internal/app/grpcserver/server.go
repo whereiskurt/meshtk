@@ -2,21 +2,20 @@ package grpcserver
 
 import (
 	"context"
-	"log"
 	"net"
 
+	log "github.com/sirupsen/logrus"
 	pb "github.com/whereiskurt/meshtk/protos/security/generated"
-
 	"google.golang.org/grpc"
 )
 
-// server is used to implement meshtasticplugin.MeshtasticPlugin
-type server struct {
+// grpcSecurityServer is used to implement meshtasticplugin.MeshtasticPlugin
+type grpcSecurityServer struct {
 	pb.UnimplementedMeshtasticPluginServer
 }
 
 // ModifyPacket implements MeshtasticPlugin.ModifyPacket
-func (s *server) ModifyPacket(ctx context.Context, req *pb.PacketRequest) (*pb.PacketResponse, error) {
+func (s *grpcSecurityServer) ModifyPacket(ctx context.Context, req *pb.PacketRequest) (*pb.PacketResponse, error) {
 	log.Printf("Received PacketRequest: IP=%s Username=%s ClientID=%s Topic=%s Timestamp=%d",
 		req.IpAddress, req.Username, req.ClientId, req.Topic, req.Timestamp)
 
@@ -28,16 +27,18 @@ func (s *server) ModifyPacket(ctx context.Context, req *pb.PacketRequest) (*pb.P
 	}, nil
 }
 
-// StartServer starts the gRPC server on the specified address
-func StartServer(address string) error {
+func (n *GrpcServerCmd) StartServer() error {
+
+	address := n.Config.GRpcServer.SecurityAddress
+
 	lis, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}
 
 	s := grpc.NewServer()
-	pb.RegisterMeshtasticPluginServer(s, &server{})
+	pb.RegisterMeshtasticPluginServer(s, &grpcSecurityServer{})
 
-	log.Printf("MeshtasticPlugin gRPC server listening on %s", address)
+	n.Config.Log.Infof("MeshtasticPlugin gRPC server listening on %s", address)
 	return s.Serve(lis)
 }

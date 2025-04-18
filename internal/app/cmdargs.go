@@ -50,6 +50,8 @@ func (a *App) RegisterOsArgs() {
 	cmd.NewSubCmd(nodeInfoCmd, "help", ni.Help)
 	cmd.NewSubCmd(nodeInfoCmd, "announce", ni.Announce)
 
+	// Gonna add in grpc service
+
 }
 
 func (c *CmdBuilder) NewCmd(s []string, run func(*cobra.Command, []string)) *cobra.Command {

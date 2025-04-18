@@ -35,6 +35,10 @@ func NodeInfoHelp(c *config.Config) string {
 	return Render("NodeInfoHelp", c)
 }
 
+func GRpcServerHelp(c *config.Config) string {
+	return Render("GRpcServerHelp", c)
+}
+
 func Render(name string, c *config.Config) string {
 	name = RegexSafeName.ReplaceAllString(name, "")
 

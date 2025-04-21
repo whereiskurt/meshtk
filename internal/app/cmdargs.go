@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/whereiskurt/meshtk/internal/app/grpcserver"
 	"github.com/whereiskurt/meshtk/internal/app/nodeinfo"
+	"github.com/whereiskurt/meshtk/internal/app/protoserver"
 	"github.com/whereiskurt/meshtk/pkg/config"
 )
 
@@ -52,10 +52,10 @@ func (a *App) RegisterOsArgs() {
 	cmd.NewSubCmd(nodeInfoCmd, "announce", ni.Announce)
 
 	// Gonna add in grpc service
-	g := grpcserver.NewGRpcServer(a.Config)
-	grpcCmd := cmd.NewCmd([]string{"grpc", "g"}, g.Help)
+	g := protoserver.NewProtoBufServer(a.Config)
+	grpcCmd := cmd.NewCmd([]string{"protobuf", "pb"}, g.Help)
 	cmd.NewSubCmd(grpcCmd, "help", g.Help)
-	cmd.NewSubCmd(grpcCmd, "security", g.Security)
+	cmd.NewSubCmd(grpcCmd, "inspector", g.Inspector)
 }
 
 func (c *CmdBuilder) NewCmd(s []string, run func(*cobra.Command, []string)) *cobra.Command {

@@ -1,4 +1,4 @@
-package grpcserver
+package protoserver
 
 import (
 	"io"
@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func (n *GrpcServerCmd) StartInspectorServer() error {
+func (n *ProtoBufServerCmd) StartInspectorServer() error {
 	address := n.Config.GRpcServer.SecurityAddress
 
 	ln, err := net.Listen("tcp", address)
@@ -23,7 +23,7 @@ func (n *GrpcServerCmd) StartInspectorServer() error {
 	defer ln.Close()
 
 	go func() {
-		n.Config.Log.Infof("Meshtastic inspector protobuff server listening on %s", address)
+		n.Config.Log.Infof("Meshtastic protobuff inspector server listening on %s", address)
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
@@ -44,7 +44,7 @@ func (n *GrpcServerCmd) StartInspectorServer() error {
 	return nil
 
 }
-func (n *GrpcServerCmd) handleConn(conn net.Conn) {
+func (n *ProtoBufServerCmd) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	// Read incoming request

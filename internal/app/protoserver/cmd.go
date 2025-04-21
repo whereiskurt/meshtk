@@ -1,4 +1,4 @@
-package grpcserver
+package protoserver
 
 import (
 	"fmt"
@@ -8,31 +8,31 @@ import (
 	"github.com/whereiskurt/meshtk/pkg/config"
 )
 
-type GrpcServerCmd struct {
+type ProtoBufServerCmd struct {
 	Config    *config.Config
 	CmdOutput struct {
 		WasSuccess bool
 	}
 }
 
-func NewGRpcServer(c *config.Config) (n *GrpcServerCmd) {
-	n = new(GrpcServerCmd)
+func NewProtoBufServer(c *config.Config) (n *ProtoBufServerCmd) {
+	n = new(ProtoBufServerCmd)
 	n.Config = c
 
 	return n
 }
 
-func (n *GrpcServerCmd) Help(cmd *cobra.Command, argz []string) {
+func (n *ProtoBufServerCmd) Help(cmd *cobra.Command, argz []string) {
 	n.CmdOutput.WasSuccess = true
 	fmt.Fprintln(n.Config.Stdout, help.GRpcServerHelp(n.Config))
 }
 
-func (n *GrpcServerCmd) Security(cmd *cobra.Command, argz []string) {
+func (n *ProtoBufServerCmd) Inspector(cmd *cobra.Command, argz []string) {
 	n.CmdOutput.WasSuccess = true
 	s := help.Render("GlobalHeader", n.Config)
 	n.Config.Stdout.Write([]byte(s + "\n"))
 
-	n.Config.Log.Trace("grpc.SecurityServer")
+	n.Config.Log.Trace("protobuf.InspectorServer")
 	n.Config.Log.Tracef("%+v", n.Config)
 
 	n.StartInspectorServer()

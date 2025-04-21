@@ -1,4 +1,4 @@
-{{ define "GrpcServerHelp" }}
+{{ define "ProtoBufServerHelp" }}
 {{- template "GlobalHeader" . }}
 
 Usage:
@@ -8,9 +8,9 @@ Actions:
   security - listen and process gRPC security protobufs 
   
 Examples:
-{{ template "GrpcServerExamples" . }}
+{{ template "ProtoBufServerExamples" . }}
 {{ end }}
 
-{{ define "GrpcServerExamples" }}
+{{ define "ProtoBufServerExamples" }}
   $ meshtk grpc security --verbose=debug
 {{ end }}

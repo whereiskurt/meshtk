@@ -27,7 +27,7 @@ func (n *GrpcServerCmd) StartInspectorServer() error {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				n.Config.Log.Printf("Accept error: %v", err)
+				// n.Config.Log.Printf("Accept error: %v", err)
 				continue
 			}
 			go n.handleConn(conn)

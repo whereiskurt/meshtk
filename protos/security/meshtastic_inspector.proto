@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package meshtasticplugin;
+
+option go_package = "/generated";
+
+service MeshtasticPlugin {
+  rpc ModifyPacket(PacketRequest) returns (PacketResponse);
+}
+
+message PacketRequest {
+  bytes payload = 1;       // Original MQTT payload (Meshtastic packet)
+  string ip_address = 2;   // IP address of the client
+  string username = 3;     // MQTT username
+  string client_id = 4;    // MQTT client ID
+  string topic = 5;        // MQTT topic
+  int64 timestamp = 6;     // Server/broker-side timestamp (epoch seconds)
+}
+
+message PacketResponse {
+  bytes payload = 1;       // (Optional) Modified payload
+  bool shouldBlock = 2;    // If true, broker should block/drop the message
+  string blockReason = 3;  // The reason for blocking
+}

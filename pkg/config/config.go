@@ -41,9 +41,15 @@ type Config struct {
 	NodeInfo    NodeInfo
 	TextMessage TextMessage
 
+	GRpcServer GrpcServer `json:"gRPCServer"`
+
 	NodeDbPath string `default:"./meshtk.db"`
 
 	WasSuccess bool
+}
+
+type GrpcServer struct {
+	SecurityAddress string `default:"localhost:50051"`
 }
 
 type Mqtt struct {

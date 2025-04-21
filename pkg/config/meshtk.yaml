@@ -49,6 +49,8 @@ NodeInfo:
     - "msh/+/2/#"
     - "msh/+/+/2/map"
 
+gRPCServer:
+  SecurityAddress: "localhost:50051"
 
 TextMessage:
   ChannelSlot: "primary"

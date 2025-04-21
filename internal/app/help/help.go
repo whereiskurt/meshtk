@@ -18,11 +18,14 @@ var (
 	GlobalTmpl string
 	//go:embed nodeinfo.tmpl
 	NodeInfoTmpl string
+	//go:embed protobufserver.tmpl
+	ProtoBufServerTmpl string
 )
 
 var TEMPLATES = strings.Join([]string{
 	GlobalTmpl,
 	NodeInfoTmpl,
+	ProtoBufServerTmpl,
 }, "\n")
 
 var Templates = template.Must(template.New("render").Parse(TEMPLATES))
@@ -33,6 +36,10 @@ func GlobalHelp(c *config.Config) string {
 
 func NodeInfoHelp(c *config.Config) string {
 	return Render("NodeInfoHelp", c)
+}
+
+func GRpcServerHelp(c *config.Config) string {
+	return Render("ProtoBufServerHelp", c)
 }
 
 func Render(name string, c *config.Config) string {

@@ -35,5 +35,5 @@ func (n *GrpcServerCmd) Security(cmd *cobra.Command, argz []string) {
 	n.Config.Log.Trace("grpc.SecurityServer")
 	n.Config.Log.Tracef("%+v", n.Config)
 
-	n.StartServer()
+	n.StartInspectorServer()
 }

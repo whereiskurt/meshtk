@@ -1,44 +1,94 @@
 package grpcserver
 
 import (
-	"context"
+	"io"
 	"net"
+	"os"
+	"os/signal"
 
-	"github.com/whereiskurt/meshtk/pkg/config"
-	pb "github.com/whereiskurt/meshtk/protos/security/generated"
-	"google.golang.org/grpc"
+	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+
+	"github.com/whereiskurt/meshtk/protos/security/generated"
+	"google.golang.org/protobuf/proto"
 )
 
-// grpcSecurityServer is used to implement meshtasticplugin.MeshtasticPlugin
-type grpcSecurityServer struct {
-	Config *config.Config
-	pb.UnimplementedMeshtasticPluginServer
-}
-
-// ModifyPacket implements MeshtasticPlugin.ModifyPacket
-func (s *grpcSecurityServer) ModifyPacket(ctx context.Context, req *pb.PacketRequest) (*pb.PacketResponse, error) {
-	s.Config.Log.Infof("Received PacketRequest: IP=%s Username=%s ClientID=%s Topic=%s Timestamp=%d",
-		req.IpAddress, req.Username, req.ClientId, req.Topic, req.Timestamp)
-
-	// Return the same payload with shouldBlock=false and blockReason="all good"
-	return &pb.PacketResponse{
-		Payload:     req.Payload,
-		ShouldBlock: false,
-		BlockReason: "all good",
-	}, nil
-}
-
-func (n *GrpcServerCmd) StartServer() error {
+func (n *GrpcServerCmd) StartInspectorServer() error {
 	address := n.Config.GRpcServer.SecurityAddress
 
-	lis, err := net.Listen("tcp", address)
+	ln, err := net.Listen("tcp", address)
 	if err != nil {
+		n.Config.Log.Errorf("Failed to listen: %v", err)
 		return err
 	}
+	defer ln.Close()
 
-	s := grpc.NewServer()
-	pb.RegisterMeshtasticPluginServer(s, &grpcSecurityServer{})
+	go func() {
+		n.Config.Log.Infof("Meshtastic inspector protobuff server listening on %s", address)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				n.Config.Log.Printf("Accept error: %v", err)
+				continue
+			}
+			go n.handleConn(conn)
+		}
+	}()
 
-	n.Config.Log.Infof("MeshtasticPlugin gRPC server listening on %s", address)
-	return s.Serve(lis)
+	n.Config.Log.Infof("Press CTRL+C to interrupt")
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt)
+
+	<-stop
+	n.Config.Log.Infof("Shutting down the server gracefully...")
+	return nil
+
+}
+func (n *GrpcServerCmd) handleConn(conn net.Conn) {
+	defer conn.Close()
+
+	// Read incoming request
+	buf := make([]byte, 4096)
+	blen, err := conn.Read(buf)
+	if err != nil {
+		if err != io.EOF {
+			n.Config.Log.Errorf("Read error: %v", err)
+		}
+		return
+	}
+
+	var req generated.PacketRequest
+	if err := proto.Unmarshal(buf[:blen], &req); err != nil {
+		n.Config.Log.Errorf("Failed to decode PacketRequest: %v", err)
+		return
+	}
+
+	n.Config.Log.Infof("PacketRequest: IP=%s User=%s ClientID=%s Topic=%s", req.IpAddress, req.Username, req.ClientId, req.Topic)
+
+	topic := req.Topic
+	isMeshtastic := true
+	var envelope meshtastic.ServiceEnvelope
+	if err := proto.Unmarshal(req.Payload, &envelope); err != nil {
+		n.Config.Log.Warnf("Not a Meshtastic ServiceEnvelope on %v: %v: %+v", topic, req.Payload, err)
+		isMeshtastic = false
+	}
+
+	resp := &generated.PacketResponse{
+		Payload:     req.Payload,   // no payload change
+		ShouldBlock: !isMeshtastic, // if not meshtastic, block the packet
+	}
+
+	outBytes, err := proto.Marshal(resp)
+	if err != nil {
+		n.Config.Log.Errorf("Failed to encode PacketResponse: %v", err)
+		return
+	}
+
+	_, err = conn.Write(outBytes)
+	if err != nil {
+		n.Config.Log.Errorf("Send error: %v", err)
+		return
+	}
+
+	n.Config.Log.Debugf("Sent %d bytes back to client", len(outBytes))
 }

@@ -19,6 +19,7 @@ Usage:
 
 Commands:
   nodeinfo
+  grpc
   
 {{ template "GlobalOptions" . }}
 {{ template "GlobalExamples" . }}
@@ -33,6 +34,6 @@ Global Options:
 
 {{ define "GlobalExamples" }}
 For more help:
-  $ meshtk nodeinfo help
-
+  $ meshtk nodeinfo announce
+  $ meshtk grpc security 
 {{ end }}

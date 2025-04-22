@@ -57,8 +57,9 @@ func (c *MqttClient) PublishMessagePlain(from uint32, to uint32, topic string, p
 		PayloadVariant: &meshtastic.MeshPacket_Decoded{
 			Decoded: data,
 		},
-		ViaMqtt: true,
-		RxTime:  uint32(time.Now().Unix()),
+		ViaMqtt:  true,
+		RxTime:   uint32(time.Now().Unix()),
+		HopLimit: 4,
 	}
 
 	// Create ServiceEnvelope

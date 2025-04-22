@@ -41,15 +41,15 @@ type Config struct {
 	NodeInfo    NodeInfo
 	TextMessage TextMessage
 
-	GRpcServer GrpcServer `json:"gRPCServer"`
+	ProtoBufServer ProtoBufServer `json:"ProtoBufServer"`
 
 	NodeDbPath string `default:"./meshtk.db"`
 
 	WasSuccess bool
 }
 
-type GrpcServer struct {
-	SecurityAddress string `default:"localhost:50051"`
+type ProtoBufServer struct {
+	InspectorAddress string `default:"localhost:50051"`
 }
 
 type Mqtt struct {

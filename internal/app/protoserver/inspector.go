@@ -13,7 +13,7 @@ import (
 )
 
 func (n *ProtoBufServerCmd) StartInspectorServer() error {
-	address := n.Config.GRpcServer.SecurityAddress
+	address := n.Config.ProtoBufServer.InspectorAddress
 
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
@@ -66,16 +66,41 @@ func (n *ProtoBufServerCmd) handleConn(conn net.Conn) {
 	n.Config.Log.Infof("PacketRequest: IP=%s User=%s ClientID=%s Topic=%s", req.IpAddress, req.Username, req.ClientId, req.Topic)
 
 	topic := req.Topic
-	isMeshtastic := true
+
+	isMeshtastic := false
+	shouldBlock := false
+	blockReason := ""
+	mutated := req.Payload
 	var envelope meshtastic.ServiceEnvelope
 	if err := proto.Unmarshal(req.Payload, &envelope); err != nil {
 		n.Config.Log.Warnf("Not a Meshtastic ServiceEnvelope on %v: %v: %+v", topic, req.Payload, err)
-		isMeshtastic = false
+		blockReason = "ServiceEnvelope"
+	}
+
+	if !isMeshtastic {
+		n.Config.Log.Warnf("Not a Meshtastic packet on %v: from: %v: %v", topic, req.Username, req.Payload)
+		blockReason = "NotMeshtastic"
+		shouldBlock = true
+	} else {
+		isMeshtastic = true
+
+		if envelope.Packet.HopLimit > 3 {
+			n.Config.Log.Infof("Mutating packet on %v from %v: hop limit: %v", topic, req.Username, envelope.Packet.HopLimit)
+			envelope.Packet.HopLimit = 3
+		}
+
+		mutated, err = proto.Marshal(&envelope)
+		if err != nil {
+			n.Config.Log.Errorf("no mutate: failed to marshal data: %v", err)
+			mutated = req.Payload
+		}
+
 	}
 
 	resp := &generated.PacketResponse{
-		Payload:     req.Payload,   // no payload change
-		ShouldBlock: !isMeshtastic, // if not meshtastic, block the packet
+		Payload:     mutated,
+		ShouldBlock: shouldBlock,
+		BlockReason: blockReason,
 	}
 
 	outBytes, err := proto.Marshal(resp)

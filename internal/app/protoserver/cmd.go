@@ -24,7 +24,7 @@ func NewProtoBufServer(c *config.Config) (n *ProtoBufServerCmd) {
 
 func (n *ProtoBufServerCmd) Help(cmd *cobra.Command, argz []string) {
 	n.CmdOutput.WasSuccess = true
-	fmt.Fprintln(n.Config.Stdout, help.GRpcServerHelp(n.Config))
+	fmt.Fprintln(n.Config.Stdout, help.ProtoBufServerHelp(n.Config))
 }
 
 func (n *ProtoBufServerCmd) Inspector(cmd *cobra.Command, argz []string) {

@@ -38,7 +38,7 @@ func NodeInfoHelp(c *config.Config) string {
 	return Render("NodeInfoHelp", c)
 }
 
-func GRpcServerHelp(c *config.Config) string {
+func ProtoBufServerHelp(c *config.Config) string {
 	return Render("ProtoBufServerHelp", c)
 }
 

@@ -65,30 +65,27 @@ func (n *ProtoBufServerCmd) handleConn(conn net.Conn) {
 
 	topic := req.Topic
 
-	isMeshtastic := false
 	shouldBlock := false
 	blockReason := ""
 	mutated := req.Payload
 	var envelope meshtastic.ServiceEnvelope
 	if err := proto.Unmarshal(req.Payload, &envelope); err != nil {
-		n.Config.Log.Warnf("Not a Meshtastic ServiceEnvelope on %v: %v: %+v", topic, req.Payload, err)
-		blockReason = "ServiceEnvelope"
-	}
-
-	if !isMeshtastic {
 		n.Config.Log.Warnf("Not a Meshtastic packet on %v: from: %v: %v", topic, req.Username, req.Payload)
-		blockReason = "NotMeshtastic"
+		blockReason = "ServiceEnvelope"
 		shouldBlock = true
 	} else {
-		isMeshtastic = true
-
-		n.Config.Log.Infof("Mutating packet on %v from %v: original hop limit: %v", topic, req.Username, envelope.Packet.HopLimit)
-		envelope.Packet.HopLimit = 3
+		if envelope.Packet.HopLimit > 3 {
+			n.Config.Log.Infof("silent rewrite packet on %v from %v: original hop limit: %v", topic, req.Username, envelope.Packet.HopLimit)
+			envelope.Packet.HopLimit = 3
+			shouldBlock = false
+		}
 
 		mutated, err = proto.Marshal(&envelope)
 		if err != nil {
 			n.Config.Log.Errorf("no mutate: failed to marshal data: %v", err)
 			mutated = req.Payload
+			shouldBlock = true
+			blockReason = "FailedMarshal"
 		}
 
 	}

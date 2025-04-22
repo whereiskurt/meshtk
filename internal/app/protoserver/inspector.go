@@ -82,10 +82,8 @@ func (n *ProtoBufServerCmd) handleConn(conn net.Conn) {
 	} else {
 		isMeshtastic = true
 
-		if envelope.Packet.HopLimit > 3 {
-			n.Config.Log.Infof("Mutating packet on %v from %v: hop limit: %v", topic, req.Username, envelope.Packet.HopLimit)
-			envelope.Packet.HopLimit = 3
-		}
+		n.Config.Log.Infof("Mutating packet on %v from %v: original hop limit: %v", topic, req.Username, envelope.Packet.HopLimit)
+		envelope.Packet.HopLimit = 3
 
 		mutated, err = proto.Marshal(&envelope)
 		if err != nil {

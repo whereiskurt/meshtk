@@ -50,7 +50,7 @@ NodeInfo:
     - "msh/+/+/2/map"
 
 ProtoBufServer:
-  InspectorAddress: "localhost:50052"
+  InspectorAddress: "localhost:50051"
 
 TextMessage:
   ChannelSlot: "primary"

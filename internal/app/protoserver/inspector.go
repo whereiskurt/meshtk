@@ -26,11 +26,9 @@ func (n *ProtoBufServerCmd) StartInspectorServer() error {
 		n.Config.Log.Infof("Meshtastic protobuff inspector server listening on %s", address)
 		for {
 			conn, err := ln.Accept()
-			if err != nil {
-				// n.Config.Log.Printf("Accept error: %v", err)
-				continue
+			if err == nil {
+				go n.handleConn(conn)
 			}
-			go n.handleConn(conn)
 		}
 	}()
 

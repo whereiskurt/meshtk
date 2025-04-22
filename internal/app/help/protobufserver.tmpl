@@ -2,15 +2,15 @@
 {{- template "GlobalHeader" . }}
 
 Usage:
-  meshtk grpc [ACTION ...] [options]
+  meshtk protobuf [ACTION ...] [options]
 
 Actions:
-  security - listen and process gRPC security protobufs 
+  inspector - listen and process inspector protobufs 
   
 Examples:
 {{ template "ProtoBufServerExamples" . }}
 {{ end }}
 
 {{ define "ProtoBufServerExamples" }}
-  $ meshtk grpc security --verbose=debug
+  $ meshtk protobuf inspector --verbose=debug
 {{ end }}

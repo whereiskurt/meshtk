@@ -43,7 +43,7 @@ NodeInfo:
   ChannelSlot: "primary"
   Topic: "msh/US/2/e/LongFast"
   MapTopic: "msh/US/2/map/"
-  
+
   SubscribedTopics:
     - "#"
     - "msh/+/2/#"
@@ -52,8 +52,24 @@ NodeInfo:
 ProtoBufServer:
   InspectorAddress: "localhost:50051"
 
+Fleet:
+  - Id: "small_fleet"
+    Description: "5mins: 50 nodes in first minute, 50 nodes in second minute, moving at potential 1m/minute"
+    BehaviourTag: ["small", "friendly"]
+    Seed: "4BE04C12-1C7A-421A-8246-CFFE0E3625B4"
+    TotalNodes: 100
+    NodesPerRampInterval: [50, 50]
+    RampUpSecs: 120
+    RampSteadySecs: 60
+    RampDownSecs: 120
+    Distribution: "uniform"
+    BroadcastGitterSec: 300
+    LatLongAltGitter: 10
+    TextMessageGitterSec: 300
+    NodeDbPath: "./nodes.smallfleet.json"
+
 TextMessage:
   ChannelSlot: "primary"
   Topic: "msh/US/2/e/LongFast"
-  
+
 WasSuccess: false

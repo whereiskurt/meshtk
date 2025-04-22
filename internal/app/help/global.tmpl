@@ -18,8 +18,9 @@ Usage:
   meshtk [options] <command> <subcommand> [params ...]
 
 Commands:
-  nodeinfo
-  grpc
+  nodeinfo  - broadcast a virtual node
+  protobuf  - listen and process protobuf from mosquitto plugin
+  fleet     - create a fleet of virtual nodes for load testing
   
 {{ template "GlobalOptions" . }}
 {{ template "GlobalExamples" . }}
@@ -35,5 +36,7 @@ Global Options:
 {{ define "GlobalExamples" }}
 For more help:
   $ meshtk nodeinfo announce
-  $ meshtk grpc security 
+  $ meshtk protobuf inspector
+  $ meshtk fleet simulate
+
 {{ end }}

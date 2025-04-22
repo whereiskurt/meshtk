@@ -36,12 +36,12 @@ type Config struct {
 		Hash    string
 	} `json:"release"`
 
-	Mqtt        Mqtt `json:"MQTT"`
-	Meshtastic  Meshtastic
-	NodeInfo    NodeInfo
-	TextMessage TextMessage
-
-	ProtoBufServer ProtoBufServer `json:"ProtoBufServer"`
+	Mqtt           Mqtt `json:"MQTT"`
+	Meshtastic     Meshtastic
+	NodeInfo       NodeInfo
+	TextMessage    TextMessage
+	Fleet          []Fleet
+	ProtoBufServer ProtoBufServer
 
 	NodeDbPath string `default:"./meshtk.db"`
 
@@ -50,6 +50,20 @@ type Config struct {
 
 type ProtoBufServer struct {
 	InspectorAddress string `default:"localhost:50051"`
+}
+
+type Fleet struct {
+	Id                   string   `json:"Id"`
+	Description          string   `json:"Description"`
+	Seed                 string   `json:"Seed"`
+	TotalNodes           int      `json:"TotalNodes"`
+	NodesPerRampInterval []int    `json:"NodesPerRampInterval"`
+	Distribution         string   `json:"Distribution" default:"uniform"`
+	BroadcastGitterSec   int      `json:"BroadcastGitterSec"`
+	LatLongAltGitter     int      `json:"LatLongAltGitter"`
+	TextMessageGitterSec int      `json:"TextMessageGitterSec"`
+	NodeDbPath           string   `default:"./fleet.default.db"`
+	BehaviourTag         []string `default:"[ 'small', 'friendly' ]"`
 }
 
 type Mqtt struct {

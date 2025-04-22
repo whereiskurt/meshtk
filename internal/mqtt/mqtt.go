@@ -257,18 +257,18 @@ func (c *MqttClient) WaitUntilKill() {
 func (c *MqttClient) ConnectAndListen(topics []string) error {
 	c.topics = topics
 
-	if !c.client.IsConnected() {
-		err := c.Connect()
-		if err != nil {
-			c.log.Error(err)
-			return err
-		}
-		c.log.Tracef("mqtt connected.")
-	} else {
-		c.log.Tracef("mqtt already connected.")
+	if c.client.IsConnected() {
+		c.log.Tracef("mqtt already connected, disconnecting first...")
+		c.Disconnect()
 	}
+	err := c.Connect()
+	if err != nil {
+		c.log.Error(err)
+		return err
+	}
+	c.log.Tracef("mqtt connected.")
 
-	err := c.subscribeMultiple(topics)
+	err = c.subscribeMultiple(topics)
 	if err != nil {
 		c.log.Error(err)
 		return err

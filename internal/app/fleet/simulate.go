@@ -112,21 +112,23 @@ func (f *FleetCmd) makeNode(offset int, fleet config.Fleet) *mqtt.Node {
 	return n
 }
 
-func (f *FleetCmd) simulate(idx int) {
+func (f *FleetCmd) StartSimulation(idx int) {
 	fleet := f.Config.Fleet[idx]
 	ramp := fleet.NodesPerRampInterval
-	rampLen := len(ramp)
 
 	totalNodes := 0
-	for r := range rampLen {
+	for r := range ramp {
 		totalNodes += ramp[r]
 	}
 	randIndices := rand.Perm(totalNodes)
 	nodeIDs := make([]uint32, totalNodes)
+
+	// Initialize or reuse fleet nodes
 	if len(f.Nodes[idx]) < totalNodes {
+		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Creating Fleet[%d] with %d nodes...\n", idx, totalNodes)))
 		f.makeFleetNodes(idx, nodeIDs, randIndices)
 	} else {
-		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Reusing Fleet of %d nodes ... \n", len(nodeIDs))))
+		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Reusing Fleet[%d] with %d nodes...\n", idx, len(f.Nodes[idx]))))
 		for i := range totalNodes {
 			node := f.makeNode(i, fleet)
 			f.Nodes[idx][node.From] = node
@@ -147,26 +149,35 @@ func (f *FleetCmd) rampUp(idx int, nodeIDs []uint32, randIndices []int) {
 	rampIntervalMs := rampUpMs / rampLen
 
 	if f.Config.Fleet[idx].Distribution == "uniform" {
-		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Uniformly adding %d nodes over %d seconds\n", idx, len(nodeIDs), rampUpMs)))
-		for r := range rampLen {
+		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Uniformly adding %d nodes over %d seconds\n", idx, len(nodeIDs), fleet.RampUpSecs)))
+
+		nodesAnnounced := 0
+		for r := 0; r < rampLen; r++ {
 			newNodes := ramp[r]
 			nodeEveryMs := rampIntervalMs / newNodes
-
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Ramp %d: Adding %d nodes in %d seconds (node every %d)\n", r, newNodes, rampIntervalMs, nodeEveryMs)))
-			for i := range newNodes {
-				node := f.Nodes[idx][nodeIDs[randIndices[i]]]
-				f.announce(node)
-				time.Sleep(time.Duration(nodeEveryMs) * time.Millisecond)
+			if newNodes > 0 {
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Ramp[%d]: Adding %d nodes in %d ms (node every %d ms)\n", r, newNodes, rampIntervalMs, nodeEveryMs)))
+				for i := 0; i < newNodes; i++ {
+					nodeIndex := nodesAnnounced + i
+					if nodeIndex < len(nodeIDs) {
+						node := f.Nodes[idx][nodeIDs[randIndices[nodeIndex]]]
+						f.announce(node)
+						time.Sleep(time.Duration(nodeEveryMs) * time.Millisecond)
+					}
+				}
+				nodesAnnounced += newNodes
 			}
 		}
+		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Ramp-up complete. Successfully added %d nodes.\n", idx, nodesAnnounced)))
 	}
 }
+
 func (f *FleetCmd) makeFleetNodes(idx int, nodeIDs []uint32, nodeIndices []int) {
 	totalNodes := len(nodeIDs)
 	fleet := f.Config.Fleet[idx]
 
 	f.NodesMutex[idx].Lock()
-	for i := range totalNodes {
+	for i := 0; i < totalNodes; i++ {
 		node := f.makeNode(i, fleet)
 		f.Nodes[idx][node.From] = node
 		nodeIDs[nodeIndices[i]] = node.From
@@ -177,12 +188,15 @@ func (f *FleetCmd) makeFleetNodes(idx int, nodeIDs []uint32, nodeIndices []int) 
 
 func (f *FleetCmd) announce(node *mqtt.Node) {
 	f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Announcing node %s\n", node.FromStr)))
+	// Publish the node's status via MQTT
+	// This is where you would actually publish the node's data to the MQTT broker
 }
 
 func (f *FleetCmd) initNodeDb(fleetIdx int) {
 	f.Nodes[fleetIdx].LoadFile(f.Config.Fleet[fleetIdx].NodeDbPath)
 	f.Config.Stdout.Write([]byte(fmt.Sprintf("💾 Loaded %d nodes from %s\n", len(f.Nodes[fleetIdx]), f.Config.Fleet[fleetIdx].NodeDbPath)))
 }
+
 func (f *FleetCmd) flushNodeDb(fleetIdx int) {
 	f.NodesMutex[fleetIdx].Lock()
 	f.Nodes[fleetIdx].WriteFile(f.Config.Fleet[fleetIdx].NodeDbPath)

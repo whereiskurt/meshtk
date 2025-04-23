@@ -54,23 +54,41 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 	}
 
 	terminate := make(chan os.Signal, 1)
+
 	signal.Notify(terminate, syscall.SIGINT, syscall.SIGTERM)
 
+	completionChan := make(chan int, len(f.Config.Fleet))
+
+	// Start all of the fleet simulations
 	for i := range f.Config.Fleet {
 		go func(idx int) {
-			f.simulate(idx)
+			fleetdone := make(chan struct{})
+			go func(idx int) {
+				f.StartSimulation(idx)
+				completionChan <- idx
+				close(fleetdone)
+			}(idx)
 
-			t := f.Config.Fleet[0].RampUpSecs + f.Config.Fleet[0].RampSteadySecs + f.Config.Fleet[0].RampDownSecs
-			timeout := time.After(time.Duration(t) * time.Second)
-			<-timeout
+			t := f.Config.Fleet[idx].RampUpSecs + f.Config.Fleet[idx].RampSteadySecs + f.Config.Fleet[idx].RampDownSecs
 
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Simulation complete. Waiting for termination signal...\n", idx)))
-			close(terminate)
+			backstop := time.After(time.Duration(t) * time.Second)
+
+			select {
+			case <-fleetdone:
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Simulation completed successfully.\n", idx)))
+			case <-backstop:
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Backstop timeout expired after %d seconds.\n", idx, t)))
+				completionChan <- idx
+			}
 		}(i)
 	}
 
-	<-terminate
-	f.Config.Stdout.Write([]byte("\nReceived termination signal (CTRL+C)...\n"))
+	select {
+	case <-terminate:
+		f.Config.Stdout.Write([]byte("\nReceived termination signal (CTRL+C)...\n"))
+	case <-waitForAllCompletions(completionChan, len(f.Config.Fleet)):
+		f.Config.Stdout.Write([]byte("✅ All simulations completed.\n"))
+	}
 
 	f.Config.Stdout.Write([]byte("\n✅ Cleanly exiting ...\n"))
 
@@ -79,4 +97,15 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 	}
 
 	f.CmdOutput.WasSuccess = true
+}
+
+func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < count; i++ {
+			<-completionChan
+		}
+		close(done)
+	}()
+	return done
 }

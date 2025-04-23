@@ -58,9 +58,9 @@ Fleet:
     BehaviourTag: ["small", "friendly"]
     Seed: "4BE04C12-1C7A-421A-8246-CFFE0E3625B4"
     NodesPerRampInterval: [25,25,50]
-    RampUpSecs: 120
-    RampSteadySecs: 60
-    RampDownSecs: 120
+    RampUpSecs: 5
+    RampSteadySecs: 5
+    RampDownSecs: 5
     Distribution: "uniform"
     BroadcastGitterSec: 300
     LatLongAltGitter: 10

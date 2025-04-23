@@ -56,7 +56,6 @@ type Fleet struct {
 	Id                   string   `json:"Id"`
 	Description          string   `json:"Description"`
 	Seed                 string   `json:"Seed"`
-	TotalNodes           int      `json:"TotalNodes"`
 	NodesPerRampInterval []int    `json:"NodesPerRampInterval"`
 	Distribution         string   `json:"Distribution" default:"uniform"`
 	BroadcastGitterSec   int      `json:"BroadcastGitterSec"`
@@ -64,6 +63,9 @@ type Fleet struct {
 	TextMessageGitterSec int      `json:"TextMessageGitterSec"`
 	NodeDbPath           string   `default:"./fleet.default.db"`
 	BehaviourTag         []string `default:"[ 'small', 'friendly' ]"`
+	RampUpSecs           int      `default:"120"`
+	RampSteadySecs       int      `default:"60"`
+	RampDownSecs         int      `default:"120"`
 }
 
 type Mqtt struct {

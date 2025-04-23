@@ -57,8 +57,7 @@ Fleet:
     Description: "5mins: 50 nodes in first minute, 50 nodes in second minute, moving at potential 1m/minute"
     BehaviourTag: ["small", "friendly"]
     Seed: "4BE04C12-1C7A-421A-8246-CFFE0E3625B4"
-    TotalNodes: 100
-    NodesPerRampInterval: [50, 50]
+    NodesPerRampInterval: [25,25,50]
     RampUpSecs: 120
     RampSteadySecs: 60
     RampDownSecs: 120

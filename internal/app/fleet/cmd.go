@@ -53,23 +53,24 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 		f.initNodeDb(i)
 	}
 
-	for i := range f.Config.Fleet {
-		go func(idx int) {
-			f.simulate(idx)
-		}(i)
-	}
-
 	terminate := make(chan os.Signal, 1)
 	signal.Notify(terminate, syscall.SIGINT, syscall.SIGTERM)
 
-	timeout := time.After(120 * time.Second)
+	for i := range f.Config.Fleet {
+		go func(idx int) {
+			f.simulate(idx)
 
-	select {
-	case <-terminate:
-		f.Config.Stdout.Write([]byte("\nReceived termination signal (CTRL+C)...\n"))
-	case <-timeout:
-		f.Config.Stdout.Write([]byte("\nTimeout reached (120 seconds)...\n"))
+			t := f.Config.Fleet[0].RampUpSecs + f.Config.Fleet[0].RampSteadySecs + f.Config.Fleet[0].RampDownSecs
+			timeout := time.After(time.Duration(t) * time.Second)
+			<-timeout
+
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Simulation complete. Waiting for termination signal...\n", idx)))
+			close(terminate)
+		}(i)
 	}
+
+	<-terminate
+	f.Config.Stdout.Write([]byte("\nReceived termination signal (CTRL+C)...\n"))
 
 	f.Config.Stdout.Write([]byte("\n✅ Cleanly exiting ...\n"))
 

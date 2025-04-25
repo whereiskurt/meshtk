@@ -63,6 +63,7 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 				spaceOut := len(coordinates) / totalNodes // If there are 30 points and 10 nodes, each node will space out 3 points
 				baseLatitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Latitude)
 				baseLongitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Longitude)
+				n.ExtendedNode.GPSCoordinateOffset = (num * spaceOut) % len(coordinates)
 			}
 		}
 	}

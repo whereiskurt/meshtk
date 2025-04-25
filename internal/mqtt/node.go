@@ -33,9 +33,17 @@ type NeighborInfo struct {
 	Updated int64   `json:"updated"`
 }
 
+type ExtendedNode struct {
+	GPSCoordinateOffset int `json:"GPSCoordinateOffset" default:"0"`
+}
+
 type Node struct {
 	From    uint32 `json:"from"`
 	FromStr string `json:"fromStr"`
+
+	// Added to support extended node info
+	ExtendedNode ExtendedNode `json:"Extended,omitempty"`
+
 	// User
 	LongName  string `json:"longName"`
 	ShortName string `json:"shortName"`
@@ -55,6 +63,7 @@ type Node struct {
 	Longitude int32  `json:"longitude"`
 	Altitude  int32  `json:"altitude,omitempty"`
 	Precision uint32 `json:"precision,omitempty"`
+
 	// DeviceMetrics
 	BatteryLevel      uint32  `json:"batteryLevel,omitempty"`
 	Voltage           float32 `json:"voltage,omitempty"`

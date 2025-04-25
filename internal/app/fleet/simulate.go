@@ -13,6 +13,21 @@ import (
 
 var curve = ecdh.X25519()
 
+func ZigzagIndex(i, total int) int {
+	if total == 1 {
+		return 0
+	}
+	dir := i / total
+	col := i % total
+
+	if dir%2 == 0 {
+		// left to right
+		return col
+	}
+	// left to right
+	return total - 1 - col
+}
+
 func (f *FleetCmd) simulate(idx int) {
 	fleet := f.Config.Fleet[idx]
 	ramp := fleet.NodesPerRampInterval
@@ -45,6 +60,7 @@ func (f *FleetCmd) rampSteady(idx int, nodeIDs []uint32, randIndices []int) {
 
 	fleet := f.Config.Fleet[idx]
 	totalSteadyStateSecs := fleet.RampSteadySecs
+	maxTics := totalSteadyStateSecs / fleet.BehaviourSecs
 	timer := time.NewTimer(time.Duration(totalSteadyStateSecs) * time.Second)
 	defer timer.Stop()
 	tic := 0
@@ -65,7 +81,7 @@ TIMER:
 				f.behaviours(idx, f.Nodes[idx][nodeID], tic)
 				nodeOffset++
 			}
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Steady state tic %d/%d\n", idx, tic, totalSteadyStateSecs)))
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Steady state: tic %d/%d\n", idx, tic, maxTics)))
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Sleeping for %d seconds...\n", idx, fleet.BehaviourSecs)))
 			time.Sleep(time.Duration(fleet.BehaviourSecs) * time.Second) // Adjust sleep duration as needed
 			tic++

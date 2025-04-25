@@ -51,8 +51,8 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 		if m.Type == "start" {
 			baseLatitude = int32(m.Latitude)
 			baseLongitude = int32(m.Longitude)
-			latVariation = r.Int31n(20000) - 10000
-			longVariation = r.Int31n(20000) - 10000
+			latVariation = r.Int31n(20000) - 10000  // +/- 10000
+			longVariation = r.Int31n(20000) - 10000 // +/- 10000
 		}
 
 		if m.Type == "gpx" {

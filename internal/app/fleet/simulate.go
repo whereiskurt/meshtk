@@ -75,13 +75,13 @@ TIMER:
 		default:
 
 			totalNodes := fleet.NodesPerRampInterval[tic%len(fleet.NodesPerRampInterval)]
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Running steady-state behaviours ...\n", idx)))
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Running steady-state behaviours for %d nodes ...\n", idx, totalNodes)))
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Steady state: tic %d/%d\n", idx, tic+1, maxTics)))
 			for range totalNodes {
 				nodeID := nodeIDs[randIndices[nodeOffset%len(randIndices)]]
 				f.behaviours(idx, f.Nodes[idx][nodeID], tic)
 				nodeOffset++
 			}
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Steady state: tic %d/%d\n", idx, tic, maxTics)))
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Sleeping for %d seconds...\n", idx, fleet.BehaviourSecs)))
 			time.Sleep(time.Duration(fleet.BehaviourSecs) * time.Second) // Adjust sleep duration as needed
 			tic++

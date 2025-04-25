@@ -75,7 +75,7 @@ type Coordinate struct {
 	Latitude  int32 `default:"361515048"`
 	Longitude int32 `default:"-1151535588"`
 	Altitude  int32 `default:"420"`
-	Precision int32 `default:"32"`
+	Precision int   `default:"32"`
 }
 
 type Movement struct {
@@ -86,6 +86,7 @@ type Movement struct {
 	Precision int32        `default:"32"`
 	GPXFile   string       `default:"./gpx/route.gpx"`
 	GPXCoords []Coordinate `default:"[]"`
+	Travel    string       `default:"point-to-point"`
 }
 
 type Mqtt struct {

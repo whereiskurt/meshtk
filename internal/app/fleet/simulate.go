@@ -1,13 +1,10 @@
 package fleet
 
 import (
-	"crypto/ecdh"
 	"fmt"
 	"math/rand"
 	"time"
 )
-
-var curve = ecdh.X25519()
 
 func (f *FleetCmd) simulate(idx int) {
 	fleet := f.Config.Fleet[idx]

@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"crypto/ecdh"
 	"fmt"
 	"hash/fnv"
 	"math/rand"
@@ -9,6 +10,8 @@ import (
 	"github.com/whereiskurt/meshtk/internal/mqtt"
 	"github.com/whereiskurt/meshtk/pkg/config"
 )
+
+var curve = ecdh.X25519()
 
 func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int) (n *mqtt.Node) {
 	n = mqtt.NewNode(f.Config.NodeInfo.Topic)

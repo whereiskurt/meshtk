@@ -44,21 +44,44 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 	if tagMap["movement"] {
 		f.movement(idx, node, tic)
 	}
+	if tagMap["gitter"] {
+		f.gitter(idx, node, tic)
+	}
+
 	if tagMap["nodeinfo"] {
 		f.nodeinfo(idx, node)
 	}
 	if tagMap["position"] {
 		f.position(idx, node)
 	}
-	if tagMap["sayhello"] {
-		const ALL = 0xffffffff
-		whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
-		f.MqttClient[idx].PublishMessageEncrypted(node.From, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte("Hello world!"))
+
+	if tic == 0 {
+		if tagMap["sayhello"] {
+			const ALL = 0xffffffff
+			whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
+			f.MqttClient[idx].PublishMessageEncrypted(node.From, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte("Hello world!"))
+		}
 	}
 }
 
-func (f *FleetCmd) movement(idx int, node *mqtt.Node, tic int) {
+func (f *FleetCmd) gitter(idx int, node *mqtt.Node, tic int) {
+}
 
+func (f *FleetCmd) movement(idx int, node *mqtt.Node, tic int) {
+	f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] moving...\n", idx, node.From)))
+	for _, m := range f.Config.Fleet[idx].Movement {
+		if len(m.GPXCoords) > 0 {
+			nextOffset := (tic + node.ExtendedNode.GPSCoordinateOffset) % len(m.GPXCoords)
+			if m.Travel == "point-to-point" {
+				nextOffset = ZigzagIndex(tic+node.ExtendedNode.GPSCoordinateOffset, len(m.GPXCoords))
+			}
+			node.ExtendedNode.GPSCoordinateOffset = nextOffset
+			node.Latitude = m.GPXCoords[nextOffset].Latitude
+			node.Longitude = m.GPXCoords[nextOffset].Longitude
+			node.Altitude = m.GPXCoords[nextOffset].Altitude
+			node.Precision = uint32(m.GPXCoords[nextOffset].Precision)
+		}
+	}
 }
 
 func ZigzagIndex(i, total int) int {

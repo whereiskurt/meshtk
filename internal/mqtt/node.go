@@ -42,6 +42,7 @@ type Node struct {
 	HwModel   string `json:"hwModel"`
 	Role      string `json:"role"`
 	PubKey    string `json:"pubkey,omitempty"`
+	PrivKey   string `json:"privkey,omitempty"`
 	// MapReport
 	FwVersion        string `json:"fwVersion,omitempty"`
 	Region           string `json:"region,omitempty"`
@@ -232,7 +233,7 @@ func (node *Node) UpdateSeenBy(topic string) {
 	node.SeenBy[topic] = time.Now().Unix()
 }
 
-func (node *Node) UpdateUser(from uint32, longName, shortName, hwModel, role string, pubkey []byte) {
+func (node *Node) UpdateUser(from uint32, longName, shortName, hwModel, role string, pubkey []byte, privkey []byte) {
 	node.From = from
 	node.FromStr = fmt.Sprintf("!%08x", from)
 	node.LongName = longName
@@ -241,6 +242,9 @@ func (node *Node) UpdateUser(from uint32, longName, shortName, hwModel, role str
 	node.Role = role
 	if len(pubkey) > 0 {
 		node.PubKey = fmt.Sprintf("0x%x", pubkey)
+	}
+	if len(privkey) > 0 {
+		node.PrivKey = fmt.Sprintf("0x%x", privkey)
 	}
 }
 

@@ -20,10 +20,13 @@ type FleetCmd struct {
 	Config     *config.Config
 	Nodes      []internal.NodeDB
 	NodesMutex []sync.Mutex
+	MqttClient []*internal.MqttClient
 	CmdOutput  struct {
 		WasSuccess bool
 	}
 }
+
+const BACKSTOP_GRACE_SEC = 30
 
 func NewFleet(c *config.Config) (f *FleetCmd) {
 	f = new(FleetCmd)
@@ -51,42 +54,47 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 
 	for i := range f.Config.Fleet {
 		f.initNodeDb(i)
+		f.MqttClient = append(f.MqttClient, internal.NewMqttClient(f.Config, &f.Nodes[i]))
 	}
 
 	terminate := make(chan os.Signal, 1)
 
 	signal.Notify(terminate, syscall.SIGINT, syscall.SIGTERM)
 
-	completionChan := make(chan int, len(f.Config.Fleet))
+	alldone := make(chan int, len(f.Config.Fleet))
 
 	// Start all of the fleet simulations
 	for i := range f.Config.Fleet {
 		go func(idx int) {
-			fleetdone := make(chan struct{})
+			fleetdone := make(chan bool)
 			go func(idx int) {
-				f.StartSimulation(idx)
-				completionChan <- idx
-				close(fleetdone)
+				// Kick of the fleet simulation!
+				f.MqttClient[idx].Connect()
+				f.simulate(idx)
+				f.MqttClient[idx].Disconnect()
+				fleetdone <- true
+				alldone <- idx
 			}(idx)
 
-			t := f.Config.Fleet[idx].RampUpSecs + f.Config.Fleet[idx].RampSteadySecs + f.Config.Fleet[idx].RampDownSecs
-
+			// Setup backstop timeouts to wait for the simulation to finish
+			// This is to prevent the simulation from running indefinitely
+			t := BACKSTOP_GRACE_SEC + f.Config.Fleet[idx].RampUpSecs + f.Config.Fleet[idx].RampSteadySecs + f.Config.Fleet[idx].RampDownSecs
 			backstop := time.After(time.Duration(t) * time.Second)
-
 			select {
 			case <-fleetdone:
 				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Simulation completed successfully.\n", idx)))
 			case <-backstop:
 				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Backstop timeout expired after %d seconds.\n", idx, t)))
-				completionChan <- idx
+				alldone <- idx
 			}
 		}(i)
 	}
 
+	// Hangout until all simulations are done or we get a termination signal
 	select {
 	case <-terminate:
 		f.Config.Stdout.Write([]byte("\nReceived termination signal (CTRL+C)...\n"))
-	case <-waitForAllCompletions(completionChan, len(f.Config.Fleet)):
+	case <-waitForAllCompletions(alldone, len(f.Config.Fleet)):
 		f.Config.Stdout.Write([]byte("✅ All simulations completed.\n"))
 	}
 

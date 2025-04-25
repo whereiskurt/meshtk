@@ -34,8 +34,6 @@ type Coordinate struct {
 }
 
 func (f *FleetCmd) GPXCoords(gpxFilePath string) []Coordinate {
-	f.Config.Log.Infof("Reading GPX file: %s", gpxFilePath)
-
 	// Read GPX file
 	xmlFile, err := os.Open(gpxFilePath)
 	if err != nil {

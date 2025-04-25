@@ -53,30 +53,31 @@ type ProtoBufServer struct {
 }
 
 type Fleet struct {
-	Id                     string   `json:"Id"`
-	Description            string   `json:"Description"`
-	Seed                   string   `json:"Seed"`
-	NodesPerRampInterval   []int    `json:"NodesPerRampInterval"`
-	NodesPerSteadyInterval []int    `json:"NodesPerSteadyInterval"`
-	Distribution           string   `json:"Distribution" default:"uniform"`
-	BroadcastGitterSec     int      `json:"BroadcastGitterSec"`
-	LatLongAltGitter       int      `json:"LatLongAltGitter"`
-	TextMessageGitterSec   int      `json:"TextMessageGitterSec"`
-	NodeDbPath             string   `default:"./fleet.default.db"`
-	BehaviourTag           []string `default:"[ 'small', 'friendly' ]"`
-	BehaviourSecs          int      `default:"60"`
-	RampUpSecs             int      `default:"120"`
-	RampSteadySecs         int      `default:"60"`
-	RampDownSecs           int      `default:"120"`
+	Id                     string     `json:"Id"`
+	Description            string     `json:"Description"`
+	Seed                   string     `json:"Seed"`
+	NodesPerRampInterval   []int      `json:"NodesPerRampInterval"`
+	NodesPerSteadyInterval []int      `json:"NodesPerSteadyInterval"`
+	Distribution           string     `json:"Distribution" default:"uniform"`
+	BroadcastGitterSec     int        `json:"BroadcastGitterSec"`
+	LatLongAltGitter       int        `json:"LatLongAltGitter"`
+	TextMessageGitterSec   int        `json:"TextMessageGitterSec"`
+	NodeDbPath             string     `default:"./fleet.default.db"`
+	BehaviourTag           []string   `default:"[ 'small', 'friendly' ]"`
+	BehaviourSecs          int        `default:"60"`
+	RampUpSecs             int        `default:"120"`
+	RampSteadySecs         int        `default:"60"`
+	RampDownSecs           int        `default:"120"`
+	Movement               []Movement `json:"Movement"`
+}
 
-	Movement []struct {
-		Type      string `default:"start"`
-		Latitude  int    `default:"361515048"`
-		Longitude int    `default:"-1151535588"`
-		Altitude  int    `default:"420"`
-		Precision int    `default:"32"`
-		GPXFile   string `default:"./gpx/route.gpx"`
-	} `json:"Movement"`
+type Movement struct {
+	Type      string `default:"start"`
+	Latitude  int    `default:"361515048"`
+	Longitude int    `default:"-1151535588"`
+	Altitude  int    `default:"420"`
+	Precision int    `default:"32"`
+	GPXFile   string `default:"./gpx/route.gpx"`
 }
 
 type Mqtt struct {

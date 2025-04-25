@@ -10,7 +10,7 @@ import (
 	"github.com/whereiskurt/meshtk/pkg/config"
 )
 
-func (f *FleetCmd) makeNode(num int, fleet config.Fleet, idx int) *mqtt.Node {
+func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int) *mqtt.Node {
 	// Create a hash from the UUID string seed to get a deterministic int64 seed
 	h := fnv.New64a()
 	h.Write([]byte(fleet.Seed))              // Use the UUID string to generate a hash
@@ -46,30 +46,33 @@ func (f *FleetCmd) makeNode(num int, fleet config.Fleet, idx int) *mqtt.Node {
 
 	n.UpdateUser(nodeID, longName, shortName, hwModel, role, publicKeyBytes, privateKeyBytes)
 
-	startIndex := -1
-	gpxIndex := -1
-
 	baseLatitude := int32(0)
 	baseLongitude := int32(0)
+	latVariation := int32(0)
+	longVariation := int32(0)
 
-	for i, movement := range fleet.Movement {
-		if movement.Type == "start" {
-			startIndex = i
-			baseLatitude = int32(fleet.Movement[startIndex].Latitude)
-			baseLongitude = int32(fleet.Movement[startIndex].Longitude)
-		}
-		if movement.Type == "gpx" {
-			gpxIndex = i
-			coordinates := f.GPXCoords(fleet.Movement[gpxIndex].GPXFile)
-			f.Config.Log.Tracef("Extracted %d coordinates from GPX file", len(coordinates))
-			if startIndex == -1 {
-				baseLatitude = int32(coordinates[num%len(coordinates)].Latitude)
-				baseLongitude = int32(coordinates[num%len(coordinates)].Longitude)
-			}
+	movementMap := make(map[string](config.Movement))
+	for _, m := range fleet.Movement {
+		movementMap[m.Type] = m
+	}
+
+	if startMovement, ok := movementMap["start"]; ok {
+		baseLatitude = int32(startMovement.Latitude)
+		baseLongitude = int32(startMovement.Longitude)
+		latVariation = r.Int31n(20000) - 10000  // +/- 0.001 degrees (~100m)
+		longVariation = r.Int31n(20000) - 10000 // +/- 0.001 degrees (~100m at equator)
+	}
+
+	if gpxMovement, ok := movementMap["gpx"]; ok {
+		coordinates := f.GPXCoords(gpxMovement.GPXFile)
+
+		spaceOut := len(coordinates) / totalNodes
+
+		if _, startExists := movementMap["start"]; !startExists {
+			baseLatitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Latitude)
+			baseLongitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Longitude)
 		}
 	}
-	latVariation := r.Int31n(20000) - 10000  // +/- 0.001 degrees (~100m)
-	longVariation := r.Int31n(20000) - 10000 // +/- 0.001 degrees (~100m at equator)
 
 	latitude := baseLatitude + latVariation
 	longitude := baseLongitude + longVariation
@@ -131,7 +134,7 @@ func (f *FleetCmd) makeFleet(idx int, nodeIDs []uint32, nodeIndices []int) {
 
 	f.NodesMutex[idx].Lock()
 	for i := 0; i < totalNodes; i++ {
-		node := f.makeNode(i, fleet, idx)
+		node := f.makeNode(i, totalNodes, fleet, idx)
 		f.Nodes[idx][node.From] = node
 		nodeIDs[nodeIndices[i]] = node.From
 	}

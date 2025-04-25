@@ -3,9 +3,8 @@ package fleet
 import (
 	"crypto/ecdh"
 	"fmt"
-
 	"math/rand"
-
+	"sync"
 	"time"
 
 	"github.com/whereiskurt/meshtk/internal/mqtt"
@@ -33,7 +32,7 @@ func (f *FleetCmd) simulate(idx int) {
 	} else {
 		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Reusing Fleet[%d] with %d nodes...\n", idx, len(f.Nodes[idx]))))
 		for i := range totalNodes {
-			node := f.makeNode(i, fleet, idx)
+			node := f.makeNode(i, totalNodes, fleet, idx)
 			f.Nodes[idx][node.From] = node
 			nodeIDs[randIndices[i]] = node.From
 		}
@@ -50,6 +49,7 @@ func (f *FleetCmd) steadyState(idx int, nodeIDs []uint32, randIndices []int) {
 	steadyStateIntervalMs := totalSteadyStateMs / len(fleet.NodesPerSteadyInterval)
 
 	offset := 0
+
 	for i := range fleet.NodesPerSteadyInterval {
 		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Steady state interval %d with %d nodes...\n", idx, i, fleet.NodesPerSteadyInterval[i])))
 
@@ -140,8 +140,10 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node) {
 		tagMap[tag] = true
 	}
 
-	if tagMap["announce"] {
+	if tagMap["nodeinfo"] {
 		f.nodeinfo(idx, node)
+	}
+	if tagMap["position"] {
 		f.position(idx, node)
 	}
 	if tagMap["sayhello"] {
@@ -153,4 +155,73 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node) {
 		f.position(idx, node)
 	}
 
+}
+
+// tick schedules periodic actions for nodes over a specified duration
+func (f *FleetCmd) tick(idx int, nodeIDs []uint32, randIndices []int, intervalSecs int, durationSecs int) {
+	// fleet := f.Config.Fleet[idx]
+	nodes := len(nodeIDs)
+
+	if nodes == 0 {
+		f.Config.Stdout.Write([]byte(fmt.Sprintf("⚠️ Fleet[%d]: No nodes to tick\n", idx)))
+		return
+	}
+
+	f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️ Fleet[%d]: Starting tickers for %d nodes (every %ds for %ds total)\n",
+		idx, nodes, intervalSecs, durationSecs)))
+
+	// Create channels for control
+	done := make(chan bool)
+	ticker := time.NewTicker(time.Duration(intervalSecs) * time.Second)
+	timeout := time.After(time.Duration(durationSecs) * time.Second)
+
+	// Use WaitGroup to track all goroutines
+	var wg sync.WaitGroup
+
+	// Start a goroutine for each node
+	for i := 0; i < nodes; i++ {
+		wg.Add(1)
+
+		// Capture the node for the closure
+		nodeIndex := i
+		node := f.Nodes[idx][nodeIDs[randIndices[nodeIndex%len(f.Nodes[idx])]]]
+
+		go func(n *mqtt.Node) {
+			defer wg.Done()
+
+			// Set up node's ticker - slightly offset each node to prevent thundering herd
+			offset := time.Duration(rand.Intn(1000)) * time.Millisecond
+			time.Sleep(offset)
+
+			nodeTicker := time.NewTicker(time.Duration(intervalSecs) * time.Second)
+			defer nodeTicker.Stop()
+
+			for {
+				select {
+				case <-nodeTicker.C:
+					// Perform the action
+					f.behaviours(idx, n)
+				case <-done:
+					return
+				}
+			}
+		}(node)
+	}
+
+	// Monitor the overall timeout
+	go func() {
+		select {
+		case <-timeout:
+			// Time's up, signal all goroutines to stop
+			close(done)
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️ Fleet[%d]: Duration of %ds completed, stopping all tickers\n",
+				idx, durationSecs)))
+		}
+	}()
+
+	// Wait for all node goroutines to finish
+	wg.Wait()
+	ticker.Stop()
+
+	f.Config.Stdout.Write([]byte(fmt.Sprintf("✅ Fleet[%d]: All node tickers stopped\n", idx)))
 }

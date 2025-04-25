@@ -4,7 +4,6 @@ import (
 	"crypto/ecdh"
 	"fmt"
 	"math/rand"
-	"sync"
 	"time"
 
 	"github.com/whereiskurt/meshtk/internal/mqtt"
@@ -38,31 +37,39 @@ func (f *FleetCmd) simulate(idx int) {
 		}
 	}
 	f.rampUp(idx, nodeIDs, randIndices)
-	f.steadyState(idx, nodeIDs, randIndices)
+	f.rampSteady(idx, nodeIDs, randIndices)
 	f.rampDown(idx, nodeIDs, randIndices)
 }
 
-func (f *FleetCmd) steadyState(idx int, nodeIDs []uint32, randIndices []int) {
+func (f *FleetCmd) rampSteady(idx int, nodeIDs []uint32, randIndices []int) {
 
 	fleet := f.Config.Fleet[idx]
-	totalSteadyStateMs := fleet.RampSteadySecs * 1000
-	steadyStateIntervalMs := totalSteadyStateMs / len(fleet.NodesPerSteadyInterval)
+	totalSteadyStateSecs := fleet.RampSteadySecs
+	timer := time.NewTimer(time.Duration(totalSteadyStateSecs) * time.Second)
+	defer timer.Stop()
+	tic := 0
+	nodeOffset := 0
 
-	offset := 0
+TIMER:
+	for {
+		select {
+		case <-timer.C:
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️ Fleet[%d]: Steady state timer expired.\n", idx)))
+			break TIMER
+		default:
 
-	for i := range fleet.NodesPerSteadyInterval {
-		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Steady state interval %d with %d nodes...\n", idx, i, fleet.NodesPerSteadyInterval[i])))
-
-		nodesThisInterval := fleet.NodesPerSteadyInterval[i]
-		nodeEveryMs := steadyStateIntervalMs / nodesThisInterval
-
-		for r := range nodesThisInterval {
-			nodeIndex := offset + r
-			node := f.Nodes[idx][nodeIDs[randIndices[nodeIndex%len(f.Nodes[idx])]]]
-			f.behaviours(idx, node)
-			time.Sleep(time.Duration(nodeEveryMs) * time.Millisecond)
+			totalNodes := fleet.NodesPerRampInterval[tic%len(fleet.NodesPerRampInterval)]
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Running steady-state behaviours ...\n", idx)))
+			for range totalNodes {
+				nodeID := nodeIDs[randIndices[nodeOffset%len(randIndices)]]
+				f.behaviours(idx, f.Nodes[idx][nodeID], tic)
+				nodeOffset++
+			}
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Steady state tic %d/%d\n", idx, tic, totalSteadyStateSecs)))
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Sleeping for %d seconds...\n", idx, fleet.BehaviourSecs)))
+			time.Sleep(time.Duration(fleet.BehaviourSecs) * time.Second) // Adjust sleep duration as needed
+			tic++
 		}
-		offset += fleet.NodesPerSteadyInterval[i]
 	}
 
 	f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Steady state complete.\n", idx)))
@@ -84,7 +91,7 @@ func (f *FleetCmd) rampUp(idx int, nodeIDs []uint32, randIndices []int) {
 			newNodes := ramp[r]
 			nodeEveryMs := rampIntervalMs / newNodes
 			if newNodes > 0 {
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Ramp[%d]: Adding %d nodes in %d ms (node every %d ms)\n", r, newNodes, rampIntervalMs, nodeEveryMs)))
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Ramp[%d][%d]: Adding %d nodes in %d ms (node every %d ms)\n", idx, r, newNodes, rampIntervalMs, nodeEveryMs)))
 				for i := range newNodes {
 					nodeIndex := totalNodes + i
 					if nodeIndex < len(nodeIDs) {
@@ -132,7 +139,11 @@ func (f *FleetCmd) position(idx int, node *mqtt.Node) {
 	f.MqttClient[idx].PublishPosition(node.From, ALL, whoamiTopic, lat, lng, alt, prec)
 }
 
-func (f *FleetCmd) behaviours(idx int, node *mqtt.Node) {
+func (f *FleetCmd) movement(idx int, node *mqtt.Node, tic int) {
+
+}
+
+func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 
 	tags := f.Config.Fleet[idx].BehaviourTag
 	tagMap := make(map[string]bool)
@@ -140,6 +151,10 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node) {
 		tagMap[tag] = true
 	}
 
+	// Make moves, and then tell folks.
+	if tagMap["movement"] {
+		f.movement(idx, node, tic)
+	}
 	if tagMap["nodeinfo"] {
 		f.nodeinfo(idx, node)
 	}
@@ -151,77 +166,5 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node) {
 		whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
 		f.MqttClient[idx].PublishMessageEncrypted(node.From, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte("Hello world!"))
 	}
-	if tagMap["movement"] {
-		f.position(idx, node)
-	}
 
-}
-
-// tick schedules periodic actions for nodes over a specified duration
-func (f *FleetCmd) tick(idx int, nodeIDs []uint32, randIndices []int, intervalSecs int, durationSecs int) {
-	// fleet := f.Config.Fleet[idx]
-	nodes := len(nodeIDs)
-
-	if nodes == 0 {
-		f.Config.Stdout.Write([]byte(fmt.Sprintf("⚠️ Fleet[%d]: No nodes to tick\n", idx)))
-		return
-	}
-
-	f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️ Fleet[%d]: Starting tickers for %d nodes (every %ds for %ds total)\n",
-		idx, nodes, intervalSecs, durationSecs)))
-
-	// Create channels for control
-	done := make(chan bool)
-	ticker := time.NewTicker(time.Duration(intervalSecs) * time.Second)
-	timeout := time.After(time.Duration(durationSecs) * time.Second)
-
-	// Use WaitGroup to track all goroutines
-	var wg sync.WaitGroup
-
-	// Start a goroutine for each node
-	for i := 0; i < nodes; i++ {
-		wg.Add(1)
-
-		// Capture the node for the closure
-		nodeIndex := i
-		node := f.Nodes[idx][nodeIDs[randIndices[nodeIndex%len(f.Nodes[idx])]]]
-
-		go func(n *mqtt.Node) {
-			defer wg.Done()
-
-			// Set up node's ticker - slightly offset each node to prevent thundering herd
-			offset := time.Duration(rand.Intn(1000)) * time.Millisecond
-			time.Sleep(offset)
-
-			nodeTicker := time.NewTicker(time.Duration(intervalSecs) * time.Second)
-			defer nodeTicker.Stop()
-
-			for {
-				select {
-				case <-nodeTicker.C:
-					// Perform the action
-					f.behaviours(idx, n)
-				case <-done:
-					return
-				}
-			}
-		}(node)
-	}
-
-	// Monitor the overall timeout
-	go func() {
-		select {
-		case <-timeout:
-			// Time's up, signal all goroutines to stop
-			close(done)
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️ Fleet[%d]: Duration of %ds completed, stopping all tickers\n",
-				idx, durationSecs)))
-		}
-	}()
-
-	// Wait for all node goroutines to finish
-	wg.Wait()
-	ticker.Stop()
-
-	f.Config.Stdout.Write([]byte(fmt.Sprintf("✅ Fleet[%d]: All node tickers stopped\n", idx)))
 }

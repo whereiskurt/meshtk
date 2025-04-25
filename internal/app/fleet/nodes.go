@@ -10,33 +10,29 @@ import (
 	"github.com/whereiskurt/meshtk/pkg/config"
 )
 
-func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int) *mqtt.Node {
+func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int) (n *mqtt.Node) {
+	n = mqtt.NewNode(f.Config.NodeInfo.Topic)
+
 	// Create a hash from the UUID string seed to get a deterministic int64 seed
 	h := fnv.New64a()
 	h.Write([]byte(fleet.Seed))              // Use the UUID string to generate a hash
 	h.Write([]byte(fmt.Sprintf("-%d", num))) // Add node index to make each node's seed unique
 	seedValue := int64(h.Sum64())
 
-	// Create a new seeded random source based on the hash of fleet seed and node index
 	r := rand.New(rand.NewSource(seedValue))
 
-	// Create a basic node with a seen by topic
-	n := mqtt.NewNode(f.Config.NodeInfo.Topic)
-
+	nodeID := r.Uint32()
 	privateKey, _ := curve.GenerateKey(r)
 	publicKeyBytes := privateKey.PublicKey().Bytes()
 	privateKeyBytes := privateKey.Bytes()
-
-	// Generate node ID (from)
-	nodeID := r.Uint32()
 
 	shortSeed := strings.ToLower(fleet.Seed)
 	if len(shortSeed) > 5 {
 		shortSeed = shortSeed[len(shortSeed)-5:]
 	}
 	scrambledSeed := fmt.Sprintf("%x", fnv.New32a().Sum([]byte(shortSeed)))
-	longName := fmt.Sprintf("mtk%s%02d%02d", scrambledSeed[:5], num%100, idx)
-	shortName := fmt.Sprintf("MK%02d", num%100)
+	longName := fmt.Sprintf("mtk%02d%02d-%s", idx, num%100, scrambledSeed[:5])
+	shortName := fmt.Sprintf("M%02d%02d", idx, num%100)
 
 	hwModels := []string{"HELTEC_V3", "T_DECK", "TRACKER_T1000_E", "SEEED_XIAO_S3", "RAK2560"}
 	hwModel := hwModels[r.Intn(len(hwModels))]
@@ -51,34 +47,30 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 	latVariation := int32(0)
 	longVariation := int32(0)
 
-	movementMap := make(map[string](config.Movement))
-	for _, m := range fleet.Movement {
-		movementMap[m.Type] = m
-	}
+	for i, m := range fleet.Movement {
+		if m.Type == "start" {
+			baseLatitude = int32(m.Latitude)
+			baseLongitude = int32(m.Longitude)
+			latVariation = r.Int31n(20000) - 10000
+			longVariation = r.Int31n(20000) - 10000
+		}
 
-	if startMovement, ok := movementMap["start"]; ok {
-		baseLatitude = int32(startMovement.Latitude)
-		baseLongitude = int32(startMovement.Longitude)
-		latVariation = r.Int31n(20000) - 10000  // +/- 0.001 degrees (~100m)
-		longVariation = r.Int31n(20000) - 10000 // +/- 0.001 degrees (~100m at equator)
-	}
-
-	if gpxMovement, ok := movementMap["gpx"]; ok {
-		coordinates := f.GPXCoords(gpxMovement.GPXFile)
-
-		spaceOut := len(coordinates) / totalNodes
-
-		if _, startExists := movementMap["start"]; !startExists {
-			baseLatitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Latitude)
-			baseLongitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Longitude)
+		if m.Type == "gpx" {
+			//TODO: Move this out! Doesn't need to happen every makenode!
+			coordinates := f.GPXCoords(m.GPXFile)
+			fleet.Movement[i].GPXCoords = coordinates
+			if baseLatitude == 0 {
+				spaceOut := len(coordinates) / totalNodes // If there are 30 points and 10 nodes, each node will space out 3 points
+				baseLatitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Latitude)
+				baseLongitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Longitude)
+			}
 		}
 	}
 
 	latitude := baseLatitude + latVariation
 	longitude := baseLongitude + longVariation
-	altitude := int32(r.Intn(100) + 50) // 50-150m
-	// precision := uint32(r.Intn(16) + 16) // precision between 16-32
-	precision := uint32(32) // precision between 16-32
+	altitude := int32(r.Intn(100) + 50)
+	precision := uint32(32)
 
 	n.UpdatePosition(latitude, longitude, altitude, precision)
 
@@ -122,7 +114,7 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 	neighborCount := r.Intn(5)
 	for i := 0; i < neighborCount; i++ {
 		neighborID := r.Uint32()
-		snr := float32(r.Float32()*20.0 - 10.0) // -10 to +10 SNR
+		snr := float32(r.Float32()*20.0 - 10.0) // -10 to +10 SNR 🤷‍♂️
 		n.UpdateNeighborInfo(neighborID, snr)
 	}
 

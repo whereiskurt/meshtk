@@ -4,6 +4,8 @@ import (
 	"encoding/xml"
 	"io"
 	"os"
+
+	"github.com/whereiskurt/meshtk/pkg/config"
 )
 
 type GPX struct {
@@ -27,25 +29,19 @@ type TrackPoint struct {
 	Time string  `xml:"time"`
 }
 
-type Coordinate struct {
-	Latitude  int32
-	Longitude int32
-	Altitude  int32
-}
-
-func (f *FleetCmd) GPXCoords(gpxFilePath string) []Coordinate {
+func (f *FleetCmd) GPXCoords(gpxFilePath string) []config.Coordinate {
 	// Read GPX file
 	xmlFile, err := os.Open(gpxFilePath)
 	if err != nil {
 		f.Config.Log.Errorf("Failed to open GPX file: %s, error: %v", gpxFilePath, err)
-		return []Coordinate{}
+		return []config.Coordinate{}
 	}
 	defer xmlFile.Close()
 
 	byteValue, err := io.ReadAll(xmlFile)
 	if err != nil {
 		f.Config.Log.Errorf("Failed to read GPX file: %s, error: %v", gpxFilePath, err)
-		return []Coordinate{}
+		return []config.Coordinate{}
 	}
 
 	// Parse XML
@@ -53,11 +49,11 @@ func (f *FleetCmd) GPXCoords(gpxFilePath string) []Coordinate {
 	err = xml.Unmarshal(byteValue, &gpx)
 	if err != nil {
 		f.Config.Log.Errorf("Failed to parse GPX file: %s, error: %v", gpxFilePath, err)
-		return []Coordinate{}
+		return []config.Coordinate{}
 	}
 
 	// Extract coordinates
-	var coordinates []Coordinate
+	var coordinates []config.Coordinate
 	for _, track := range gpx.Trk {
 		for _, segment := range track.TrkSegs {
 			for _, point := range segment.TrkPts {
@@ -66,10 +62,11 @@ func (f *FleetCmd) GPXCoords(gpxFilePath string) []Coordinate {
 				lon := int32(point.Lon * 10000000)
 				alt := int32(point.Ele)
 
-				coordinates = append(coordinates, Coordinate{
+				coordinates = append(coordinates, config.Coordinate{
 					Latitude:  lat,
 					Longitude: lon,
 					Altitude:  alt,
+					Precision: 32,
 				})
 			}
 		}

@@ -71,13 +71,21 @@ type Fleet struct {
 	Movement               []Movement `json:"Movement"`
 }
 
+type Coordinate struct {
+	Latitude  int32 `default:"361515048"`
+	Longitude int32 `default:"-1151535588"`
+	Altitude  int32 `default:"420"`
+	Precision int32 `default:"32"`
+}
+
 type Movement struct {
-	Type      string `default:"start"`
-	Latitude  int    `default:"361515048"`
-	Longitude int    `default:"-1151535588"`
-	Altitude  int    `default:"420"`
-	Precision int    `default:"32"`
-	GPXFile   string `default:"./gpx/route.gpx"`
+	Type      string       `default:"start"`
+	Latitude  int32        `default:"361515048"`
+	Longitude int32        `default:"-1151535588"`
+	Altitude  int32        `default:"420"`
+	Precision int32        `default:"32"`
+	GPXFile   string       `default:"./gpx/route.gpx"`
+	GPXCoords []Coordinate `default:"[]"`
 }
 
 type Mqtt struct {

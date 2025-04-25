@@ -55,7 +55,8 @@ ProtoBufServer:
 Fleet:
   - Id: "small_fleet"
     Description: "5mins: 50 nodes in first minute, 50 nodes in second minute, moving at potential 1m/minute"
-    BehaviourTag: ["announce", "sayhello", "movement"]
+    BehaviourTag: ["nodeinfo","position", "sayhello", "gitter"]
+    BehaviourSecs: 60
     Seed: "4BE04C12-1C7A-421A-8246-CFFE0E3625B4"
     NodesPerRampInterval: [5,5,5]
     RampUpSecs: 15
@@ -75,13 +76,14 @@ Fleet:
         Precision: 32
   - Id: "route_follower"
     Description: "1 node sticking to the route."
-    BehaviourTag: ["announce", "movement"]
+    BehaviourTag: ["nodeinfo", "position", "movement"]
+    BehaviourSecs: 60
     Seed: "4BE04C12-1C7A-421A-8246-CFFE0E3625B4"
-    NodesPerRampInterval: [1]
+    NodesPerRampInterval: [30]
     RampUpSecs: 1
     RampSteadySecs: 2629746
     RampDownSecs: 1
-    NodesPerSteadyInterval: [1]
+    NodesPerSteadyInterval: [30]
     Distribution: "uniform"
     BroadcastGitterSec: 300
     LatLongAltGitter: 10

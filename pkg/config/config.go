@@ -64,6 +64,7 @@ type Fleet struct {
 	TextMessageGitterSec   int      `json:"TextMessageGitterSec"`
 	NodeDbPath             string   `default:"./fleet.default.db"`
 	BehaviourTag           []string `default:"[ 'small', 'friendly' ]"`
+	BehaviourSecs          int      `default:"60"`
 	RampUpSecs             int      `default:"120"`
 	RampSteadySecs         int      `default:"60"`
 	RampDownSecs           int      `default:"120"`

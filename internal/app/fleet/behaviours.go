@@ -7,6 +7,38 @@ import (
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 )
 
+func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
+	tags := f.Config.Fleet[idx].BehaviourTag
+	tagMap := make(map[string]bool)
+	for _, tag := range tags {
+		tagMap[tag] = true
+	}
+
+	if tagMap["nodeinfo"] {
+		f.nodeinfo(idx, node)
+	}
+
+	// Make moves, and then tell folks.
+	if tagMap["movement"] {
+		f.movement(idx, node, tic)
+	}
+	if tagMap["gitter"] {
+		f.gitter(idx, node, tic)
+	}
+
+	if tagMap["position"] {
+		f.position(idx, node)
+	}
+
+	if tic == 0 {
+		if tagMap["sayhello"] {
+			const ALL = 0xffffffff
+			whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
+			f.MqttClient[idx].PublishMessageEncrypted(node.From, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte("Hello world!"))
+		}
+	}
+}
+
 func (f *FleetCmd) nodeinfo(idx int, node *mqtt.Node) {
 	const ALL = 0xffffffff
 
@@ -33,37 +65,6 @@ func (f *FleetCmd) position(idx int, node *mqtt.Node) {
 	f.MqttClient[idx].PublishPosition(node.From, ALL, whoamiTopic, lat, lng, alt, prec)
 }
 
-func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
-	tags := f.Config.Fleet[idx].BehaviourTag
-	tagMap := make(map[string]bool)
-	for _, tag := range tags {
-		tagMap[tag] = true
-	}
-
-	// Make moves, and then tell folks.
-	if tagMap["movement"] {
-		f.movement(idx, node, tic)
-	}
-	if tagMap["gitter"] {
-		f.gitter(idx, node, tic)
-	}
-
-	if tagMap["nodeinfo"] {
-		f.nodeinfo(idx, node)
-	}
-	if tagMap["position"] {
-		f.position(idx, node)
-	}
-
-	if tic == 0 {
-		if tagMap["sayhello"] {
-			const ALL = 0xffffffff
-			whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
-			f.MqttClient[idx].PublishMessageEncrypted(node.From, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte("Hello world!"))
-		}
-	}
-}
-
 func (f *FleetCmd) gitter(idx int, node *mqtt.Node, tic int) {
 }
 
@@ -80,6 +81,7 @@ func (f *FleetCmd) movement(idx int, node *mqtt.Node, tic int) {
 			node.Longitude = m.GPXCoords[nextOffset].Longitude
 			node.Altitude = m.GPXCoords[nextOffset].Altitude
 			node.Precision = uint32(m.GPXCoords[nextOffset].Precision)
+			f.position(idx, node)
 		}
 	}
 }

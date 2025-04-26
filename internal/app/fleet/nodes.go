@@ -4,6 +4,7 @@ import (
 	"crypto/ecdh"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"math/rand"
 	"strings"
 
@@ -52,10 +53,11 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 
 	for i, m := range fleet.Movement {
 		if m.Type == "start" {
+			scale := math.Cos(float64(baseLatitude) * math.Pi / 180.0)
 			baseLatitude = int32(m.Latitude)
 			baseLongitude = int32(m.Longitude)
-			latVariation = r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter)  // +/- 10000
-			longVariation = r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- 10000
+			latVariation = r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
+			longVariation = int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)
 		}
 
 		if m.Type == "gpx" {

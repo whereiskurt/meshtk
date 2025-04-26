@@ -20,14 +20,15 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 
 	// Make moves, and then tell folks.
 	if tagMap["movement"] {
-		f.movement(idx, node, tic)
-	}
-	if tagMap["gitter"] {
-		f.gitter(idx, node, tic)
+		f.gpxMovement(idx, node, tic)
 	}
 
 	if tagMap["position"] {
 		f.position(idx, node)
+	}
+
+	if tagMap["gitter"] {
+		// f.gitter(idx, node, tic)
 	}
 
 	if tic == 0 {
@@ -65,13 +66,10 @@ func (f *FleetCmd) position(idx int, node *mqtt.Node) {
 	f.MqttClient[idx].PublishPosition(node.From, ALL, whoamiTopic, lat, lng, alt, prec)
 }
 
-func (f *FleetCmd) gitter(idx int, node *mqtt.Node, tic int) {
-}
-
-func (f *FleetCmd) movement(idx int, node *mqtt.Node, tic int) {
-	f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] moving...\n", idx, node.From)))
+func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, tic int) {
 	for _, m := range f.Config.Fleet[idx].Movement {
 		if len(m.GPXCoords) > 0 {
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] moving...\n", idx, node.From)))
 			nextOffset := (tic + node.ExtendedNode.GPSCoordinateOffset) % len(m.GPXCoords)
 			if m.Travel == "point-to-point" {
 				nextOffset = ZigzagIndex(tic+node.ExtendedNode.GPSCoordinateOffset, len(m.GPXCoords))

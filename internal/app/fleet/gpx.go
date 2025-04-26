@@ -4,7 +4,10 @@ import (
 	"encoding/xml"
 	"io"
 	"os"
+	"path/filepath"
+	"sync"
 
+	"github.com/whereiskurt/meshtk/internal/embedded/gpx"
 	"github.com/whereiskurt/meshtk/pkg/config"
 )
 
@@ -29,19 +32,44 @@ type TrackPoint struct {
 	Time string  `xml:"time"`
 }
 
+// embeddedGPXMap caches the map of embedded GPX files
+var embeddedGPXMap map[string][]byte
+var embeddedGPXMapOnce sync.Once
+
 func (f *FleetCmd) GPXCoords(gpxFilePath string) []config.Coordinate {
-	// Read GPX file
+	var byteValue []byte
+	var err error
+
+	// First try to open the file from the filesystem
 	xmlFile, err := os.Open(gpxFilePath)
 	if err != nil {
-		f.Config.Log.Errorf("Failed to open GPX file: %s, error: %v", gpxFilePath, err)
-		return []config.Coordinate{}
-	}
-	defer xmlFile.Close()
+		// File doesn't exist, try to use embedded file with the same base name
+		baseName := filepath.Base(gpxFilePath)
+		f.Config.Log.Debugf("File %s not found on filesystem, looking for embedded file %s", gpxFilePath, baseName)
 
-	byteValue, err := io.ReadAll(xmlFile)
-	if err != nil {
-		f.Config.Log.Errorf("Failed to read GPX file: %s, error: %v", gpxFilePath, err)
-		return []config.Coordinate{}
+		// Initialize the embedded GPX map once
+		embeddedGPXMapOnce.Do(func() {
+			embeddedGPXMap, err = gpx.GetEmbeddedGPXMap()
+			if err != nil {
+				f.Config.Log.Errorf("Failed to load embedded GPX files: %v", err)
+				embeddedGPXMap = make(map[string][]byte)
+			}
+		})
+
+		// Look up the file in our embedded map
+		if content, ok := embeddedGPXMap[baseName]; ok {
+			byteValue = content
+		} else {
+			f.Config.Log.Errorf("Failed to find GPX file either on filesystem or embedded: %s", gpxFilePath)
+			return []config.Coordinate{}
+		}
+	} else {
+		defer xmlFile.Close()
+		byteValue, err = io.ReadAll(xmlFile)
+		if err != nil {
+			f.Config.Log.Errorf("Failed to read GPX file: %s, error: %v", gpxFilePath, err)
+			return []config.Coordinate{}
+		}
 	}
 
 	// Parse XML

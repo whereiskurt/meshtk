@@ -74,6 +74,7 @@ func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, tic int) {
 			if m.Travel == "point-to-point" {
 				nextOffset = ZigzagIndex(tic+node.ExtendedNode.GPSCoordinateOffset, len(m.GPXCoords))
 			}
+
 			node.ExtendedNode.GPSCoordinateOffset = nextOffset
 			node.Latitude = m.GPXCoords[nextOffset].Latitude
 			node.Longitude = m.GPXCoords[nextOffset].Longitude

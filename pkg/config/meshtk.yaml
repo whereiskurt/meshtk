@@ -59,7 +59,7 @@ Fleet:
     BehaviourSecs: 120
     Seed: "4971a6ef-0d32-4eb8-ba80-9e759e748e45"
     ShortNameTmpl: "R{{.fleetId}}{{.nodeId}}"
-    LongNameTmpl: "{{.fleetId}}-{{.nodeId}}-{{.shortseed}}"
+    LongNameTmpl: "{{.fleetId}}-{{.fleetNum}}{{.nodeId}}-{{.shortseed}}"
     NodesPerRampInterval: [4]
     RampUpSecs: 300
     RampSteadySecs: 12000

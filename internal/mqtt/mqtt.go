@@ -92,8 +92,6 @@ func NewMqttClient(c *config.Config, nodes *NodeDB) *MqttClient {
 
 	opts.SetOrderMatters(false)
 
-	c.Log.Tracef("mqtt client options id: %+v", opts)
-
 	mqc.client = mqtt.NewClient(opts)
 
 	// Populate the loggers to trickle up mqtt logs

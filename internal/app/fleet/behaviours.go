@@ -32,7 +32,7 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 	}
 
 	if tagMap["gitter"] {
-		// f.gitter(idx, node, tic)
+		f.gitter(idx, node, tic)
 	}
 
 	if tic == 0 {
@@ -42,6 +42,22 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 			f.MqttClient[idx].PublishMessageEncrypted(node.From, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte("Hello world!"))
 		}
 	}
+}
+
+func (f *FleetCmd) gitter(idx int, node *mqtt.Node, tic int) {
+	fleet := f.Config.Fleet[idx]
+
+	h := fnv.New64a()
+	h.Write([]byte(f.Config.Fleet[idx].Seed))
+	seedValue := int64(h.Sum64())
+	r := rand.New(rand.NewSource(int64(seedValue)))
+
+	f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] gittering...\n", idx, node.From)))
+
+	scale := math.Cos(float64(node.Latitude) * math.Pi / 180.0)
+	node.Latitude += r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
+	node.Longitude += int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)
+	f.position(idx, node)
 }
 
 func (f *FleetCmd) nodeinfo(idx int, node *mqtt.Node) {
@@ -73,11 +89,12 @@ func (f *FleetCmd) position(idx int, node *mqtt.Node) {
 func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, tic int) {
 
 	fleet := f.Config.Fleet[idx]
+
 	h := fnv.New64a()
 	h.Write([]byte(fleet.Seed))
 	seedValue := int64(h.Sum64())
-
 	r := rand.New(rand.NewSource(int64(seedValue)))
+
 	for _, m := range fleet.Movement {
 		if len(m.GPXCoords) > 0 {
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] moving...\n", idx, node.From)))

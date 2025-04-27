@@ -20,9 +20,11 @@ func (f *FleetCmd) simulate(idx int) {
 	// Load GPX coordinates for any nodes that might need access to them
 	for m := range fleet.Movement {
 		if fleet.Movement[m].Type == "gpx" && fleet.Movement[m].GPXFile != "" {
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Loading GPX Fleet[%d] with %d nodes...\n", idx, totalNodes)))
 			gpxFile := fleet.Movement[m].GPXFile
 			coordinates := f.GPXCoords(gpxFile)
 			fleet.Movement[m].GPXCoords = coordinates
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Done! Loaded GPX Fleet[%d] with %d nodes.\n", idx, len(coordinates))))
 		}
 	}
 

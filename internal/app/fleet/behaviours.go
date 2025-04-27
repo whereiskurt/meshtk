@@ -24,7 +24,7 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 
 	// Make moves, and then tell folks.
 	if tagMap["movement"] {
-		f.gpxMovement(idx, node, tic, tagMap["gitter"])
+		f.gpxMovement(idx, node, tagMap["gitter"])
 	}
 	if tagMap["position"] {
 		f.position(idx, node, tagMap["gitter"])
@@ -77,7 +77,7 @@ func (f *FleetCmd) position(idx int, node *mqtt.Node, gitter bool) {
 	f.MqttClient[idx].PublishPosition(node.From, ALL, whoamiTopic, lat, lng, alt, prec)
 }
 
-func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, tic int, gitter bool) {
+func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, gitter bool) {
 
 	fleet := f.Config.Fleet[idx]
 

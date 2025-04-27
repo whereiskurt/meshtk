@@ -82,21 +82,15 @@ func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, tic int) {
 		if len(m.GPXCoords) > 0 {
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] moving...\n", idx, node.From)))
 
-			direction := 1 // Default direction is forward
-			if strings.Contains(m.Travel, "backward") {
-				direction = -1
-			}
-
-			//TOOO: Come back and re-think this. Do we need tic?
-			nextOffset := (1*direction + node.ExtendedNode.GPSCoordinateOffset) % len(m.GPXCoords)
-			if nextOffset < 0 {
-				nextOffset += len(m.GPXCoords) // Handle negative wrap-around
-			}
+			node.ExtendedNode.GPSCoordinateOffset++
+			nextOffset := node.ExtendedNode.GPSCoordinateOffset
 			if strings.Contains(m.Travel, "point-to-point") {
-				nextOffset = ZigzagIndex(tic+node.ExtendedNode.GPSCoordinateOffset, len(m.GPXCoords))
+				nextOffset = ZigzagIndex(nextOffset, len(m.GPXCoords))
+			}
+			if strings.Contains(m.Travel, "backward") {
+				nextOffset = len(m.GPXCoords) - nextOffset
 			}
 
-			node.ExtendedNode.GPSCoordinateOffset = nextOffset
 			node.Latitude = m.GPXCoords[nextOffset].Latitude
 			node.Longitude = m.GPXCoords[nextOffset].Longitude
 

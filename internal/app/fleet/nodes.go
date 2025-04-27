@@ -67,17 +67,21 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 
 		if m.Type == "gpx" {
 			coordinates := fleet.Movement[i].GPXCoords
+
 			if baseLatitude == 0 {
 				spaceOut := len(coordinates) / totalNodes // If there are 30 points and 10 nodes, each node will space out 3 points
+				nextOffset := (num + (num * spaceOut)) % len(coordinates)
+				if strings.Contains(m.Travel, "backward") {
+					nextOffset = (len(coordinates) - nextOffset) % len(coordinates)
+				}
+				n.ExtendedNode.GPSCoordinateOffset = nextOffset
 
-				baseLatitude = int32(coordinates[(num+(num*spaceOut))%len(coordinates)].Latitude)
-				baseLongitude = int32(coordinates[(num+(num*spaceOut))%len(coordinates)].Longitude)
+				baseLatitude = int32(coordinates[nextOffset].Latitude)
+				baseLongitude = int32(coordinates[nextOffset].Longitude)
 
 				scale := math.Cos(float64(baseLatitude) * math.Pi / 180.0)
 				latVariation = r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
 				longVariation = int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)
-
-				n.ExtendedNode.GPSCoordinateOffset = (num * spaceOut) % len(coordinates)
 			}
 		}
 	}

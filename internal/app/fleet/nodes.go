@@ -146,7 +146,7 @@ func (*FleetCmd) mkNodeName(fleet config.Fleet, templateStr string, templateName
 		"idx":       fmt.Sprintf("%02d", idx),
 		"fleetNum":  fmt.Sprintf("%02d", idx),
 		"num":       fmt.Sprintf("%02d", num),
-		"nodeId":    fmt.Sprintf("%03d", num%100),
+		"nodeId":    fmt.Sprintf("%02d", num%100),
 		"shortseed": scrambledSeed[:5],
 	}
 

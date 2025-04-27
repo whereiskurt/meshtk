@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+
 	"syscall"
 	"time"
 
@@ -45,6 +46,7 @@ func NewMqttClient(c *config.Config, nodes *NodeDB) *MqttClient {
 	}
 
 	var err error
+
 	mqc.pkiPublicKey, err = hex.DecodeString(strings.TrimPrefix(c.NodeInfo.PKI.PublicKey, "0x"))
 	if err != nil {
 		c.Log.Errorf("failed to decode public key: %v", err)
@@ -60,9 +62,8 @@ func NewMqttClient(c *config.Config, nodes *NodeDB) *MqttClient {
 		log.Fatal(err)
 	}
 
-	// Ensure the key is 16 bytes (AES-128), 24 bytes (AES-192), or 32 bytes (AES-256)
+	// Expand the single byte key to 16 bytes for AES-128
 	if len(keyBytes) == 1 && base64Key == "AQ==" {
-		// Expand the single byte key to 16 bytes for AES-128
 		keyBytes = append(keyBytes, make([]byte, 15)...)
 	}
 
@@ -76,24 +77,28 @@ func NewMqttClient(c *config.Config, nodes *NodeDB) *MqttClient {
 	opts.ResumeSubs = true
 
 	opts.OnConnectionLost = func(_ mqtt.Client, err error) {
-		c.Log.Warnf("mqtt connection lost while listening %v", err)
+		// c.Log.Warnf("mqtt connection lost while listening %v", err)
 		mqc.ReconnectAndListen()
 	}
+
+	randomHex := make([]byte, 16) // 8 bytes = 16 hex digits
+	rand.Read(randomHex)
+	rndHex := hex.EncodeToString(randomHex)
 
 	opts.AddBroker(c.Mqtt.BrokerUri)
 	opts.SetUsername(c.Mqtt.Username)
 	opts.SetPassword(c.Mqtt.Password)
-	opts.SetClientID(c.Mqtt.ClientId)
-	opts.SetOrderMatters(false)
+	opts.SetClientID(fmt.Sprintf("%s-%s", c.Mqtt.ClientId, rndHex))
 
-	c.Log.Tracef("mqtt client options id: %+v", opts)
+	opts.SetOrderMatters(false)
 
 	mqc.client = mqtt.NewClient(opts)
 
 	// Populate the loggers to trickle up mqtt logs
-	mqtt.ERROR = c.Log
-	mqtt.CRITICAL = c.Log
-	mqtt.WARN = c.Log
+	// mqtt.ERROR = c.Log
+	// mqtt.CRITICAL = c.Log
+	// mqtt.WARN = c.Log
+	// mqtt.DEBUG = c.Log
 
 	return &mqc
 }

@@ -1,0 +1,16 @@
+{{ define "FleetHelp" }}
+{{- template "GlobalHeader" . }}
+
+Usage:
+  meshtk fleet [ACTION ...] [options]
+
+Actions:
+  simulate - simulate a fleet of virtual nodes
+  
+Examples:
+{{ template "FleetExamples" . }}
+{{ end }}
+
+{{ define "FleetExamples" }}
+  $ meshtk fleet simulate --verbose=trace
+{{ end }}

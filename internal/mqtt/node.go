@@ -33,15 +33,24 @@ type NeighborInfo struct {
 	Updated int64   `json:"updated"`
 }
 
+type ExtendedNode struct {
+	GPSCoordinateOffset int `json:"GPSCoordinateOffset" default:"0"`
+}
+
 type Node struct {
 	From    uint32 `json:"from"`
 	FromStr string `json:"fromStr"`
+
+	// Added to support extended node info
+	ExtendedNode ExtendedNode `json:"Extended,omitempty"`
+
 	// User
 	LongName  string `json:"longName"`
 	ShortName string `json:"shortName"`
 	HwModel   string `json:"hwModel"`
 	Role      string `json:"role"`
 	PubKey    string `json:"pubkey,omitempty"`
+	PrivKey   string `json:"privkey,omitempty"`
 	// MapReport
 	FwVersion        string `json:"fwVersion,omitempty"`
 	Region           string `json:"region,omitempty"`
@@ -54,6 +63,7 @@ type Node struct {
 	Longitude int32  `json:"longitude"`
 	Altitude  int32  `json:"altitude,omitempty"`
 	Precision uint32 `json:"precision,omitempty"`
+
 	// DeviceMetrics
 	BatteryLevel      uint32  `json:"batteryLevel,omitempty"`
 	Voltage           float32 `json:"voltage,omitempty"`
@@ -232,7 +242,7 @@ func (node *Node) UpdateSeenBy(topic string) {
 	node.SeenBy[topic] = time.Now().Unix()
 }
 
-func (node *Node) UpdateUser(from uint32, longName, shortName, hwModel, role string, pubkey []byte) {
+func (node *Node) UpdateUser(from uint32, longName, shortName, hwModel, role string, pubkey []byte, privkey []byte) {
 	node.From = from
 	node.FromStr = fmt.Sprintf("!%08x", from)
 	node.LongName = longName
@@ -241,6 +251,9 @@ func (node *Node) UpdateUser(from uint32, longName, shortName, hwModel, role str
 	node.Role = role
 	if len(pubkey) > 0 {
 		node.PubKey = fmt.Sprintf("0x%x", pubkey)
+	}
+	if len(privkey) > 0 {
+		node.PrivKey = fmt.Sprintf("0x%x", privkey)
 	}
 }
 

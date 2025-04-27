@@ -20,12 +20,15 @@ var (
 	NodeInfoTmpl string
 	//go:embed protobufserver.tmpl
 	ProtoBufServerTmpl string
+	//go:embed fleet.tmpl
+	FleetTmpl string
 )
 
 var TEMPLATES = strings.Join([]string{
 	GlobalTmpl,
 	NodeInfoTmpl,
 	ProtoBufServerTmpl,
+	FleetTmpl,
 }, "\n")
 
 var Templates = template.Must(template.New("render").Parse(TEMPLATES))
@@ -42,6 +45,9 @@ func ProtoBufServerHelp(c *config.Config) string {
 	return Render("ProtoBufServerHelp", c)
 }
 
+func FleetHelp(c *config.Config) string {
+	return Render("FleetHelp", c)
+}
 func Render(name string, c *config.Config) string {
 	name = RegexSafeName.ReplaceAllString(name, "")
 

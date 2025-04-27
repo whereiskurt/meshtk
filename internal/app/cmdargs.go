@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/whereiskurt/meshtk/internal/app/fleet"
 	"github.com/whereiskurt/meshtk/internal/app/nodeinfo"
 	"github.com/whereiskurt/meshtk/internal/app/protoserver"
 	"github.com/whereiskurt/meshtk/pkg/config"
@@ -56,6 +57,12 @@ func (a *App) RegisterOsArgs() {
 	grpcCmd := cmd.NewCmd([]string{"protobuf", "pb"}, g.Help)
 	cmd.NewSubCmd(grpcCmd, "help", g.Help)
 	cmd.NewSubCmd(grpcCmd, "inspector", g.Inspector)
+
+	f := fleet.NewFleet(a.Config)
+	fleetCmd := cmd.NewCmd([]string{"fleet", "f"}, f.Help)
+	cmd.NewSubCmd(fleetCmd, "help", f.Help)
+	cmd.NewSubCmd(fleetCmd, "simulate", f.Simulate)
+
 }
 
 func (c *CmdBuilder) NewCmd(s []string, run func(*cobra.Command, []string)) *cobra.Command {

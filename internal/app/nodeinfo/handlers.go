@@ -119,7 +119,7 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 		if n.Nodes[from] == nil {
 			n.Nodes[from] = mqtt.NewNode(topic)
 		}
-		n.Nodes[from].UpdateUser(from, longName, shortName, hwModel, role, pubkey)
+		n.Nodes[from].UpdateUser(from, longName, shortName, hwModel, role, pubkey, nil)
 		n.AddMessageLedger(to, from, topic, portNum, payload)
 		n.NodesMutex.Unlock()
 	case meshtastic.PortNum_TELEMETRY_APP:
@@ -249,7 +249,7 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 		if n.Nodes[from] == nil {
 			n.Nodes[from] = mqtt.NewNode(topic)
 		}
-		n.Nodes[from].UpdateUser(from, longName, shortName, hwModel, role, nil)
+		n.Nodes[from].UpdateUser(from, longName, shortName, hwModel, role, nil, nil)
 		n.Nodes[from].UpdateMapReport(fwVersion, region, modemPreset, hasDefaultCh, onlineLocalNodes)
 		n.Nodes[from].UpdatePosition(latitude, longitude, altitude, precision)
 		n.Nodes[from].UpdateSeenBy(topic)

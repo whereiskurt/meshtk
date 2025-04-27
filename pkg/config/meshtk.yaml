@@ -43,7 +43,7 @@ NodeInfo:
   ChannelSlot: "primary"
   Topic: "msh/US/2/e/LongFast"
   MapTopic: "msh/US/2/map/"
-  
+
   SubscribedTopics:
     - "#"
     - "msh/+/2/#"
@@ -52,8 +52,49 @@ NodeInfo:
 ProtoBufServer:
   InspectorAddress: "localhost:50051"
 
+Fleet:
+  - Id: "small_fleet"
+    Description: "5mins: 50 nodes in first minute, 50 nodes in second minute, moving at potential 1m/minute"
+    BehaviourTag: ["nodeinfo","position", "sayhello", "gitter"]
+    BehaviourSecs: 60
+    Seed: "4BE04C12-1C7A-421A-8246-CFFE0E3625B4"
+    NodesPerRampInterval: [5,5,5]
+    RampUpSecs: 15
+    RampSteadySecs: 15
+    RampDownSecs: 15
+    NodesPerSteadyInterval: [3,4,4,4]
+    Distribution: "uniform"
+    BroadcastGitterSec: 300
+    LatLongAltGitter: 10
+    TextMessageGitterSec: 300
+    NodeDbPath: "./nodes.smallfleet.json"
+    Movement:
+      - Type: "start"
+        Latitude: 361515048
+        Longitude: -1151535588
+        Altitude: 420
+        Precision: 32
+  - Id: "route_follower"
+    Description: "1 node sticking to the route."
+    BehaviourTag: ["nodeinfo", "position", "movement"]
+    BehaviourSecs: 60
+    Seed: "4BE04C12-1C7A-421A-8246-CFFE0E3625B4"
+    NodesPerRampInterval: [30]
+    RampUpSecs: 1
+    RampSteadySecs: 2629746
+    RampDownSecs: 1
+    NodesPerSteadyInterval: [30]
+    Distribution: "uniform"
+    BroadcastGitterSec: 300
+    LatLongAltGitter: 10
+    TextMessageGitterSec: 300
+    NodeDbPath: "./nodes.routefollower.json"
+    Movement:
+      - Type: "gpx"
+        GPXFile: "./route1.gpx"
+ 
 TextMessage:
   ChannelSlot: "primary"
   Topic: "msh/US/2/e/LongFast"
-  
+
 WasSuccess: false

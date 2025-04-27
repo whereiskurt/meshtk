@@ -36,12 +36,12 @@ type Config struct {
 		Hash    string
 	} `json:"release"`
 
-	Mqtt        Mqtt `json:"MQTT"`
-	Meshtastic  Meshtastic
-	NodeInfo    NodeInfo
-	TextMessage TextMessage
-
-	ProtoBufServer ProtoBufServer `json:"ProtoBufServer"`
+	Mqtt           Mqtt `json:"MQTT"`
+	Meshtastic     Meshtastic
+	NodeInfo       NodeInfo
+	TextMessage    TextMessage
+	Fleet          []Fleet
+	ProtoBufServer ProtoBufServer
 
 	NodeDbPath string `default:"./meshtk.db"`
 
@@ -50,6 +50,45 @@ type Config struct {
 
 type ProtoBufServer struct {
 	InspectorAddress string `default:"localhost:50051"`
+}
+
+type Fleet struct {
+	Id                     string     `json:"Id"`
+	Description            string     `json:"Description"`
+	Seed                   string     `json:"Seed"`
+	NodesPerRampInterval   []int      `json:"NodesPerRampInterval"`
+	NodesPerSteadyInterval []int      `json:"NodesPerSteadyInterval"`
+	Distribution           string     `json:"Distribution" default:"uniform"`
+	BroadcastGitterSec     int        `json:"BroadcastGitterSec"`
+	LatLongAltGitter       int        `json:"LatLongAltGitter"`
+	TextMessageGitterSec   int        `json:"TextMessageGitterSec"`
+	NodeDbPath             string     `default:"./fleet.default.db"`
+	BehaviourTag           []string   `default:"[ 'small', 'friendly' ]"`
+	BehaviourSecs          int        `default:"60"`
+	RampUpSecs             int        `default:"120"`
+	RampSteadySecs         int        `default:"60"`
+	RampDownSecs           int        `default:"120"`
+	Movement               []Movement `json:"Movement"`
+	ShortNameTmpl          string     `default:"M{fleetId}{nodeId}"`
+	LongNameTmpl           string     `default:"mtk-{fleetId}{nodeId}-{shortseed}"`
+}
+
+type Coordinate struct {
+	Latitude  int32 `default:"361515048"`
+	Longitude int32 `default:"-1151535588"`
+	Altitude  int32 `default:"420"`
+	Precision int   `default:"32"`
+}
+
+type Movement struct {
+	Type      string       `default:"start"`
+	Latitude  int32        `default:"361515048"`
+	Longitude int32        `default:"-1151535588"`
+	Altitude  int32        `default:"420"`
+	Precision int32        `default:"32"`
+	GPXFile   string       `default:"./gpx/route.gpx"`
+	GPXCoords []Coordinate `default:"[]"`
+	Travel    string       `default:"point-to-point"`
 }
 
 type Mqtt struct {

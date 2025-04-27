@@ -1,12 +1,14 @@
 package fleet
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"fmt"
 	"hash/fnv"
 	"math"
 	"math/rand"
 	"strings"
+	"text/template"
 
 	"github.com/whereiskurt/meshtk/internal/mqtt"
 	"github.com/whereiskurt/meshtk/pkg/config"
@@ -18,6 +20,8 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 	n = mqtt.NewNode(f.Config.NodeInfo.Topic)
 
 	// Create a hash from the UUID string seed to get a deterministic int64 seed
+
+	//TODO: Put this inside of the fleet for reuse!
 	h := fnv.New64a()
 	h.Write([]byte(fleet.Seed))              // Use the UUID string to generate a hash
 	h.Write([]byte(fmt.Sprintf("-%d", num))) // Add node index to make each node's seed unique
@@ -35,8 +39,9 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 		shortSeed = shortSeed[len(shortSeed)-5:]
 	}
 	scrambledSeed := fmt.Sprintf("%x", fnv.New32a().Sum([]byte(shortSeed)))
-	longName := fmt.Sprintf("mtk%02d%02d-%s", idx, num%100, scrambledSeed[:5])
-	shortName := fmt.Sprintf("M%02d%02d", idx, num%100)
+
+	longName := f.mkNodeName(fleet, fleet.LongNameTmpl, "longName", idx, num, scrambledSeed)
+	shortName := f.mkNodeName(fleet, fleet.ShortNameTmpl, "shortName", idx, num, scrambledSeed)
 
 	hwModels := []string{"HELTEC_V3", "T_DECK", "TRACKER_T1000_E", "SEEED_XIAO_S3", "RAK2560"}
 	hwModel := hwModels[r.Intn(len(hwModels))]
@@ -61,13 +66,17 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 		}
 
 		if m.Type == "gpx" {
-			//TODO: Move this out! Doesn't need to happen every makenode!
-			coordinates := f.GPXCoords(m.GPXFile)
-			fleet.Movement[i].GPXCoords = coordinates
+			coordinates := fleet.Movement[i].GPXCoords
 			if baseLatitude == 0 {
 				spaceOut := len(coordinates) / totalNodes // If there are 30 points and 10 nodes, each node will space out 3 points
-				baseLatitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Latitude)
-				baseLongitude = int32(coordinates[(num*spaceOut)%len(coordinates)].Longitude)
+
+				baseLatitude = int32(coordinates[(num+(num*spaceOut))%len(coordinates)].Latitude)
+				baseLongitude = int32(coordinates[(num+(num*spaceOut))%len(coordinates)].Longitude)
+
+				scale := math.Cos(float64(baseLatitude) * math.Pi / 180.0)
+				latVariation = r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
+				longVariation = int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)
+
 				n.ExtendedNode.GPSCoordinateOffset = (num * spaceOut) % len(coordinates)
 			}
 		}
@@ -126,12 +135,34 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 
 	return n
 }
+
+func (*FleetCmd) mkNodeName(fleet config.Fleet, templateStr string, templateName string, idx int, num int, scrambledSeed string) string {
+	tmplData := map[string]interface{}{
+		"idx":       idx,
+		"fleetId":   idx,
+		"num":       num,
+		"nodeId":    num % 100,
+		"shortseed": scrambledSeed[:5],
+	}
+
+	tmpl, err := template.New(templateName).Parse(templateStr)
+	if err != nil {
+		panic(fmt.Sprintf("failed to parse %s: %v", templateName, err))
+	}
+
+	var tmplBuffer bytes.Buffer
+	if err := tmpl.Execute(&tmplBuffer, tmplData); err != nil {
+		panic(fmt.Sprintf("failed to execute %s: %v", templateName, err))
+	}
+	return tmplBuffer.String()
+}
+
 func (f *FleetCmd) makeFleet(idx int, nodeIDs []uint32, nodeIndices []int) {
 	totalNodes := len(nodeIDs)
 	fleet := f.Config.Fleet[idx]
 
 	f.NodesMutex[idx].Lock()
-	for i := 0; i < totalNodes; i++ {
+	for i := range totalNodes {
 		node := f.makeNode(i, totalNodes, fleet, idx)
 		f.Nodes[idx][node.From] = node
 		nodeIDs[nodeIndices[i]] = node.From

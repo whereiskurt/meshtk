@@ -55,6 +55,7 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 	for i := range f.Config.Fleet {
 		f.initNodeDb(i)
 		f.MqttClient = append(f.MqttClient, internal.NewMqttClient(f.Config, &f.Nodes[i]))
+
 	}
 
 	terminate := make(chan os.Signal, 1)

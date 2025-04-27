@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+
 	"syscall"
 	"time"
 
@@ -80,10 +81,15 @@ func NewMqttClient(c *config.Config, nodes *NodeDB) *MqttClient {
 		mqc.ReconnectAndListen()
 	}
 
+	randomHex := make([]byte, 16) // 8 bytes = 16 hex digits
+	rand.Read(randomHex)
+	rndHex := hex.EncodeToString(randomHex)
+
 	opts.AddBroker(c.Mqtt.BrokerUri)
 	opts.SetUsername(c.Mqtt.Username)
 	opts.SetPassword(c.Mqtt.Password)
-	opts.SetClientID(c.Mqtt.ClientId)
+	opts.SetClientID(fmt.Sprintf("%s-%s", c.Mqtt.ClientId, rndHex))
+
 	opts.SetOrderMatters(false)
 
 	c.Log.Tracef("mqtt client options id: %+v", opts)

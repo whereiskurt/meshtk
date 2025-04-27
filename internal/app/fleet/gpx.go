@@ -45,7 +45,6 @@ func (f *FleetCmd) GPXCoords(gpxFilePath string) []config.Coordinate {
 	if err != nil {
 		// File doesn't exist, try to use embedded file with the same base name
 		baseName := filepath.Base(gpxFilePath)
-		f.Config.Log.Debugf("File %s not found on filesystem, looking for embedded file %s", gpxFilePath, baseName)
 
 		// Initialize the embedded GPX map once
 		embeddedGPXMapOnce.Do(func() {

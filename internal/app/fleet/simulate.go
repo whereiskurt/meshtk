@@ -17,6 +17,15 @@ func (f *FleetCmd) simulate(idx int) {
 	randIndices := rand.Perm(totalNodes)
 	nodeIDs := make([]uint32, totalNodes)
 
+	// Load GPX coordinates for any nodes that might need access to them
+	for m := range fleet.Movement {
+		if fleet.Movement[m].Type == "gpx" && fleet.Movement[m].GPXFile != "" {
+			gpxFile := fleet.Movement[m].GPXFile
+			coordinates := f.GPXCoords(gpxFile)
+			fleet.Movement[m].GPXCoords = coordinates
+		}
+	}
+
 	// Initialize or reuse fleet nodes
 	if len(f.Nodes[idx]) < totalNodes {
 		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Creating Fleet[%d] with %d nodes...\n", idx, totalNodes)))

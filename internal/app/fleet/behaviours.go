@@ -2,6 +2,10 @@ package fleet
 
 import (
 	"fmt"
+	"hash/fnv"
+	"math"
+	"math/rand"
+	"strings"
 
 	"github.com/whereiskurt/meshtk/internal/mqtt"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
@@ -67,17 +71,39 @@ func (f *FleetCmd) position(idx int, node *mqtt.Node) {
 }
 
 func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, tic int) {
-	for _, m := range f.Config.Fleet[idx].Movement {
+
+	fleet := f.Config.Fleet[idx]
+	h := fnv.New64a()
+	h.Write([]byte(fleet.Seed))
+	seedValue := int64(h.Sum64())
+
+	r := rand.New(rand.NewSource(int64(seedValue)))
+	for _, m := range fleet.Movement {
 		if len(m.GPXCoords) > 0 {
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] moving...\n", idx, node.From)))
-			nextOffset := (tic + node.ExtendedNode.GPSCoordinateOffset) % len(m.GPXCoords)
-			if m.Travel == "point-to-point" {
+
+			direction := 1 // Default direction is forward
+			if strings.Contains(m.Travel, "backward") {
+				direction = -1
+			}
+
+			//TOOO: Come back and re-think this. Do we need tic?
+			nextOffset := (1*direction + node.ExtendedNode.GPSCoordinateOffset) % len(m.GPXCoords)
+			if nextOffset < 0 {
+				nextOffset += len(m.GPXCoords) // Handle negative wrap-around
+			}
+			if strings.Contains(m.Travel, "point-to-point") {
 				nextOffset = ZigzagIndex(tic+node.ExtendedNode.GPSCoordinateOffset, len(m.GPXCoords))
 			}
 
 			node.ExtendedNode.GPSCoordinateOffset = nextOffset
 			node.Latitude = m.GPXCoords[nextOffset].Latitude
 			node.Longitude = m.GPXCoords[nextOffset].Longitude
+
+			scale := math.Cos(float64(node.Latitude) * math.Pi / 180.0)
+			node.Latitude += r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
+			node.Longitude += int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)
+
 			node.Altitude = m.GPXCoords[nextOffset].Altitude
 			node.Precision = uint32(m.GPXCoords[nextOffset].Precision)
 			f.position(idx, node)

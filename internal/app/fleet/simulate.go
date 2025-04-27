@@ -64,12 +64,10 @@ func (f *FleetCmd) rampUp(idx int, nodeIDs []uint32, randIndices []int) {
 				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Ramp[%d][%d]: Adding %d nodes in %d ms (node every %d ms)\n", idx, r, newNodes, rampIntervalMs, nodeEveryMs)))
 				for i := range newNodes {
 					nodeIndex := totalNodes + i
-					// if nodeIndex < len(nodeIDs) {
 					node := f.Nodes[idx][nodeIDs[randIndices[nodeIndex%len(randIndices)]]]
 					f.nodeinfo(idx, node)
-					f.position(idx, node)
+					f.position(idx, node, false)
 					time.Sleep(time.Duration(nodeEveryMs) * time.Millisecond)
-					// }
 				}
 				totalNodes += newNodes
 			}

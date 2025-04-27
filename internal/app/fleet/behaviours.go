@@ -24,15 +24,10 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 
 	// Make moves, and then tell folks.
 	if tagMap["movement"] {
-		f.gpxMovement(idx, node, tic)
+		f.gpxMovement(idx, node, tic, tagMap["gitter"])
 	}
-
 	if tagMap["position"] {
-		f.position(idx, node)
-	}
-
-	if tagMap["gitter"] {
-		f.gitter(idx, node, tic)
+		f.position(idx, node, tagMap["gitter"])
 	}
 
 	if tic == 0 {
@@ -42,22 +37,6 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 			f.MqttClient[idx].PublishMessageEncrypted(node.From, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte("Hello world!"))
 		}
 	}
-}
-
-func (f *FleetCmd) gitter(idx int, node *mqtt.Node, tic int) {
-	fleet := f.Config.Fleet[idx]
-
-	h := fnv.New64a()
-	h.Write([]byte(f.Config.Fleet[idx].Seed))
-	seedValue := int64(h.Sum64())
-	r := rand.New(rand.NewSource(int64(seedValue)))
-
-	f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] gittering...\n", idx, node.From)))
-
-	scale := math.Cos(float64(node.Latitude) * math.Pi / 180.0)
-	node.Latitude += r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
-	node.Longitude += int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)
-	f.position(idx, node)
 }
 
 func (f *FleetCmd) nodeinfo(idx int, node *mqtt.Node) {
@@ -74,7 +53,14 @@ func (f *FleetCmd) nodeinfo(idx int, node *mqtt.Node) {
 
 }
 
-func (f *FleetCmd) position(idx int, node *mqtt.Node) {
+func (f *FleetCmd) position(idx int, node *mqtt.Node, gitter bool) {
+	fleet := f.Config.Fleet[idx]
+
+	h := fnv.New64a()
+	h.Write([]byte(fleet.Seed))
+	seedValue := int64(h.Sum64())
+	r := rand.New(rand.NewSource(int64(seedValue)))
+
 	const ALL = 0xffffffff
 	whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
 
@@ -83,10 +69,15 @@ func (f *FleetCmd) position(idx int, node *mqtt.Node) {
 	var alt int32 = int32(node.Altitude)
 	var prec uint32 = uint32(32)
 
+	if gitter {
+		scale := math.Cos(float64(node.Latitude) * math.Pi / 180.0)
+		lat += r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
+		lng += int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)
+	}
 	f.MqttClient[idx].PublishPosition(node.From, ALL, whoamiTopic, lat, lng, alt, prec)
 }
 
-func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, tic int) {
+func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, tic int, gitter bool) {
 
 	fleet := f.Config.Fleet[idx]
 
@@ -105,19 +96,21 @@ func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, tic int) {
 				nextOffset = ZigzagIndex(nextOffset, len(m.GPXCoords))
 			}
 			if strings.Contains(m.Travel, "backward") {
-				nextOffset = len(m.GPXCoords) - nextOffset
+				nextOffset = len(m.GPXCoords) - nextOffset - 1
 			}
 
 			node.Latitude = m.GPXCoords[nextOffset].Latitude
 			node.Longitude = m.GPXCoords[nextOffset].Longitude
 
-			scale := math.Cos(float64(node.Latitude) * math.Pi / 180.0)
-			node.Latitude += r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
-			node.Longitude += int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)
+			if gitter {
+				scale := math.Cos(float64(node.Latitude) * math.Pi / 180.0)
+				node.Latitude += r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
+				node.Longitude += int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)
+			}
 
 			node.Altitude = m.GPXCoords[nextOffset].Altitude
 			node.Precision = uint32(m.GPXCoords[nextOffset].Precision)
-			f.position(idx, node)
+			f.position(idx, node, gitter)
 		}
 	}
 }

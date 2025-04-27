@@ -70,7 +70,7 @@ type Fleet struct {
 	RampDownSecs           int        `default:"120"`
 	Movement               []Movement `json:"Movement"`
 	ShortNameTmpl          string     `default:"M{fleetId}{nodeId}"`
-	LongNameTmpl           string     `default:"mtk-{fleetId}{nodeId}-{shortseed}"`
+	LongNameTmpl           string     `default:"mtk-{{.fleetId}}{{.nodeId}}-{{shortseed}}"`
 }
 
 type Coordinate struct {

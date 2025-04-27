@@ -131,7 +131,7 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 
 	// Add some neighbor info
 	neighborCount := r.Intn(5)
-	for i := 0; i < neighborCount; i++ {
+	for range neighborCount {
 		neighborID := r.Uint32()
 		snr := float32(r.Float32()*20.0 - 10.0) // -10 to +10 SNR 🤷‍♂️
 		n.UpdateNeighborInfo(neighborID, snr)
@@ -142,10 +142,11 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 
 func (*FleetCmd) mkNodeName(fleet config.Fleet, templateStr string, templateName string, idx int, num int, scrambledSeed string) string {
 	tmplData := map[string]interface{}{
-		"idx":       idx,
-		"fleetId":   idx,
-		"num":       num,
-		"nodeId":    num % 100,
+		"fleetId":   fleet.Id,
+		"idx":       fmt.Sprintf("%02d", idx),
+		"fleetNum":  fmt.Sprintf("%02d", idx),
+		"num":       fmt.Sprintf("%02d", num),
+		"nodeId":    fmt.Sprintf("%03d", num%100),
 		"shortseed": scrambledSeed[:5],
 	}
 

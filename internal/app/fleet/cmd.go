@@ -70,8 +70,12 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 			fleetdone := make(chan bool)
 			go func(idx int) {
 				// Kick of the fleet simulation!
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: MQTT connect ...\n", idx)))
 				f.MqttClient[idx].Connect()
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: MQTT connected.\n", idx)))
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Starting simulation ...\n", idx)))
 				f.simulate(idx)
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Simulation completed.\n", idx)))
 				f.MqttClient[idx].Disconnect()
 				fleetdone <- true
 				alldone <- idx
@@ -83,9 +87,9 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 			backstop := time.After(time.Duration(t) * time.Second)
 			select {
 			case <-fleetdone:
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Simulation completed successfully.\n", idx)))
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Done! Simulation completed successfully.\n", idx)))
 			case <-backstop:
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Backstop timeout expired after %d seconds.\n", idx, t)))
+				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Backstopped! Simulation timeout expired after %d seconds.\n", idx, t)))
 				alldone <- idx
 			}
 		}(i)

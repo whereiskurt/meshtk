@@ -4,7 +4,7 @@ Mqtt:
   BrokerUri: "tcp://mqtt.meshtastic.org:1883"
   Username: "meshdev"
   Password: "large4cats"
-  ClientId: "meshtk-abcd1234-432453"
+  ClientId: "meshtk"
 
 Meshtastic:
   Channels:
@@ -53,23 +53,23 @@ ProtoBufServer:
   InspectorAddress: "localhost:50051"
 
 Fleet:
-  - Id: "rebar_fleet"
+  - Id: "rebar-fleet"
     Description: "Cluster at rebar"
     BehaviourTag: ["nodeinfo","position", "sayhello", "gitter"]
     BehaviourSecs: 120
     Seed: "4971a6ef-0d32-4eb8-ba80-9e759e748e45"
     ShortNameTmpl: "R{{.fleetId}}{{.nodeId}}"
-    LongNameTmpl: "rebar-{{.fleetId}}{{.nodeId}}-{{.shortseed}}"
+    LongNameTmpl: "{{.fleetId}}-{{.nodeId}}-{{.shortseed}}"
     NodesPerRampInterval: [4]
     RampUpSecs: 300
-    RampSteadySecs: 1200
+    RampSteadySecs: 12000
     RampDownSecs: 15
     NodesPerSteadyInterval: [1,1,1,1]
     Distribution: "uniform"
     BroadcastGitterSec: 300
     LatLongAltGitter: 5000
     TextMessageGitterSec: 300
-    NodeDbPath: "./nodes.rebar.json"
+    NodeDbPath: "./nodes.rebardefault.json"
     Movement:
       - Type: "start"
         Latitude: 361565688

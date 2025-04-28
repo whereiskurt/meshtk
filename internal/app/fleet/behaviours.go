@@ -91,18 +91,24 @@ func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, gitter bool) {
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] moving...\n", idx, node.From)))
 
 			node.ExtendedNode.GPSCoordinateOffset++
+
+			//Bounding to index
 			nextOffset := node.ExtendedNode.GPSCoordinateOffset
 			if strings.Contains(m.Travel, "point-to-point") {
 				nextOffset = ZigzagIndex(nextOffset, len(m.GPXCoords))
+			} else if strings.Contains(m.Travel, "loop") {
+				nextOffset = nextOffset % len(m.GPXCoords)
 			}
+
+			//Reverse offset direction
 			if strings.Contains(m.Travel, "backward") {
 				nextOffset = len(m.GPXCoords) - nextOffset - 1
 			}
-
 			node.Latitude = m.GPXCoords[nextOffset].Latitude
 			node.Longitude = m.GPXCoords[nextOffset].Longitude
 
 			if gitter {
+				// Spread the lat/long/alt by +/- X to allow multiple folks 'at the same place' to be seen on the map
 				scale := math.Cos(float64(node.Latitude) * math.Pi / 180.0)
 				node.Latitude += r.Int31n(int32(fleet.LatLongAltGitter)*2) - int32(fleet.LatLongAltGitter) // +/- X
 				node.Longitude += int32(float64(r.Int31n(int32(fleet.LatLongAltGitter)*2)-int32(fleet.LatLongAltGitter)) * scale)

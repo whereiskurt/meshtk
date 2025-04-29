@@ -95,13 +95,15 @@ func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic strin
 	// Serialize the data
 	dataBytes, err := proto.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("failed to serialize data: %v", err)
+		c.log.Errorf("failed to serialize data: %v", err)
+		return err
 	}
 
 	// Create a random message ID
 	msgID := make([]byte, 4)
 	if _, err := rand.Read(msgID); err != nil {
-		return fmt.Errorf("failed to generate message ID: %v", err)
+		c.log.Errorf("failed to generate message ID: %v", err)
+		return err
 	}
 	messageID := binary.LittleEndian.Uint32(msgID)
 
@@ -137,14 +139,16 @@ func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic strin
 	// Serialize the envelope
 	envelopeBytes, err := proto.Marshal(envelope)
 	if err != nil {
-		return fmt.Errorf("failed to serialize envelope: %v", err)
+		c.log.Errorf("failed to serialize envelope: %v", err)
+		return err
 	}
 
 	// Publish the message
 	token := c.client.Publish(topic, 0, false, envelopeBytes)
 	<-token.Done()
 	if err := token.Error(); err != nil {
-		return fmt.Errorf("failed to publish message: %v", err)
+		c.log.Errorf("failed to publish message: %v", err)
+		return err
 	}
 
 	return nil

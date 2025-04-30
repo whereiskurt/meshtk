@@ -95,7 +95,7 @@ TIMER:
 			break TIMER
 		default:
 
-			totalNodes := fleet.NodesPerRampInterval[tic%len(fleet.NodesPerRampInterval)]
+			totalNodes := fleet.NodesPerSteadyInterval[tic%len(fleet.NodesPerSteadyInterval)]
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Running steady-state behaviours for %d nodes ...\n", idx, totalNodes)))
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Steady state: tic %d/%d\n", idx, tic+1, maxTics)))
 			for range totalNodes {

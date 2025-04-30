@@ -76,14 +76,23 @@ func (c *MqttClient) PublishMessagePlain(from uint32, to uint32, topic string, p
 	}
 
 	// Publish the message
-	token := c.client.Publish(topic, 0, false, envelopeBytes)
-	<-token.Done()
-	if err := token.Error(); err != nil {
-		return fmt.Errorf("failed to publish message: %v", err)
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		token := c.client.Publish(topic, 0, false, envelopeBytes)
+		<-token.Done()
+		if err := token.Error(); err != nil {
+			c.log.Errorf("PublishMessagePlain failed attempt %d to publish: %v", i+1, err)
+			lastErr = err
+			c.Connect()
+			continue
+		}
+		// Successfully published
+		return nil
 	}
 
-	c.log.Tracef("published plain message to %s: %s", topic, data)
-	return nil
+	// If all attempts fail, return the last error
+	return fmt.Errorf("failed to publish message after 3 attempts: %v", lastErr)
+
 }
 
 func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic string, portNum meshtastic.PortNum, payload []byte) error {
@@ -143,15 +152,24 @@ func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic strin
 		return err
 	}
 
-	// Publish the message
-	token := c.client.Publish(topic, 0, false, envelopeBytes)
-	<-token.Done()
-	if err := token.Error(); err != nil {
-		c.log.Errorf("failed to publish message: %v", err)
-		return err
+	// Attempt to publish the message up to 3 times
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		token := c.client.Publish(topic, 0, false, envelopeBytes)
+		<-token.Done()
+		if err := token.Error(); err != nil {
+			c.log.Errorf("PublishMessageEncrypted failed attempt %d to publish: %v", i+1, err)
+			lastErr = err
+			c.Connect()
+			continue
+		}
+		// Successfully published
+		return nil
 	}
 
-	return nil
+	// If all attempts fail, return the last error
+	c.log.Errorf("failed to publish encrypted message after 3 attempts: %v", lastErr)
+	return lastErr
 }
 func (c *MqttClient) PublishPosition(from uint32, to uint32, topic string, latitudeI, longitudeI, altitude int32, precision uint32) error {
 	// Create Position protobuf

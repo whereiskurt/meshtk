@@ -48,9 +48,8 @@ func (n *NodeInfoCmd) Announce(cmd *cobra.Command, argz []string) {
 
 	topics := n.Config.NodeInfo.SubscribedTopics
 
-	n.MqttClient = internal.NewMqttClient(n.Config, &n.Nodes)
+	n.MqttClient = internal.NewMqttClient(n.Config, &n.Nodes, n.NodeHandler)
 
-	n.MqttClient.SetMessageHandler(n.NodeHandler)
 	n.MqttClient.ConnectAndListen(topics)
 
 	if n.Config.NodeInfo.BroadcastOnLoad {

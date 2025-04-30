@@ -10,6 +10,8 @@ import (
 
 	internal "github.com/whereiskurt/meshtk/internal/mqtt"
 
+	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+
 	"github.com/spf13/cobra"
 
 	"github.com/whereiskurt/meshtk/internal/app/help"
@@ -52,10 +54,9 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 	f.Config.Log.Trace("fleet.Simulate")
 	f.Config.Log.Tracef("%+v", f.Config)
 
-	for i := range f.Config.Fleet {
-		f.initNodeDb(i)
-		f.MqttClient = append(f.MqttClient, internal.NewMqttClient(f.Config, &f.Nodes[i]))
-
+	for idx := range f.Config.Fleet {
+		f.initNodeDb(idx)
+		f.MqttClient = append(f.MqttClient, internal.NewMqttClient(f.Config, &f.Nodes[idx], f.NodeHandler))
 	}
 
 	terminate := make(chan os.Signal, 1)
@@ -71,12 +72,9 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 			go func(idx int) {
 				// Kick of the fleet simulation!
 				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: MQTT connect ...\n", idx)))
-				f.MqttClient[idx].Connect()
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: MQTT connected.\n", idx)))
 				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Starting simulation ...\n", idx)))
 				f.simulate(idx)
 				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Simulation completed.\n", idx)))
-				f.MqttClient[idx].Disconnect()
 				fleetdone <- true
 				alldone <- idx
 			}(idx)
@@ -105,8 +103,8 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 
 	f.Config.Stdout.Write([]byte("\n✅ Cleanly exiting ...\n"))
 
-	for i := range f.Config.Fleet {
-		f.flushNodeDb(i)
+	for idx := range f.Config.Fleet {
+		f.flushNodeDb(idx)
 	}
 
 	f.CmdOutput.WasSuccess = true
@@ -121,4 +119,14 @@ func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
 		close(done)
 	}()
 	return done
+}
+
+func (n *FleetCmd) NodeHandler(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
+	switch portNum {
+	case meshtastic.PortNum_TEXT_MESSAGE_APP:
+		n.Config.Log.Tracef(`{from: '%v', topic: '%v', message: '%s'}`, from, topic, payload)
+
+	default:
+		n.Config.Log.Tracef(`{from: '%v', topic: '%v', portNum: '%s'}`, from, topic, portNum)
+	}
 }

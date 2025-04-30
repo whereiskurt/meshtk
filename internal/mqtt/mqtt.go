@@ -37,7 +37,7 @@ type MqttClient struct {
 	nodes          *NodeDB
 }
 
-func NewMqttClient(c *config.Config, nodes *NodeDB) *MqttClient {
+func NewMqttClient(c *config.Config, nodes *NodeDB, handler func(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte)) *MqttClient {
 	mqc := MqttClient{
 		log:     c.Log,
 		nodes:   nodes,
@@ -59,26 +59,35 @@ func NewMqttClient(c *config.Config, nodes *NodeDB) *MqttClient {
 	base64Key := c.Meshtastic.Channels[0].EncryptKey
 	keyBytes, err := base64.StdEncoding.DecodeString(base64Key)
 	if err != nil {
-		log.Fatal(err)
+		c.Log.Fatalf("The PRIMARY channel key '%s' is invalid hex: %v", c.Meshtastic.Channels[0].EncryptKey, err)
 	}
 
-	// Expand the single byte key to 16 bytes for AES-128
+	// Expand the single byte key to 16 bytes for AES-256
 	if len(keyBytes) == 1 && base64Key == "AQ==" {
 		keyBytes = append(keyBytes, make([]byte, 15)...)
+		//c.Meshtastic.Channels[0].EncryptKey = base64.StdEncoding.EncodeToString(keyBytes)
 	}
 
 	mqc.blockCipher = NewAESCipher(keyBytes)
 
+	mqc.SetMessageHandler(handler)
+
 	opts := mqtt.NewClientOptions()
-	opts.AutoReconnect = true
+
 	opts.SetConnectRetry(true)
 	opts.SetConnectRetryInterval(5 * time.Second)
 	opts.SetDefaultPublishHandler(mqc.dispatcher)
-	opts.ResumeSubs = true
+	opts.SetKeepAlive(5 * time.Second)
 
 	opts.OnConnectionLost = func(_ mqtt.Client, err error) {
-		// c.Log.Warnf("mqtt connection lost while listening %v", err)
-		mqc.ReconnectAndListen()
+		c.Log.Warnf("MQTT broker connection was lost unexpectedly: %v", err)
+	}
+
+	opts.OnConnect = func(_ mqtt.Client) {
+		c.Log.Tracef("MQTT connected")
+		if err := mqc.subscribeMultiple(c.NodeInfo.SubscribedTopics); err != nil {
+			c.Log.Errorf("MQTT subscribe failed: %v", err)
+		}
 	}
 
 	randomHex := make([]byte, 16) // 8 bytes = 16 hex digits
@@ -89,8 +98,6 @@ func NewMqttClient(c *config.Config, nodes *NodeDB) *MqttClient {
 	opts.SetUsername(c.Mqtt.Username)
 	opts.SetPassword(c.Mqtt.Password)
 	opts.SetClientID(fmt.Sprintf("%s-%s", c.Mqtt.ClientId, rndHex))
-
-	opts.SetOrderMatters(false)
 
 	mqc.client = mqtt.NewClient(opts)
 
@@ -260,6 +267,8 @@ func (c *MqttClient) WaitUntilKill() {
 }
 
 func (c *MqttClient) ConnectAndListen(topics []string) error {
+	c.log.Tracef("MQTT ConnectAndListen ...")
+
 	c.topics = topics
 
 	if c.client.IsConnected() {
@@ -271,7 +280,6 @@ func (c *MqttClient) ConnectAndListen(topics []string) error {
 		c.log.Error(err)
 		return err
 	}
-	c.log.Tracef("mqtt connected.")
 
 	err = c.subscribeMultiple(topics)
 	if err != nil {

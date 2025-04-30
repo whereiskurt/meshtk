@@ -19,27 +19,31 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 	}
 
 	if tagMap["nodeinfo"] {
-		f.nodeinfo(idx, node)
+		f.publishNodeInfo(idx, node)
 	}
 
 	// Make moves, and then tell folks.
 	if tagMap["movement"] {
-		f.gpxMovement(idx, node, tagMap["gitter"])
+		f.publishNextGPXMovement(idx, node, tagMap["gitter"])
 	}
 	if tagMap["position"] {
-		f.position(idx, node, tagMap["gitter"])
+		f.publishPosition(idx, node, tagMap["gitter"])
 	}
 
 	if tic == 0 {
 		if tagMap["sayhello"] {
-			const ALL = 0xffffffff
-			whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
-			f.MqttClient[idx].PublishMessageEncrypted(node.From, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte("Hello world!"))
+			f.publishMessageToChannel(node, idx, fmt.Sprintf("%d:hello!", tic))
 		}
 	}
 }
 
-func (f *FleetCmd) nodeinfo(idx int, node *mqtt.Node) {
+func (f *FleetCmd) publishMessageToChannel(node *mqtt.Node, idx int, message string) {
+	const ALL = 0xffffffff
+	whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
+	f.MqttClient[idx].PublishMessageEncrypted(node.From, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte(message))
+}
+
+func (f *FleetCmd) publishNodeInfo(idx int, node *mqtt.Node) {
 	const ALL = 0xffffffff
 
 	whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
@@ -53,7 +57,7 @@ func (f *FleetCmd) nodeinfo(idx int, node *mqtt.Node) {
 
 }
 
-func (f *FleetCmd) position(idx int, node *mqtt.Node, gitter bool) {
+func (f *FleetCmd) publishPosition(idx int, node *mqtt.Node, gitter bool) {
 	fleet := f.Config.Fleet[idx]
 
 	h := fnv.New64a()
@@ -77,7 +81,7 @@ func (f *FleetCmd) position(idx int, node *mqtt.Node, gitter bool) {
 	f.MqttClient[idx].PublishPosition(node.From, ALL, whoamiTopic, lat, lng, alt, prec)
 }
 
-func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, gitter bool) {
+func (f *FleetCmd) publishNextGPXMovement(idx int, node *mqtt.Node, gitter bool) {
 
 	fleet := f.Config.Fleet[idx]
 
@@ -116,7 +120,7 @@ func (f *FleetCmd) gpxMovement(idx int, node *mqtt.Node, gitter bool) {
 
 			node.Altitude = m.GPXCoords[nextOffset].Altitude
 			node.Precision = uint32(m.GPXCoords[nextOffset].Precision)
-			f.position(idx, node, gitter)
+			f.publishPosition(idx, node, gitter)
 		}
 	}
 }

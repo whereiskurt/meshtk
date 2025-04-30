@@ -65,8 +65,8 @@ func (f *FleetCmd) rampUp(idx int, nodeIDs []uint32, randIndices []int) {
 				for i := range newNodes {
 					nodeIndex := totalNodes + i
 					node := f.Nodes[idx][nodeIDs[randIndices[nodeIndex%len(randIndices)]]]
-					f.nodeinfo(idx, node)
-					f.position(idx, node, false)
+					f.publishNodeInfo(idx, node)
+					f.publishPosition(idx, node, false)
 					time.Sleep(time.Duration(nodeEveryMs) * time.Millisecond)
 				}
 				totalNodes += newNodes

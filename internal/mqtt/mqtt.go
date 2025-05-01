@@ -98,6 +98,7 @@ func NewMqttClient(c *config.Config, nodes *NodeDB, handler func(to, from uint32
 	opts.SetUsername(c.Mqtt.Username)
 	opts.SetPassword(c.Mqtt.Password)
 	opts.SetClientID(fmt.Sprintf("%s-%s", c.Mqtt.ClientId, rndHex))
+	opts.WillEnabled = false
 
 	mqc.client = mqtt.NewClient(opts)
 
@@ -246,10 +247,11 @@ func (c *MqttClient) subscribeMultiple(topics []string) error {
 
 func (c *MqttClient) Connect() error {
 	token := c.client.Connect()
-	<-token.Done()
-	if err := token.Error(); err != nil {
-		return err
+
+	if !token.WaitTimeout(5 * time.Second) {
+		return fmt.Errorf("MQTT connect timeout after 5 seconds")
 	}
+
 	return nil
 }
 

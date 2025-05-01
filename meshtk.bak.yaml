@@ -1,0 +1,181 @@
+NodeDbPath: "/Users/khundeck/nodes.json"
+
+Mqtt:
+  # BrokerUri: "tcp://localhost:8883"
+  BrokerUri: "ssl://use1.mqtt.defcon.run:8883"
+  Username: "public"
+  Password: "31337"
+  ClientId: "meshtkph"
+
+Meshtastic:
+  Channels:
+    - Slot: "primary"
+      Name: "dc.run"
+      EncryptKey: "Wjt8kzHci9lqdS4tBzSF2VbQd86u6U3nhHaBl7V5TGE="
+      IsEncrypted: true
+      IsPrimary: true
+    - Slot: "secondary"
+      Name: "defcon"
+      EncryptKey: "AQ=="
+      IsEncrypted: true
+      IsPrimary: false
+
+NodeInfo:
+  ClientId: "!28a1b2c3"
+  LongName: "Mesh Toolkit 2025"
+  ShortName: "MTK"
+  HWModelId: 43
+  RoleId: 0
+  Latitude: 361354763
+  Longitude: -1151597904
+  Altitude: 420
+  Precision: 32
+  FirwareVersion: "2.5.20.4c69421"
+  Region: "US"
+  ModemPreset: "LONG_FAST"
+
+  BroadcastToAll: true
+  BroadcastOnLoad: true
+  BroadcastMessage: "Hello from MeshTK!"
+  BroadcastIntervalSec: 60
+  BroadcastNodes:
+    - "!5678DEFA"
+    - "!6789EFAB"
+
+  PKI:
+    PublicKey: "0x1b7644ea43ca427fdb7767c84b78fa2deff096716d4dd940ee6ebad8ea220126"
+    PrivateKey: "0xf02344fb50461c482de3a6f52885100ce637474e1869f44cf08698c59a0965b9"
+
+  ChannelSlot: "primary"
+  Topic: "msh/US/2/e/dc.run"
+  MapTopic: "msh/US/2/map/"
+
+  SubscribedTopics:
+    - "#"
+    - "msh/+/2/#"
+    - "msh/+/+/2/map"
+
+ProtoBufServer:
+  InspectorAddress: "localhost:50051"
+
+Fleet:
+  - Id: "rebar-regular"
+    Description: "Cluster at rebar"
+    BehaviourTag: ["sayhello", "nodeinfo", "position","gitter"]
+    BehaviourSecs: 5
+    Seed: "4971a6ef-0d32-4eb8-ba80-9e759e748345"
+    ShortNameTmpl: "R{{.nodeId}}"
+    LongNameTmpl: "{{.fleetId}}-{{.nodeId}}-{{.shortseed}}"
+    NodesPerRampInterval: [10]
+    RampUpSecs: 10
+    RampSteadySecs: 7
+    RampDownSecs: 15
+    NodesPerSteadyInterval: [10]
+    Distribution: "uniform"
+    BroadcastGitterSec: 300
+    LatLongAltGitter: 1000
+    TextMessageGitterSec: 300
+    NodeDbPath: "./nodes.rebar.json"
+    Chatbot:
+      - Type: "shellscript"
+        Script: "./msgreply.sh"
+        IntervalSec: 300
+        ScriptParamTmpl: "--nodeId '{{.nodeId}}' --seed '{{.shortseed}}' --msg '{{.msg}}'"
+    Movement:
+      - Type: "start"
+        Latitude: 361565688
+        Longitude: -1151540940
+        Altitude: 420
+        Precision: 32
+
+  # - Id: "lvcc-to-rebar"
+  #   Description: "LVCC to Rebar and back route follower"
+  #   BehaviourTag: ["nodeinfo", "movement", "gitter"]
+  #   BehaviourSecs: 15
+  #   RampSteadySecs: 600000
+  #   Seed: "a71c70f9-992f-4592-b4a4-9f1e54015f69"
+  #   ShortNameTmpl: "L{{.nodeId}}"
+  #   LongNameTmpl: "{{.fleetId}}-{{.fleetNum}}{{.nodeId}}-{{.shortseed}}"
+  #   NodesPerRampInterval: [3]
+  #   RampUpSecs: 5
+  #   RampDownSecs: 1 
+  #   NodesPerSteadyInterval: [3]
+  #   Distribution: "uniform"
+  #   BroadcastGitterSec: 300
+  #   LatLongAltGitter: 1000
+  #   TextMessageGitterSec: 300
+  #   NodeDbPath: "./nodes.lvccrebar.json"
+  #   Movement:
+  #     - Type: "gpx"
+  #       GPXFile: "./route1.gpx"
+  #       Travel: "point-to-point"
+
+  # - Id: "rebar-to-lvcc"
+  #   Description: "Rebar to LVCC and back route follower"
+  #   BehaviourTag: ["nodeinfo", "movement", "gitter"]
+  #   BehaviourSecs: 15
+  #   RampSteadySecs: 600000
+  #   Seed: "9ffebd45-8b0a-4bdd-9b8e-f9867b3b77ee"
+  #   ShortNameTmpl: "7{{.nodeId}}"
+  #   LongNameTmpl: "{{.fleetId}}-{{.fleetNum}}{{.nodeId}}-{{.shortseed}}"
+  #   NodesPerRampInterval: [3]
+  #   RampUpSecs: 5
+  #   RampDownSecs: 1 
+  #   NodesPerSteadyInterval: [3]
+  #   Distribution: "uniform"
+  #   BroadcastGitterSec: 300
+  #   LatLongAltGitter: 5000
+  #   TextMessageGitterSec: 300
+  #   NodeDbPath: "./nodes.rebarlvcc.json"
+  #   Movement:
+  #     - Type: "gpx"
+  #       GPXFile: "./route1.gpx"
+  #       Travel: "point-to-point,backwards"
+
+  # - Id: "japan"
+  #   Description: "elkentaro hiking in the mountains"
+  #   BehaviourTag: ["nodeinfo", "movement", "gitter"]
+  #   BehaviourSecs: 15
+  #   RampSteadySecs: 60000
+  #   Seed: "1988cbf2-0aa5-4065-b84a-551d3f4dc488"
+  #   ShortNameTmpl: "J{{.nodeId}}"
+  #   LongNameTmpl: "{{.fleetId}}-{{.fleetNum}}{{.nodeId}}-{{.shortseed}}"
+  #   NodesPerRampInterval: [5,5]
+  #   RampUpSecs: 60
+  #   RampDownSecs: 10
+  #   NodesPerSteadyInterval: [10]
+  #   Distribution: "uniform"
+  #   BroadcastGitterSec: 300
+  #   LatLongAltGitter: 1000
+  #   TextMessageGitterSec: 300
+  #   NodeDbPath: "./nodes.japan.json"
+  #   Movement:
+  #     - Type: "gpx"
+  #       GPXFile: "./japan.gpx"
+  #       Travel: "point-to-point"    
+
+  # - Id: "manhatten"
+  #   Description: "jesse manhatten"
+  #   BehaviourTag: ["nodeinfo", "movement", "gitter"]
+  #   BehaviourSecs: 15
+  #   RampSteadySecs: 60000
+  #   Seed: "3e78891f-959e-47fb-b383-4dfff4fb382b"
+  #   ShortNameTmpl: "N{{.nodeId}}"
+  #   LongNameTmpl: "{{.fleetId}}-{{.fleetNum}}{{.nodeId}}-{{.shortseed}}"
+  #   NodesPerRampInterval: [5,5]
+  #   RampUpSecs: 60
+  #   RampDownSecs: 10
+  #   NodesPerSteadyInterval: [10]
+  #   Distribution: "uniform"
+  #   BroadcastGitterSec: 300
+  #   LatLongAltGitter: 1000
+  #   TextMessageGitterSec: 300
+  #   NodeDbPath: "./nodes.manhatten.json"
+  #   Movement:
+  #     - Type: "gpx"
+  #       GPXFile: "./manhatten.gpx"
+  #       Travel: "loop"   
+
+TextMessage:
+  ChannelSlot: "primary"
+  Topic: "msh/US/2/e/dc.run"

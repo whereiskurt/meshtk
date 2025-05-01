@@ -49,7 +49,9 @@ type Config struct {
 }
 
 type ProtoBufServer struct {
-	InspectorAddress string `default:"localhost:50051"`
+	InspectorListenAddress string `default:"localhost:50051"`
+	ProxyListenAddress     string `default:"0.0.0.0:1883"`
+	ProxyForwardAddress    string `default:"localhost:1884"`
 }
 
 type Fleet struct {

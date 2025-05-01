@@ -37,3 +37,14 @@ func (n *ProtoBufServerCmd) Inspector(cmd *cobra.Command, argz []string) {
 
 	n.StartInspectorServer()
 }
+
+func (n *ProtoBufServerCmd) Proxy(cmd *cobra.Command, argz []string) {
+	n.CmdOutput.WasSuccess = true
+	s := help.Render("GlobalHeader", n.Config)
+	n.Config.Stdout.Write([]byte(s + "\n"))
+
+	n.Config.Log.Trace("protobuf.ProxyServer")
+	n.Config.Log.Tracef("%+v", n.Config)
+
+	n.StartProxyServer()
+}

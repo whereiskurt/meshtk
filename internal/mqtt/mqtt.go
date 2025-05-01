@@ -1,6 +1,7 @@
 package mqtt
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
@@ -17,11 +18,14 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/eclipse/paho.mqtt.golang/packets"
+
 	log "github.com/sirupsen/logrus"
 	"github.com/whereiskurt/meshtk/pkg/config"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
-	"google.golang.org/protobuf/proto"
 )
 
 type MqttClient struct {
@@ -355,4 +359,35 @@ func GenerateSharedSecret(privateKeyBytes, publicKeyBytes []byte) ([]byte, error
 
 	hash := sha256.Sum256(sharedSecret)
 	return hash[:], nil
+}
+
+type DecodedMeshtastic struct {
+	Topic    string
+	Envelope *meshtastic.ServiceEnvelope
+}
+
+// Decode attempts to parse a raw MQTT packet and extract a Meshtastic ServiceEnvelope.
+func Decode(raw []byte) (*DecodedMeshtastic, error) {
+	buf := bytes.NewReader(raw)
+
+	// Read the MQTT control packet from the buffer
+	pkt, err := packets.ReadPacket(buf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode MQTT packet: %w", err)
+	}
+
+	publishPkt, ok := pkt.(*packets.PublishPacket)
+	if !ok {
+		return nil, fmt.Errorf("packet is not a PUBLISH type, got %T", pkt)
+	}
+
+	var env meshtastic.ServiceEnvelope
+	if err := proto.Unmarshal(publishPkt.Payload, &env); err != nil {
+		return nil, fmt.Errorf("failed to decode protobuf payload: %w", err)
+	}
+
+	return &DecodedMeshtastic{
+		Topic:    publishPkt.TopicName,
+		Envelope: &env,
+	}, nil
 }

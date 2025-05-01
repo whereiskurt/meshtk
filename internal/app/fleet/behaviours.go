@@ -22,7 +22,6 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 		f.publishNodeInfo(idx, node)
 	}
 
-	// Make moves, and then tell folks.
 	if tagMap["movement"] {
 		f.publishNextGPXMovement(idx, node, tagMap["gitter"])
 	}
@@ -54,7 +53,6 @@ func (f *FleetCmd) publishNodeInfo(idx int, node *mqtt.Node) {
 		hwModelNumber = 0
 	}
 	f.MqttClient[idx].PublishNodeInfo(node.From, ALL, whoamiTopic, node.LongName, node.ShortName, meshtastic.HardwareModel(hwModelNumber), meshtastic.Config_DeviceConfig_CLIENT)
-
 }
 
 func (f *FleetCmd) publishPosition(idx int, node *mqtt.Node, gitter bool) {

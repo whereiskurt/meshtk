@@ -70,7 +70,7 @@ func (n *ProtoBufServerCmd) handleConn(conn net.Conn) {
 	mutated := req.Payload
 	var envelope meshtastic.ServiceEnvelope
 	if err := proto.Unmarshal(req.Payload, &envelope); err != nil {
-		n.Config.Log.Warnf("Not a Meshtastic packet on %v: from: %v: %v", topic, req.Username, req.Payload)
+		n.Config.Log.Warnf("Not a Meshtastic packet on %v: from: %v: %v : %v", topic, req.Username, req.Payload, err)
 		blockReason = "ServiceEnvelope"
 		shouldBlock = true
 	} else {

@@ -1,12 +1,15 @@
 package protoserver
 
 import (
+	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
@@ -17,7 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func (n *ProtoBufServerCmd) StartInspectorServer() error {
+func (n *ProtoBufServerCmd) StartProtobufServer() error {
 	address := n.Config.ProtoBufServer.InspectorListenAddress
 
 	ln, err := net.Listen("tcp", address)
@@ -32,7 +35,7 @@ func (n *ProtoBufServerCmd) StartInspectorServer() error {
 		for {
 			conn, err := ln.Accept()
 			if err == nil {
-				go n.handleInspector(conn)
+				go n.handleProtobuf(conn)
 			}
 		}
 	}()
@@ -60,8 +63,9 @@ func (n *ProtoBufServerCmd) StartProxyServer() error {
 
 	n.Config.Log.Tracef("Listening on %v with Proxy Protocol", address)
 
-	go func() {
+	n.connectionsMutex = sync.RWMutex{}
 
+	go func() {
 		for {
 			conn, err := proxyListener.Accept()
 			if err != nil {
@@ -81,148 +85,159 @@ func (n *ProtoBufServerCmd) StartProxyServer() error {
 	return nil
 }
 
+func (n *ProtoBufServerCmd) processBackendResponses(conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
+	defer func() {
+		done <- struct{}{}
+	}()
+
+	for {
+		backendPacket, err := packets.ReadPacket(backendReader)
+		if err != nil {
+			if err != io.EOF {
+				n.Config.Log.Errorf("Error reading from backend: %v", err)
+			}
+			return
+		}
+
+		var buf bytes.Buffer
+		if err := backendPacket.Write(&buf); err != nil {
+			n.Config.Log.Errorf("Failed to serialize backend response packet: %v", err)
+			return
+		}
+
+		if _, err := conn.Write(buf.Bytes()); err != nil {
+			n.Config.Log.Errorf("Failed to write backend response to client: %v", err)
+			return
+		}
+	}
+}
+
+func (n *ProtoBufServerCmd) processClientPacket(connReader *bufio.Reader, backendConn net.Conn, clientIP string) error {
+	packet, err := packets.ReadPacket(connReader)
+	if err != nil {
+		if err != io.EOF {
+			n.Config.Log.Errorf("Failed to parse MQTT packet from %s: %v", clientIP, err)
+		}
+		return err
+	}
+
+	switch p := packet.(type) {
+	case *packets.ConnectPacket:
+		connectInfo := &ConnectionInfo{
+			ClientID:    p.ClientIdentifier,
+			Username:    p.Username,
+			Password:    fmt.Sprintf("%x", p.Password),
+			IPAddress:   clientIP,
+			ConnectTime: time.Now().Unix(),
+		}
+
+		n.connectionsMutex.Lock()
+		n.clientIDByConnID[clientIP] = connectInfo
+		n.connectionsMutex.Unlock()
+
+		n.Config.Log.Tracef("MQTT CONNECT from %s: client=%s, username=%s, protocol=%d", clientIP, p.ClientIdentifier, p.Username, p.ProtocolVersion)
+
+	case *packets.PublishPacket:
+		n.connectionsMutex.RLock()
+		connInfo, exists := n.clientIDByConnID[clientIP]
+		n.connectionsMutex.RUnlock()
+
+		if !exists {
+			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientIP)
+		}
+
+		username := connInfo.Username
+		clientID := connInfo.ClientID
+
+		n.Config.Log.Tracef("MQTT PUBLISH from %s (user=%s, client=%s): topic=%s, QoS=%d, retained=%v", clientIP, username, clientID, p.TopicName, p.Qos, p.Retain)
+
+	case *packets.SubscribePacket:
+		n.connectionsMutex.RLock()
+		connInfo, exists := n.clientIDByConnID[clientIP]
+		n.connectionsMutex.RUnlock()
+
+		if !exists {
+			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientIP)
+		}
+
+		username := connInfo.Username
+		clientID := connInfo.ClientID
+
+		topics := make([]string, 0, len(p.Topics))
+		topics = append(topics, p.Topics...)
+		n.Config.Log.Tracef("MQTT SUBSCRIBE from %s (user=%s, client=%s): topics=%v", clientIP, username, clientID, topics)
+
+	default:
+		// Other packet types
+	}
+
+	// Serialize the packet for forwarding
+	var buf bytes.Buffer
+	if err := packet.Write(&buf); err != nil {
+		n.Config.Log.Errorf("Failed to serialize MQTT packet: %v", err)
+		return err
+	}
+
+	// Forward the packet to the backend
+	if _, err := backendConn.Write(buf.Bytes()); err != nil {
+		n.Config.Log.Errorf("Failed to forward packet to backend: %v", err)
+		return err
+	}
+
+	return nil
+}
+
 func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		if conn.RemoteAddr() != nil {
+			clientIP := conn.RemoteAddr().String()
+			n.connectionsMutex.Lock()
+			delete(n.clientIDByConnID, clientIP)
+			n.connectionsMutex.Unlock()
+		}
+		conn.Close()
+	}()
 
 	var clientIP string
+	if conn.RemoteAddr() != nil {
+		clientIP = conn.RemoteAddr().String()
+	}
+
 	if proxyConn, ok := conn.(*proxyproto.Conn); ok {
 		proxyHeader := proxyConn.ProxyHeader()
 		if proxyHeader != nil && proxyHeader.SourceAddr != nil {
 			clientIP = proxyHeader.SourceAddr.String()
 		}
 	}
-	if clientIP == "" && conn.RemoteAddr() != nil {
-		clientIP = conn.RemoteAddr().String()
-	}
 
-	// Create a buffer to read the first few bytes to determine packet type
-	firstByteBuf := make([]byte, 1)
-	_, err := conn.Read(firstByteBuf)
+	address := n.Config.ProtoBufServer.ProxyForwardAddress
+	backendConn, err := net.DialTimeout("tcp", address, 5*time.Second)
 	if err != nil {
-		n.Config.Log.Errorf("Read error from %s: %v", clientIP, err)
+		n.Config.Log.Errorf("Failed to connect to backend MQTT broker: %v", err)
 		return
 	}
+	defer backendConn.Close()
 
-	// Reset the connection with the first byte
-	r := io.MultiReader(bytes.NewReader(firstByteBuf), conn)
+	connReader := bufio.NewReader(conn)
+	backendReader := bufio.NewReader(backendConn)
 
-	// Use Paho MQTT packet parser
-	controlPacketType := firstByteBuf[0] >> 4
-	packet, err := packets.ReadPacket(r)
-	if err != nil {
-		n.Config.Log.Errorf("Failed to parse MQTT packet from %s: %v", clientIP, err)
-		// Try to fall back to raw forwarding
-		connectBuf := make([]byte, 4096)
-		bytesRead, err := r.Read(connectBuf)
-		if err != nil {
-			n.Config.Log.Errorf("Read error from %s: %v", clientIP, err)
+	done := make(chan struct{})
+
+	go n.processBackendResponses(conn, backendReader, done)
+
+	for {
+		select {
+		case <-done:
 			return
+		default:
+			if err := n.processClientPacket(connReader, backendConn, clientIP); err != nil {
+				return
+			}
 		}
-		payload := connectBuf[:bytesRead]
-		n.Config.Log.Tracef("Falling back to raw forwarding: %d bytes from %s", bytesRead, clientIP)
-		n.forward(conn, firstByteBuf, payload)
-		return
 	}
-
-	// Log MQTT packet details
-	switch p := packet.(type) {
-	case *packets.ConnectPacket:
-		n.Config.Log.Infof("MQTT CONNECT from %s: client=%s, username=%s, protocol=%d", clientIP, p.ClientIdentifier, p.Username, p.ProtocolVersion)
-	case *packets.PublishPacket:
-		n.Config.Log.Infof("MQTT PUBLISH from %s: topic=%s, QoS=%d, retained=%v", clientIP, p.TopicName, p.Qos, p.Retain)
-	case *packets.SubscribePacket:
-		topics := make([]string, 0, len(p.Topics))
-		topics = append(topics, p.Topics...)
-		n.Config.Log.Infof("MQTT SUBSCRIBE from %s: topics=%v", clientIP, topics)
-	default:
-		n.Config.Log.Debugf("MQTT %s packet from %s", packets.PacketNames[controlPacketType], clientIP)
-	}
-
-	var buf bytes.Buffer
-	if err := packet.Write(&buf); err != nil {
-		n.Config.Log.Errorf("Failed to serialize MQTT packet: %v", err)
-		return
-	}
-
-	payload := buf.Bytes()
-	n.Config.Log.Tracef("Forwarding %d bytes from %s", len(payload), clientIP)
-
-	// Forward the packet to the backend
-	n.forwardMQTT(conn, payload)
 }
 
-// Modified to accept only the payload without the first byte
-func (n *ProtoBufServerCmd) forward(conn net.Conn, firstByte []byte, payload []byte) {
-	address := n.Config.ProtoBufServer.ProxyForwardAddress
-	backendConn, err := net.DialTimeout("tcp", address, 5*time.Second)
-	if err != nil {
-		n.Config.Log.Errorf("Failed to connect to backend MQTT broker: %v", err)
-		return
-	}
-	defer backendConn.Close()
-
-	// Write first byte and payload
-	if _, err := backendConn.Write(firstByte); err != nil {
-		n.Config.Log.Errorf("Failed to forward initial byte: %v", err)
-		return
-	}
-	if _, err := backendConn.Write(payload); err != nil {
-		n.Config.Log.Errorf("Failed to forward initial payload: %v", err)
-		return
-	}
-
-	done := make(chan struct{}, 2)
-	go func() {
-		_, err = io.Copy(backendConn, conn) // client → backend
-		if err != nil {
-			n.Config.Log.Errorf("Failed to forward data from client to backend: %v", err)
-		}
-		done <- struct{}{}
-	}()
-	go func() {
-		_, err = io.Copy(conn, backendConn) // backend → client
-		if err != nil {
-			n.Config.Log.Errorf("Failed to forward data from backend to client: %v", err)
-		}
-		done <- struct{}{}
-	}()
-	<-done
-}
-
-// New function to forward already-parsed MQTT packets
-func (n *ProtoBufServerCmd) forwardMQTT(conn net.Conn, payload []byte) {
-	address := n.Config.ProtoBufServer.ProxyForwardAddress
-	backendConn, err := net.DialTimeout("tcp", address, 5*time.Second)
-	if err != nil {
-		n.Config.Log.Errorf("Failed to connect to backend MQTT broker: %v", err)
-		return
-	}
-	defer backendConn.Close()
-
-	if _, err := backendConn.Write(payload); err != nil {
-		n.Config.Log.Errorf("Failed to forward initial payload: %v", err)
-		return
-	}
-
-	done := make(chan struct{}, 2)
-	go func() {
-		_, err = io.Copy(backendConn, conn) // client → backend
-		if err != nil {
-			n.Config.Log.Errorf("Failed to forward data from client to backend: %v", err)
-		}
-		done <- struct{}{}
-	}()
-	go func() {
-		_, err = io.Copy(conn, backendConn) // backend → client
-		if err != nil {
-			n.Config.Log.Errorf("Failed to forward data from backend to client: %v", err)
-		}
-		done <- struct{}{}
-	}()
-	<-done
-}
-
-func (n *ProtoBufServerCmd) handleInspector(conn net.Conn) {
+func (n *ProtoBufServerCmd) handleProtobuf(conn net.Conn) {
 	defer conn.Close()
 
 	// Read incoming request
@@ -230,7 +245,7 @@ func (n *ProtoBufServerCmd) handleInspector(conn net.Conn) {
 	blen, err := conn.Read(buf)
 	if err != nil {
 		if err != io.EOF {
-			n.Config.Log.Errorf("Read error: %v", err)
+			n.Config.Log.Errorf("1. Read error: %v", err)
 		}
 		return
 	}

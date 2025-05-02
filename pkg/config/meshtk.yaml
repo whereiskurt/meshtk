@@ -51,7 +51,7 @@ NodeInfo:
 
 ProtoBufServer:
   ProxyListenAddress: "0.0.0.0:1883"
-  ProxyForwardAddress: "mqtt-local:1884"
+  ProxyForwardAddress: "localhost:1884"
   InspectorListenAddress: "localhost:50051"
 
 Fleet:

@@ -50,9 +50,9 @@ NodeInfo:
     - "msh/+/+/2/map"
 
 ProtoBufServer:
-  InspectorListenAddress: "localhost:50051"
   ProxyListenAddress: "0.0.0.0:1883"
-  ProxyForwardAddress: "localhost:1884"
+  ProxyForwardAddress: "mqtt-local:1884"
+  InspectorListenAddress: "localhost:50051"
 
 Fleet:
   - Id: "rebar-fleet"

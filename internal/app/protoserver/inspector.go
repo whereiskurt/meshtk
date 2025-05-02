@@ -87,11 +87,11 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 	var clientIP string
 	if proxyConn, ok := conn.(*proxyproto.Conn); ok {
 		proxyHeader := proxyConn.ProxyHeader()
-		if proxyHeader != nil {
+		if proxyHeader != nil && proxyHeader.SourceAddr != nil {
 			clientIP = proxyHeader.SourceAddr.String()
 		}
 	}
-	if clientIP == "" {
+	if clientIP == "" && conn.RemoteAddr() != nil {
 		clientIP = conn.RemoteAddr().String()
 	}
 

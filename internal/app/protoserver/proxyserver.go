@@ -56,8 +56,7 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 	}
 }
 
-func (*ProtoBufServerCmd) TrackClient(conn net.Conn) string {
-	var clientAddr string
+func (*ProtoBufServerCmd) TrackClient(conn net.Conn) (clientAddr string) {
 	if conn.RemoteAddr() != nil {
 		clientAddr = conn.RemoteAddr().String()
 	}
@@ -109,15 +108,12 @@ func (n *ProtoBufServerCmd) handler(connReader *bufio.Reader, backendConn net.Co
 
 		n.Config.Log.Tracef("MQTT PUBLISH from %s (user=%s, client=%s): topic=%s, QoS=%d, retained=%v", clientAddr, username, clientID, p.TopicName, p.Qos, p.Retain)
 
-		if publishPacket, ok := packet.(*packets.PublishPacket); ok {
-			payload := publishPacket.Payload
-			// n.Config.Log.Tracef("MQTT PUBLISH payload from %s: %s", clientAddr, string(payload))
-			var envelope meshtastic.ServiceEnvelope
-			if err := proto.Unmarshal(payload, &envelope); err != nil {
-				n.Config.Log.Warnf("not meshtastic on %v: from: %v: %v", p.TopicName, username, err)
-			} else {
-				n.processEnvelope(&envelope, p.TopicName, connInfo)
-			}
+		payload := p.Payload
+		var envelope meshtastic.ServiceEnvelope
+		if err := proto.Unmarshal(payload, &envelope); err != nil {
+			n.Config.Log.Warnf("not meshtastic on %v: from: %v: %v", p.TopicName, username, err)
+		} else {
+			n.processEnvelope(&envelope, p.TopicName, connInfo)
 		}
 
 	case *packets.SubscribePacket:
@@ -193,22 +189,16 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 
 	from := packet.GetFrom()
 	to := packet.GetTo()
-	// channelId := envelope.GetChannelId()
-	// gatewayId := envelope.GetGatewayId()
 
-	// Check if packet contains decoded or encrypted data
 	var portNum meshtastic.PortNum
 	var payload []byte
-	// isEncrypted := false
 
-	// First, check if it has decoded data
 	decoded := packet.GetDecoded()
 	if decoded == nil {
 		encrypted := packet.GetEncrypted()
 
 		if encrypted != nil {
 			var err error
-			// isEncrypted = true
 
 			n.Config.Log.Tracef("Received encrypted packet from %d on topic %s", from, topic)
 			decoded, err = n.newMethod(packet, from, encrypted)
@@ -222,6 +212,7 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 			return
 		}
 	}
+
 	portNum = decoded.GetPortnum()
 	payload = decoded.GetPayload()
 	// Process the message based on portNum (only for decoded messages)

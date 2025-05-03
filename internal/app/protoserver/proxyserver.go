@@ -16,6 +16,33 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// ConnectionInfo stores information about a client connection
+type ConnectionInfo struct {
+	ClientID      string
+	Username      string
+	Password      string
+	SocketAddress string
+	ConnectTime   int64
+}
+
+func (n *ProtoBufServerCmd) freeConnTrack() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			now := time.Now().Unix()
+			n.ConnMutex.Lock()
+			for clientAddr, connInfo := range n.ConnTrack {
+				if now-connInfo.ConnectTime > 1800 {
+					delete(n.ConnTrack, clientAddr)
+				}
+			}
+			n.ConnMutex.Unlock()
+		}
+	}()
+}
+
 func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 	defer func() {
 		if conn.RemoteAddr() != nil {
@@ -49,7 +76,7 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 		case <-done:
 			return
 		default:
-			if err := n.handler(request, backendConn, clientAddr); err != nil {
+			if err := n.handleMQTT(request, backendConn, clientAddr); err != nil {
 				return
 			}
 		}
@@ -70,59 +97,59 @@ func (*ProtoBufServerCmd) TrackClient(conn net.Conn) (clientAddr string) {
 	return clientAddr
 }
 
-func (n *ProtoBufServerCmd) handler(connReader *bufio.Reader, backendConn net.Conn, clientAddr string) error {
+func (n *ProtoBufServerCmd) handleMQTT(connReader *bufio.Reader, backendConn net.Conn, socketAddress string) error {
 	packet, err := packets.ReadPacket(connReader)
 	if err != nil {
 		if err != io.EOF {
-			n.Config.Log.Errorf("Failed to parse MQTT packet from %s: %v", clientAddr, err)
+			n.Config.Log.Errorf("Failed to parse MQTT packet from %s: %v", socketAddress, err)
 		}
 		return err
 	}
 	switch p := packet.(type) {
 	case *packets.ConnectPacket:
 		connectInfo := &ConnectionInfo{
-			ClientID:    p.ClientIdentifier,
-			Username:    p.Username,
-			Password:    fmt.Sprintf("%x", p.Password),
-			IPAddress:   clientAddr,
-			ConnectTime: time.Now().Unix(),
+			ClientID:      p.ClientIdentifier,
+			Username:      p.Username,
+			Password:      fmt.Sprintf("%x", p.Password),
+			SocketAddress: socketAddress,
+			ConnectTime:   time.Now().Unix(),
 		}
 
 		n.ConnMutex.Lock()
-		n.ConnTrack[clientAddr] = connectInfo
+		n.ConnTrack[socketAddress] = connectInfo
 		n.ConnMutex.Unlock()
 
-		n.Config.Log.Tracef("MQTT CONNECT from %s: client=%s, username=%s, protocol=%d", clientAddr, p.ClientIdentifier, p.Username, p.ProtocolVersion)
+		n.Config.Log.Tracef("MQTT CONNECT from %s: client=%s, username=%s, protocol=%d", socketAddress, p.ClientIdentifier, p.Username, p.ProtocolVersion)
 
 	case *packets.PublishPacket:
 		n.ConnMutex.RLock()
-		connInfo, exists := n.ConnTrack[clientAddr]
+		connInfo, exists := n.ConnTrack[socketAddress]
 		n.ConnMutex.RUnlock()
 
 		if !exists {
-			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientAddr)
+			return fmt.Errorf("connection %s not found in clientIDByConnID map", socketAddress)
 		}
 
 		username := connInfo.Username
 		clientID := connInfo.ClientID
 
-		n.Config.Log.Tracef("MQTT PUBLISH from %s (user=%s, client=%s): topic=%s, QoS=%d, retained=%v", clientAddr, username, clientID, p.TopicName, p.Qos, p.Retain)
+		n.Config.Log.Tracef("MQTT PUBLISH from %s (user=%s, client=%s): topic=%s, QoS=%d, retained=%v", socketAddress, username, clientID, p.TopicName, p.Qos, p.Retain)
 
 		payload := p.Payload
 		var envelope meshtastic.ServiceEnvelope
 		if err := proto.Unmarshal(payload, &envelope); err != nil {
 			n.Config.Log.Warnf("not meshtastic on %v: from: %v: %v", p.TopicName, username, err)
 		} else {
-			n.processEnvelope(&envelope, p.TopicName, connInfo)
+			n.handleMeshtastic(&envelope, p.TopicName, connInfo)
 		}
 
 	case *packets.SubscribePacket:
 		n.ConnMutex.RLock()
-		connInfo, exists := n.ConnTrack[clientAddr]
+		connInfo, exists := n.ConnTrack[socketAddress]
 		n.ConnMutex.RUnlock()
 
 		if !exists {
-			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientAddr)
+			return fmt.Errorf("connection %s not found in clientIDByConnID map", socketAddress)
 		}
 
 		username := connInfo.Username
@@ -130,7 +157,7 @@ func (n *ProtoBufServerCmd) handler(connReader *bufio.Reader, backendConn net.Co
 
 		topics := make([]string, 0, len(p.Topics))
 		topics = append(topics, p.Topics...)
-		n.Config.Log.Tracef("MQTT SUBSCRIBE from %s (user=%s, client=%s): topics=%v", clientAddr, username, clientID, topics)
+		n.Config.Log.Tracef("MQTT SUBSCRIBE from %s (user=%s, client=%s): topics=%v", socketAddress, username, clientID, topics)
 
 	default:
 		// Other packet types
@@ -160,7 +187,7 @@ func (n *ProtoBufServerCmd) backendHandler(conn net.Conn, backendReader *bufio.R
 	for {
 		backendPacket, err := packets.ReadPacket(backendReader)
 		if err != nil {
-			if err != io.EOF {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
 				n.Config.Log.Errorf("Error reading from backend: %v", err)
 			}
 			return
@@ -179,7 +206,7 @@ func (n *ProtoBufServerCmd) backendHandler(conn net.Conn, backendReader *bufio.R
 	}
 }
 
-func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope, topic string, connInfo *ConnectionInfo) {
+func (n *ProtoBufServerCmd) handleMeshtastic(envelope *meshtastic.ServiceEnvelope, topic string, connInfo *ConnectionInfo) {
 
 	packet := envelope.GetPacket()
 	if packet == nil {
@@ -201,7 +228,7 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 			var err error
 
 			n.Config.Log.Tracef("Received encrypted packet from %d on topic %s", from, topic)
-			decoded, err = n.newMethod(packet, from, encrypted)
+			decoded, err = n.tryCiphers(packet, from, encrypted)
 			if err != nil {
 				n.Config.Log.Errorf("failed to decrypt data with any cipher")
 				return
@@ -270,7 +297,7 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 
 }
 
-func (n *ProtoBufServerCmd) newMethod(packet *meshtastic.MeshPacket, from uint32, encrypted []byte) (decoded *meshtastic.Data, err error) {
+func (n *ProtoBufServerCmd) tryCiphers(packet *meshtastic.MeshPacket, from uint32, encrypted []byte) (decoded *meshtastic.Data, err error) {
 	nonce := make([]byte, 16)
 	binary.LittleEndian.PutUint32(nonce[0:], packet.GetId())
 	binary.LittleEndian.PutUint32(nonce[8:], from)

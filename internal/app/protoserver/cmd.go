@@ -17,25 +17,15 @@ import (
 	"github.com/whereiskurt/meshtk/pkg/config"
 )
 
-// ConnectionInfo stores information about a client connection
-type ConnectionInfo struct {
-	ClientID    string
-	Username    string
-	Password    string
-	IPAddress   string
-	ConnectTime int64
-}
-
 type ProtoBufServerCmd struct {
 	Config    *config.Config
 	CmdOutput struct {
 		WasSuccess bool
 	}
 
-	ConnMutex sync.RWMutex
 	ConnTrack map[string]*ConnectionInfo // maps connection ID to client ID
+	ConnMutex sync.RWMutex
 
-	// Connection tracking
 	Ciphers []cipher.Block
 }
 
@@ -47,10 +37,11 @@ func NewAESCipher(key []byte) cipher.Block {
 	return c
 }
 
-func NewProtoBufServer(c *config.Config) (n *ProtoBufServerCmd) {
+func NewServer(c *config.Config) (n *ProtoBufServerCmd) {
 	n = new(ProtoBufServerCmd)
 	n.Config = c
 	n.ConnTrack = make(map[string]*ConnectionInfo)
+	n.freeConnTrack()
 
 	for _, channel := range n.Config.Meshtastic.Channels {
 		base64Key := channel.EncryptKey

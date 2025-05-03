@@ -10,59 +10,151 @@ import (
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
 	proxyproto "github.com/pires/go-proxyproto"
+	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 	defer func() {
 		if conn.RemoteAddr() != nil {
-			clientIP := conn.RemoteAddr().String()
+			clientAddr := conn.RemoteAddr().String()
 			n.connectionsMutex.Lock()
-			delete(n.clientIDByConnID, clientIP)
+			delete(n.clientIDByConnID, clientAddr)
 			n.connectionsMutex.Unlock()
 		}
 		conn.Close()
 	}()
 
-	var clientIP string
-	if conn.RemoteAddr() != nil {
-		clientIP = conn.RemoteAddr().String()
-	}
+	clientAddr := n.ClientAddress(conn)
 
-	if proxyConn, ok := conn.(*proxyproto.Conn); ok {
-		proxyHeader := proxyConn.ProxyHeader()
-		if proxyHeader != nil && proxyHeader.SourceAddr != nil {
-			clientIP = proxyHeader.SourceAddr.String()
-		}
-	}
-
-	address := n.Config.ProtoBufServer.ProxyForwardAddress
-	backendConn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	backendAddress := n.Config.ProtoBufServer.ProxyForwardAddress
+	backendConn, err := net.DialTimeout("tcp", backendAddress, 5*time.Second)
 	if err != nil {
 		n.Config.Log.Errorf("Failed to connect to backend MQTT broker: %v", err)
 		return
 	}
 	defer backendConn.Close()
 
-	connReader := bufio.NewReader(conn)
-	backendReader := bufio.NewReader(backendConn)
+	request := bufio.NewReader(conn)
+	backend := bufio.NewReader(backendConn)
 
 	done := make(chan struct{})
 
-	go n.processBackendResponses(conn, backendReader, done)
+	go n.backendHandler(conn, backend, done)
 
 	for {
 		select {
 		case <-done:
 			return
 		default:
-			if err := n.processClientPacket(connReader, backendConn, clientIP); err != nil {
+			if err := n.requestHandler(request, backendConn, clientAddr); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func (n *ProtoBufServerCmd) processBackendResponses(conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
+func (*ProtoBufServerCmd) ClientAddress(conn net.Conn) string {
+	var clientAddr string
+	if conn.RemoteAddr() != nil {
+		clientAddr = conn.RemoteAddr().String()
+	}
+
+	if proxyConn, ok := conn.(*proxyproto.Conn); ok {
+		proxyHeader := proxyConn.ProxyHeader()
+		if proxyHeader != nil && proxyHeader.SourceAddr != nil {
+			clientAddr = proxyHeader.SourceAddr.String()
+		}
+	}
+	return clientAddr
+}
+
+func (n *ProtoBufServerCmd) requestHandler(connReader *bufio.Reader, backendConn net.Conn, clientAddr string) error {
+	packet, err := packets.ReadPacket(connReader)
+	if err != nil {
+		if err != io.EOF {
+			n.Config.Log.Errorf("Failed to parse MQTT packet from %s: %v", clientAddr, err)
+		}
+		return err
+	}
+	switch p := packet.(type) {
+	case *packets.ConnectPacket:
+		connectInfo := &ConnectionInfo{
+			ClientID:    p.ClientIdentifier,
+			Username:    p.Username,
+			Password:    fmt.Sprintf("%x", p.Password),
+			IPAddress:   clientAddr,
+			ConnectTime: time.Now().Unix(),
+		}
+
+		n.connectionsMutex.Lock()
+		n.clientIDByConnID[clientAddr] = connectInfo
+		n.connectionsMutex.Unlock()
+
+		n.Config.Log.Tracef("MQTT CONNECT from %s: client=%s, username=%s, protocol=%d", clientAddr, p.ClientIdentifier, p.Username, p.ProtocolVersion)
+
+	case *packets.PublishPacket:
+		n.connectionsMutex.RLock()
+		connInfo, exists := n.clientIDByConnID[clientAddr]
+		n.connectionsMutex.RUnlock()
+
+		if !exists {
+			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientAddr)
+		}
+
+		username := connInfo.Username
+		clientID := connInfo.ClientID
+
+		n.Config.Log.Tracef("MQTT PUBLISH from %s (user=%s, client=%s): topic=%s, QoS=%d, retained=%v", clientAddr, username, clientID, p.TopicName, p.Qos, p.Retain)
+
+		if publishPacket, ok := packet.(*packets.PublishPacket); ok {
+			payload := publishPacket.Payload
+			// n.Config.Log.Tracef("MQTT PUBLISH payload from %s: %s", clientAddr, string(payload))
+			var envelope meshtastic.ServiceEnvelope
+			if err := proto.Unmarshal(payload, &envelope); err != nil {
+				n.Config.Log.Warnf("not meshtastic on %v: from: %v: %v", p.TopicName, username, err)
+			} else {
+				n.processEnvelope(&envelope, p.TopicName, connInfo)
+			}
+		}
+
+	case *packets.SubscribePacket:
+		n.connectionsMutex.RLock()
+		connInfo, exists := n.clientIDByConnID[clientAddr]
+		n.connectionsMutex.RUnlock()
+
+		if !exists {
+			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientAddr)
+		}
+
+		username := connInfo.Username
+		clientID := connInfo.ClientID
+
+		topics := make([]string, 0, len(p.Topics))
+		topics = append(topics, p.Topics...)
+		n.Config.Log.Tracef("MQTT SUBSCRIBE from %s (user=%s, client=%s): topics=%v", clientAddr, username, clientID, topics)
+
+	default:
+		// Other packet types
+	}
+
+	// Serialize the packet for forwarding
+	var buf bytes.Buffer
+	if err := packet.Write(&buf); err != nil {
+		n.Config.Log.Errorf("Failed to serialize MQTT packet: %v", err)
+		return err
+	}
+
+	// Forward the packet to the backend
+	if _, err := backendConn.Write(buf.Bytes()); err != nil {
+		n.Config.Log.Errorf("Failed to forward packet to backend: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+func (n *ProtoBufServerCmd) backendHandler(conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
 	defer func() {
 		done <- struct{}{}
 	}()
@@ -89,77 +181,120 @@ func (n *ProtoBufServerCmd) processBackendResponses(conn net.Conn, backendReader
 	}
 }
 
-func (n *ProtoBufServerCmd) processClientPacket(connReader *bufio.Reader, backendConn net.Conn, clientIP string) error {
-	packet, err := packets.ReadPacket(connReader)
-	if err != nil {
-		if err != io.EOF {
-			n.Config.Log.Errorf("Failed to parse MQTT packet from %s: %v", clientIP, err)
-		}
-		return err
+func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope, topic string, connInfo *ConnectionInfo) {
+
+	packet := envelope.GetPacket()
+	if packet == nil {
+		n.Config.Log.Errorf("Empty packet in envelope from topic %s", topic)
+		return
 	}
 
-	switch p := packet.(type) {
-	case *packets.ConnectPacket:
-		connectInfo := &ConnectionInfo{
-			ClientID:    p.ClientIdentifier,
-			Username:    p.Username,
-			Password:    fmt.Sprintf("%x", p.Password),
-			IPAddress:   clientIP,
-			ConnectTime: time.Now().Unix(),
+	from := packet.GetFrom()
+	to := packet.GetTo()
+	channelId := envelope.GetChannelId()
+	gatewayId := envelope.GetGatewayId()
+
+	// Check if packet contains decoded or encrypted data
+	var portNum meshtastic.PortNum
+	var payload []byte
+	isEncrypted := false
+
+	// First, check if it has decoded data
+	decoded := packet.GetDecoded()
+	if decoded != nil {
+		portNum = decoded.GetPortnum()
+		payload = decoded.GetPayload()
+	} else {
+		// If not decoded, it might be encrypted
+		encrypted := packet.GetEncrypted()
+
+		if encrypted != nil {
+			isEncrypted = true
+			// We can't determine the actual type without decrypting,
+			// but we can log that we received an encrypted packet
+			n.Config.Log.Tracef("Received encrypted packet from %d on topic %s", from, topic)
+
+			// For encrypted packets, further processing would require decryption
+			// which is handled in the mqtt client's dispatcher function
+			return
+		} else {
+			n.Config.Log.Errorf("Packet contains neither decoded nor encrypted data from topic %s", topic)
+			return
+		}
+	}
+
+	// Process the message based on portNum (only for decoded messages)
+	switch portNum {
+	case meshtastic.PortNum_NODEINFO_APP:
+		var user meshtastic.User
+		if err := proto.Unmarshal(payload, &user); err != nil {
+			n.Config.Log.Warnf("Failed to unmarshal User from NODEINFO_APP: %v", err)
+			return
+		}
+		// Log key details from the NodeInfo
+		n.Config.Log.Infof("NODEINFO from %d: id=%s, longName=%s, shortName=%s, hwModel=%s, role=%s",
+			from, user.GetId(), user.GetLongName(), user.GetShortName(), user.GetHwModel().String(), user.GetRole().String())
+
+	case meshtastic.PortNum_POSITION_APP:
+		var position meshtastic.Position
+		if err := proto.Unmarshal(payload, &position); err != nil {
+			n.Config.Log.Warnf("Failed to unmarshal Position: %v", err)
+			return
+		}
+		// Log key details from the Position data
+		n.Config.Log.Infof("POSITION from %d: lat=%d, lng=%d, alt=%d, precision=%d",
+			from, position.GetLatitudeI(), position.GetLongitudeI(), position.GetAltitude(), position.GetPrecisionBits())
+
+	case meshtastic.PortNum_TEXT_MESSAGE_APP:
+		// For text messages, the payload is just the text string
+		n.Config.Log.Infof("TEXT_MESSAGE from %d to %d: %s", from, to, string(payload))
+
+	case meshtastic.PortNum_MAP_REPORT_APP:
+		var mapReport meshtastic.MapReport
+		if err := proto.Unmarshal(payload, &mapReport); err != nil {
+			n.Config.Log.Warnf("Failed to unmarshal MapReport: %v", err)
+			return
+		}
+		// Log key details from the MapReport
+		n.Config.Log.Infof("MAP_REPORT from %d: longName=%s, shortName=%s, lat=%d, lng=%d",
+			from, mapReport.GetLongName(), mapReport.GetShortName(),
+			mapReport.GetLatitudeI(), mapReport.GetLongitudeI())
+
+	case meshtastic.PortNum_TELEMETRY_APP:
+		var telemetry meshtastic.Telemetry
+		if err := proto.Unmarshal(payload, &telemetry); err != nil {
+			n.Config.Log.Warnf("Failed to unmarshal Telemetry: %v", err)
+			return
+		}
+		// Process specific telemetry type
+		if deviceMetrics := telemetry.GetDeviceMetrics(); deviceMetrics != nil {
+			n.Config.Log.Infof("TELEMETRY_DEVICE from %d: battery=%d%%, voltage=%.2fV",
+				from, deviceMetrics.GetBatteryLevel(), deviceMetrics.GetVoltage())
+		} else if envMetrics := telemetry.GetEnvironmentMetrics(); envMetrics != nil {
+			n.Config.Log.Infof("TELEMETRY_ENVIRONMENT from %d: temp=%.1f°C, humidity=%.1f%%",
+				from, envMetrics.GetTemperature(), envMetrics.GetRelativeHumidity())
 		}
 
-		n.connectionsMutex.Lock()
-		n.clientIDByConnID[clientIP] = connectInfo
-		n.connectionsMutex.Unlock()
-
-		n.Config.Log.Tracef("MQTT CONNECT from %s: client=%s, username=%s, protocol=%d", clientIP, p.ClientIdentifier, p.Username, p.ProtocolVersion)
-
-	case *packets.PublishPacket:
-		n.connectionsMutex.RLock()
-		connInfo, exists := n.clientIDByConnID[clientIP]
-		n.connectionsMutex.RUnlock()
-
-		if !exists {
-			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientIP)
+	case meshtastic.PortNum_NEIGHBORINFO_APP:
+		var neighborInfo meshtastic.NeighborInfo
+		if err := proto.Unmarshal(payload, &neighborInfo); err != nil {
+			n.Config.Log.Warnf("Failed to unmarshal NeighborInfo: %v", err)
+			return
 		}
-
-		username := connInfo.Username
-		clientID := connInfo.ClientID
-
-		n.Config.Log.Tracef("MQTT PUBLISH from %s (user=%s, client=%s): topic=%s, QoS=%d, retained=%v", clientIP, username, clientID, p.TopicName, p.Qos, p.Retain)
-
-	case *packets.SubscribePacket:
-		n.connectionsMutex.RLock()
-		connInfo, exists := n.clientIDByConnID[clientIP]
-		n.connectionsMutex.RUnlock()
-
-		if !exists {
-			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientIP)
-		}
-
-		username := connInfo.Username
-		clientID := connInfo.ClientID
-
-		topics := make([]string, 0, len(p.Topics))
-		topics = append(topics, p.Topics...)
-		n.Config.Log.Tracef("MQTT SUBSCRIBE from %s (user=%s, client=%s): topics=%v", clientIP, username, clientID, topics)
+		n.Config.Log.Infof("NEIGHBORINFO from %d: nodeId=%d, neighbors=%d",
+			from, neighborInfo.GetNodeId(), len(neighborInfo.GetNeighbors()))
 
 	default:
-		// Other packet types
+		// Handle other message types
+		n.Config.Log.Infof("Message with PortNum %s from %d on topic %s",
+			portNum.String(), from, topic)
 	}
 
-	// Serialize the packet for forwarding
-	var buf bytes.Buffer
-	if err := packet.Write(&buf); err != nil {
-		n.Config.Log.Errorf("Failed to serialize MQTT packet: %v", err)
-		return err
+	// Summary log showing what we determined
+	encryptedStatus := "not encrypted"
+	if isEncrypted {
+		encryptedStatus = "encrypted"
 	}
 
-	// Forward the packet to the backend
-	if _, err := backendConn.Write(buf.Bytes()); err != nil {
-		n.Config.Log.Errorf("Failed to forward packet to backend: %v", err)
-		return err
-	}
-
-	return nil
+	n.Config.Log.Tracef("Processed Meshtastic packet: from=%d, to=%d, gatewayId=%s, channelId=%s, portNum=%s, %s", from, to, gatewayId, channelId, portNum.String(), encryptedStatus)
 }

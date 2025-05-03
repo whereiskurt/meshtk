@@ -5,7 +5,8 @@ Usage:
   meshtk protobuf [ACTION ...] [options]
 
 Actions:
-  inspector - listen and process inspector protobufs 
+  inspector - listen and process mosquitto plugin protobufs
+  proxy     - accept MQTT connections and reverse proxy to broker
   
 Examples:
 {{ template "ProtoBufServerExamples" . }}
@@ -13,4 +14,6 @@ Examples:
 
 {{ define "ProtoBufServerExamples" }}
   $ meshtk protobuf inspector --verbose=debug
+  $ meshtk protobuf proxy --verbose=debug
+
 {{ end }}

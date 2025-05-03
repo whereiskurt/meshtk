@@ -3,6 +3,8 @@ package protoserver
 import (
 	"bufio"
 	"bytes"
+	"crypto/cipher"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -18,14 +20,14 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 	defer func() {
 		if conn.RemoteAddr() != nil {
 			clientAddr := conn.RemoteAddr().String()
-			n.connectionsMutex.Lock()
-			delete(n.clientIDByConnID, clientAddr)
-			n.connectionsMutex.Unlock()
+			n.ConnMutex.Lock()
+			delete(n.ConnTrack, clientAddr)
+			n.ConnMutex.Unlock()
 		}
 		conn.Close()
 	}()
 
-	clientAddr := n.ClientAddress(conn)
+	clientAddr := n.TrackClient(conn)
 
 	backendAddress := n.Config.ProtoBufServer.ProxyForwardAddress
 	backendConn, err := net.DialTimeout("tcp", backendAddress, 5*time.Second)
@@ -47,14 +49,14 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 		case <-done:
 			return
 		default:
-			if err := n.requestHandler(request, backendConn, clientAddr); err != nil {
+			if err := n.handler(request, backendConn, clientAddr); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func (*ProtoBufServerCmd) ClientAddress(conn net.Conn) string {
+func (*ProtoBufServerCmd) TrackClient(conn net.Conn) string {
 	var clientAddr string
 	if conn.RemoteAddr() != nil {
 		clientAddr = conn.RemoteAddr().String()
@@ -69,7 +71,7 @@ func (*ProtoBufServerCmd) ClientAddress(conn net.Conn) string {
 	return clientAddr
 }
 
-func (n *ProtoBufServerCmd) requestHandler(connReader *bufio.Reader, backendConn net.Conn, clientAddr string) error {
+func (n *ProtoBufServerCmd) handler(connReader *bufio.Reader, backendConn net.Conn, clientAddr string) error {
 	packet, err := packets.ReadPacket(connReader)
 	if err != nil {
 		if err != io.EOF {
@@ -87,16 +89,16 @@ func (n *ProtoBufServerCmd) requestHandler(connReader *bufio.Reader, backendConn
 			ConnectTime: time.Now().Unix(),
 		}
 
-		n.connectionsMutex.Lock()
-		n.clientIDByConnID[clientAddr] = connectInfo
-		n.connectionsMutex.Unlock()
+		n.ConnMutex.Lock()
+		n.ConnTrack[clientAddr] = connectInfo
+		n.ConnMutex.Unlock()
 
 		n.Config.Log.Tracef("MQTT CONNECT from %s: client=%s, username=%s, protocol=%d", clientAddr, p.ClientIdentifier, p.Username, p.ProtocolVersion)
 
 	case *packets.PublishPacket:
-		n.connectionsMutex.RLock()
-		connInfo, exists := n.clientIDByConnID[clientAddr]
-		n.connectionsMutex.RUnlock()
+		n.ConnMutex.RLock()
+		connInfo, exists := n.ConnTrack[clientAddr]
+		n.ConnMutex.RUnlock()
 
 		if !exists {
 			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientAddr)
@@ -119,9 +121,9 @@ func (n *ProtoBufServerCmd) requestHandler(connReader *bufio.Reader, backendConn
 		}
 
 	case *packets.SubscribePacket:
-		n.connectionsMutex.RLock()
-		connInfo, exists := n.clientIDByConnID[clientAddr]
-		n.connectionsMutex.RUnlock()
+		n.ConnMutex.RLock()
+		connInfo, exists := n.ConnTrack[clientAddr]
+		n.ConnMutex.RUnlock()
 
 		if !exists {
 			return fmt.Errorf("connection %s not found in clientIDByConnID map", clientAddr)
@@ -191,38 +193,37 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 
 	from := packet.GetFrom()
 	to := packet.GetTo()
-	channelId := envelope.GetChannelId()
-	gatewayId := envelope.GetGatewayId()
+	// channelId := envelope.GetChannelId()
+	// gatewayId := envelope.GetGatewayId()
 
 	// Check if packet contains decoded or encrypted data
 	var portNum meshtastic.PortNum
 	var payload []byte
-	isEncrypted := false
+	// isEncrypted := false
 
 	// First, check if it has decoded data
 	decoded := packet.GetDecoded()
-	if decoded != nil {
-		portNum = decoded.GetPortnum()
-		payload = decoded.GetPayload()
-	} else {
-		// If not decoded, it might be encrypted
+	if decoded == nil {
 		encrypted := packet.GetEncrypted()
 
 		if encrypted != nil {
-			isEncrypted = true
-			// We can't determine the actual type without decrypting,
-			// but we can log that we received an encrypted packet
-			n.Config.Log.Tracef("Received encrypted packet from %d on topic %s", from, topic)
+			var err error
+			// isEncrypted = true
 
-			// For encrypted packets, further processing would require decryption
-			// which is handled in the mqtt client's dispatcher function
-			return
+			n.Config.Log.Tracef("Received encrypted packet from %d on topic %s", from, topic)
+			decoded, err = n.newMethod(packet, from, encrypted)
+			if err != nil {
+				n.Config.Log.Errorf("failed to decrypt data with any cipher")
+				return
+			}
+
 		} else {
 			n.Config.Log.Errorf("Packet contains neither decoded nor encrypted data from topic %s", topic)
 			return
 		}
 	}
-
+	portNum = decoded.GetPortnum()
+	payload = decoded.GetPayload()
 	// Process the message based on portNum (only for decoded messages)
 	switch portNum {
 	case meshtastic.PortNum_NODEINFO_APP:
@@ -231,9 +232,7 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 			n.Config.Log.Warnf("Failed to unmarshal User from NODEINFO_APP: %v", err)
 			return
 		}
-		// Log key details from the NodeInfo
-		n.Config.Log.Infof("NODEINFO from %d: id=%s, longName=%s, shortName=%s, hwModel=%s, role=%s",
-			from, user.GetId(), user.GetLongName(), user.GetShortName(), user.GetHwModel().String(), user.GetRole().String())
+		n.Config.Log.Infof("NODEINFO from %d: id=%s, longName=%s, shortName=%s, hwModel=%s, role=%s", from, user.GetId(), user.GetLongName(), user.GetShortName(), user.GetHwModel().String(), user.GetRole().String())
 
 	case meshtastic.PortNum_POSITION_APP:
 		var position meshtastic.Position
@@ -241,12 +240,9 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 			n.Config.Log.Warnf("Failed to unmarshal Position: %v", err)
 			return
 		}
-		// Log key details from the Position data
-		n.Config.Log.Infof("POSITION from %d: lat=%d, lng=%d, alt=%d, precision=%d",
-			from, position.GetLatitudeI(), position.GetLongitudeI(), position.GetAltitude(), position.GetPrecisionBits())
+		n.Config.Log.Infof("POSITION from %d: lat=%d, lng=%d, alt=%d, precision=%d", from, position.GetLatitudeI(), position.GetLongitudeI(), position.GetAltitude(), position.GetPrecisionBits())
 
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
-		// For text messages, the payload is just the text string
 		n.Config.Log.Infof("TEXT_MESSAGE from %d to %d: %s", from, to, string(payload))
 
 	case meshtastic.PortNum_MAP_REPORT_APP:
@@ -255,10 +251,7 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 			n.Config.Log.Warnf("Failed to unmarshal MapReport: %v", err)
 			return
 		}
-		// Log key details from the MapReport
-		n.Config.Log.Infof("MAP_REPORT from %d: longName=%s, shortName=%s, lat=%d, lng=%d",
-			from, mapReport.GetLongName(), mapReport.GetShortName(),
-			mapReport.GetLatitudeI(), mapReport.GetLongitudeI())
+		n.Config.Log.Infof("MAP_REPORT from %d: longName=%s, shortName=%s, lat=%d, lng=%d", from, mapReport.GetLongName(), mapReport.GetShortName(), mapReport.GetLatitudeI(), mapReport.GetLongitudeI())
 
 	case meshtastic.PortNum_TELEMETRY_APP:
 		var telemetry meshtastic.Telemetry
@@ -266,13 +259,10 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 			n.Config.Log.Warnf("Failed to unmarshal Telemetry: %v", err)
 			return
 		}
-		// Process specific telemetry type
 		if deviceMetrics := telemetry.GetDeviceMetrics(); deviceMetrics != nil {
-			n.Config.Log.Infof("TELEMETRY_DEVICE from %d: battery=%d%%, voltage=%.2fV",
-				from, deviceMetrics.GetBatteryLevel(), deviceMetrics.GetVoltage())
+			n.Config.Log.Infof("TELEMETRY_DEVICE from %d: battery=%d%%, voltage=%.2fV", from, deviceMetrics.GetBatteryLevel(), deviceMetrics.GetVoltage())
 		} else if envMetrics := telemetry.GetEnvironmentMetrics(); envMetrics != nil {
-			n.Config.Log.Infof("TELEMETRY_ENVIRONMENT from %d: temp=%.1f°C, humidity=%.1f%%",
-				from, envMetrics.GetTemperature(), envMetrics.GetRelativeHumidity())
+			n.Config.Log.Infof("TELEMETRY_ENVIRONMENT from %d: temp=%.1f°C, humidity=%.1f%%", from, envMetrics.GetTemperature(), envMetrics.GetRelativeHumidity())
 		}
 
 	case meshtastic.PortNum_NEIGHBORINFO_APP:
@@ -281,20 +271,26 @@ func (n *ProtoBufServerCmd) processEnvelope(envelope *meshtastic.ServiceEnvelope
 			n.Config.Log.Warnf("Failed to unmarshal NeighborInfo: %v", err)
 			return
 		}
-		n.Config.Log.Infof("NEIGHBORINFO from %d: nodeId=%d, neighbors=%d",
-			from, neighborInfo.GetNodeId(), len(neighborInfo.GetNeighbors()))
+		n.Config.Log.Infof("NEIGHBORINFO from %d: nodeId=%d, neighbors=%d", from, neighborInfo.GetNodeId(), len(neighborInfo.GetNeighbors()))
 
 	default:
-		// Handle other message types
-		n.Config.Log.Infof("Message with PortNum %s from %d on topic %s",
-			portNum.String(), from, topic)
+		n.Config.Log.Infof("Message with PortNum %s from %d on topic %s", portNum.String(), from, topic)
 	}
 
-	// Summary log showing what we determined
-	encryptedStatus := "not encrypted"
-	if isEncrypted {
-		encryptedStatus = "encrypted"
-	}
+}
 
-	n.Config.Log.Tracef("Processed Meshtastic packet: from=%d, to=%d, gatewayId=%s, channelId=%s, portNum=%s, %s", from, to, gatewayId, channelId, portNum.String(), encryptedStatus)
+func (n *ProtoBufServerCmd) newMethod(packet *meshtastic.MeshPacket, from uint32, encrypted []byte) (decoded *meshtastic.Data, err error) {
+	nonce := make([]byte, 16)
+	binary.LittleEndian.PutUint32(nonce[0:], packet.GetId())
+	binary.LittleEndian.PutUint32(nonce[8:], from)
+	decrypted := make([]byte, len(encrypted))
+
+	for _, cipherInstance := range n.Ciphers {
+		cipher.NewCTR(cipherInstance, nonce).XORKeyStream(decrypted, encrypted)
+		decoded = new(meshtastic.Data)
+		if err := proto.Unmarshal(decrypted, decoded); err == nil {
+			return decoded, nil
+		}
+	}
+	return nil, fmt.Errorf("failed to decrypt data with any cipher")
 }

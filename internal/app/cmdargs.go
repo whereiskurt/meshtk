@@ -56,8 +56,8 @@ func (a *App) RegisterOsArgs() {
 	g := protoserver.NewProtoBufServer(a.Config)
 	protobufCmd := cmd.NewCmd([]string{"protobuf", "pb"}, g.Help)
 	cmd.NewSubCmd(protobufCmd, "help", g.Help)
-	cmd.NewSubCmd(protobufCmd, "inspector", g.Inspector)
-	cmd.NewSubCmd(protobufCmd, "proxy", g.Proxy)
+	cmd.NewSubCmd(protobufCmd, "inspector", g.ProtobufServer)
+	cmd.NewSubCmd(protobufCmd, "proxy", g.ProxyServer)
 
 	f := fleet.NewFleet(a.Config)
 	fleetCmd := cmd.NewCmd([]string{"fleet", "f"}, f.Help)

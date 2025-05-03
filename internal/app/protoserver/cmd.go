@@ -1,6 +1,9 @@
 package protoserver
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
@@ -29,15 +32,38 @@ type ProtoBufServerCmd struct {
 		WasSuccess bool
 	}
 
+	ConnMutex sync.RWMutex
+	ConnTrack map[string]*ConnectionInfo // maps connection ID to client ID
+
 	// Connection tracking
-	connectionsMutex sync.RWMutex
-	clientIDByConnID map[string]*ConnectionInfo // maps connection ID to client ID
+	Ciphers []cipher.Block
+}
+
+func NewAESCipher(key []byte) cipher.Block {
+	c, err := aes.NewCipher(key)
+	if err != nil {
+		panic(err)
+	}
+	return c
 }
 
 func NewProtoBufServer(c *config.Config) (n *ProtoBufServerCmd) {
 	n = new(ProtoBufServerCmd)
 	n.Config = c
-	n.clientIDByConnID = make(map[string]*ConnectionInfo)
+	n.ConnTrack = make(map[string]*ConnectionInfo)
+
+	for _, channel := range n.Config.Meshtastic.Channels {
+		base64Key := channel.EncryptKey
+		keyBytes, err := base64.StdEncoding.DecodeString(base64Key)
+		if err != nil {
+			c.Log.Fatalf("The %s channel key '%s' is invalid hex: %+v", channel.Name, base64Key, err)
+		}
+		// Expand the single byte key to 16 bytes for AES-256
+		if len(keyBytes) == 1 && base64Key == "AQ==" {
+			keyBytes = append(keyBytes, make([]byte, 15)...)
+		}
+		n.Ciphers = append(n.Ciphers, NewAESCipher(keyBytes))
+	}
 
 	return n
 }
@@ -47,7 +73,7 @@ func (n *ProtoBufServerCmd) Help(cmd *cobra.Command, argz []string) {
 	fmt.Fprintln(n.Config.Stdout, help.ProtoBufServerHelp(n.Config))
 }
 
-func (n *ProtoBufServerCmd) Inspector(cmd *cobra.Command, argz []string) {
+func (n *ProtoBufServerCmd) ProtobufServer(cmd *cobra.Command, argz []string) {
 	n.CmdOutput.WasSuccess = true
 	s := help.Render("GlobalHeader", n.Config)
 	n.Config.Stdout.Write([]byte(s + "\n"))
@@ -58,7 +84,7 @@ func (n *ProtoBufServerCmd) Inspector(cmd *cobra.Command, argz []string) {
 	n.StartProtobufServer()
 }
 
-func (n *ProtoBufServerCmd) Proxy(cmd *cobra.Command, argz []string) {
+func (n *ProtoBufServerCmd) ProxyServer(cmd *cobra.Command, argz []string) {
 	n.CmdOutput.WasSuccess = true
 	s := help.Render("GlobalHeader", n.Config)
 	n.Config.Stdout.Write([]byte(s + "\n"))
@@ -110,9 +136,9 @@ func (n *ProtoBufServerCmd) StartProxyServer() error {
 	proxyListener := &proxyproto.Listener{Listener: listener}
 	defer proxyListener.Close()
 
-	n.Config.Log.Tracef("Listening on %v with Proxy Protocol", address)
+	n.Config.Log.Tracef("Listening on %v with Proxy Protocol support", address)
 
-	n.connectionsMutex = sync.RWMutex{}
+	n.ConnMutex = sync.RWMutex{}
 
 	go func() {
 		for {

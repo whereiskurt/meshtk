@@ -38,6 +38,13 @@ func NewAESCipher(key []byte) cipher.Block {
 }
 
 func NewServer(c *config.Config) (n *ProtoBufServerCmd) {
+
+	// go func() {
+	// 	runtime.SetBlockProfileRate(1)
+	// 	runtime.SetMutexProfileFraction(1)
+	// 	http.ListenAndServe("0.0.0.0:6060", nil)
+	// }()
+
 	n = new(ProtoBufServerCmd)
 	n.Config = c
 	n.ConnTrack = make(map[string]*ConnectionInfo)

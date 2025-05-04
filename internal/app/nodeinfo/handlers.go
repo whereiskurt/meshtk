@@ -1,10 +1,7 @@
 package nodeinfo
 
 import (
-	"fmt"
-	"os"
 	"sync"
-	"time"
 
 	mqtt "github.com/whereiskurt/meshtk/internal/mqtt"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
@@ -23,46 +20,46 @@ type MessageLedger struct {
 	Payload       []byte             `json:"payload"`
 }
 
-var sequence uint32
+// var sequence uint32
 
-func (n *NodeInfoCmd) AddMessageLedger(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
-	MessagesMutex.Lock()
-	defer MessagesMutex.Unlock()
+// func (n *NodeInfoCmd) AddMessageLedger(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
+// 	MessagesMutex.Lock()
+// 	defer MessagesMutex.Unlock()
 
-	fromNode := n.Nodes[from]
-	toNode := n.Nodes[to]
+// 	fromNode := n.Nodes[from]
+// 	toNode := n.Nodes[to]
 
-	if fromNode == nil {
-		fromNode = mqtt.NewNode(topic)
-	}
-	if toNode == nil {
-		toNode = mqtt.NewNode(topic)
-		toNode.ShortName = "ALL"
-	}
-	message := MessageLedger{
-		Sequence:      sequence,
-		DateTimeStamp: time.Now().Unix(),
-		To:            to,
-		ToNode:        *toNode,
-		FromNode:      *fromNode,
-		From:          from,
-		Topic:         topic,
-		PortNum:       portNum,
-		Payload:       payload,
-	}
+// 	if fromNode == nil {
+// 		fromNode = mqtt.NewNode(topic)
+// 	}
+// 	if toNode == nil {
+// 		toNode = mqtt.NewNode(topic)
+// 		toNode.ShortName = "ALL"
+// 	}
+// 	message := MessageLedger{
+// 		Sequence:      sequence,
+// 		DateTimeStamp: time.Now().Unix(),
+// 		To:            to,
+// 		ToNode:        *toNode,
+// 		FromNode:      *fromNode,
+// 		From:          from,
+// 		Topic:         topic,
+// 		PortNum:       portNum,
+// 		Payload:       payload,
+// 	}
 
-	Messages = append(Messages, message)
+// 	Messages = append(Messages, message)
 
-	file, err := os.OpenFile("message_ledger.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err == nil {
-		defer file.Close()
-		logMessage := fmt.Sprintf("%d,%v,[%s:!%08x]->%v->[%s:!%08x]:%s\n", sequence, message.DateTimeStamp, fromNode.ShortName, from, message.PortNum, toNode.ShortName, to, message.Topic)
-		file.WriteString(logMessage)
-	} else {
-		fmt.Printf("Failed to write to log file: %v\n", err)
-	}
-	sequence++
-}
+// 	file, err := os.OpenFile("message_ledger.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+// 	if err == nil {
+// 		defer file.Close()
+// 		logMessage := fmt.Sprintf("%d,%v,[%s:!%08x]->%v->[%s:!%08x]:%s\n", sequence, message.DateTimeStamp, fromNode.ShortName, from, message.PortNum, toNode.ShortName, to, message.Topic)
+// 		file.WriteString(logMessage)
+// 	} else {
+// 		fmt.Printf("Failed to write to log file: %v\n", err)
+// 	}
+// 	sequence++
+// }
 
 var Messages []MessageLedger
 var MessagesMutex sync.Mutex
@@ -72,7 +69,7 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 	switch portNum {
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
 		n.Config.Log.Tracef(`{from: '%v', topic: '%v', message: '%s'}`, from, topic, payload)
-		n.AddMessageLedger(to, from, topic, portNum, payload)
+		// n.AddMessageLedger(to, from, topic, portNum, payload)
 
 	case meshtastic.PortNum_POSITION_APP:
 		var position meshtastic.Position
@@ -95,7 +92,7 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 		}
 		n.Nodes[from].UpdatePosition(latitude, longitude, altitude, precision)
 		n.Nodes[from].UpdateSeenBy(topic)
-		n.AddMessageLedger(to, from, topic, portNum, payload)
+		// n.AddMessageLedger(to, from, topic, portNum, payload)
 		n.NodesMutex.Unlock()
 	case meshtastic.PortNum_NODEINFO_APP:
 		var user meshtastic.User
@@ -120,7 +117,7 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 			n.Nodes[from] = mqtt.NewNode(topic)
 		}
 		n.Nodes[from].UpdateUser(from, longName, shortName, hwModel, role, pubkey, nil)
-		n.AddMessageLedger(to, from, topic, portNum, payload)
+		// n.AddMessageLedger(to, from, topic, portNum, payload)
 		n.NodesMutex.Unlock()
 	case meshtastic.PortNum_TELEMETRY_APP:
 		var telemetry meshtastic.Telemetry
@@ -144,7 +141,7 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 				n.Nodes[from] = mqtt.NewNode(topic)
 			}
 			n.Nodes[from].UpdateDeviceMetrics(batteryLevel, voltage, chUtil, airUtilTx, uptime)
-			n.AddMessageLedger(to, from, topic, portNum, payload)
+			// n.AddMessageLedger(to, from, topic, portNum, payload)
 			n.NodesMutex.Unlock()
 		} else if envMetrics := telemetry.GetEnvironmentMetrics(); envMetrics != nil {
 			temperature := envMetrics.GetTemperature()
@@ -178,7 +175,7 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 				rainfall1,
 				rainfall24,
 			)
-			n.AddMessageLedger(to, from, topic, portNum, payload)
+			// n.AddMessageLedger(to, from, topic, portNum, payload)
 			n.NodesMutex.Unlock()
 		}
 	case meshtastic.PortNum_NEIGHBORINFO_APP:
@@ -208,7 +205,7 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 			}
 			n.Nodes[from].UpdateNeighborInfo(neighborNum, neighbor.GetSnr())
 		}
-		n.AddMessageLedger(to, from, topic, portNum, payload)
+		// n.AddMessageLedger(to, from, topic, portNum, payload)
 		n.NodesMutex.Unlock()
 	case meshtastic.PortNum_MAP_REPORT_APP:
 		var mapReport meshtastic.MapReport
@@ -253,10 +250,10 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 		n.Nodes[from].UpdateMapReport(fwVersion, region, modemPreset, hasDefaultCh, onlineLocalNodes)
 		n.Nodes[from].UpdatePosition(latitude, longitude, altitude, precision)
 		n.Nodes[from].UpdateSeenBy(topic)
-		n.AddMessageLedger(to, from, topic, portNum, payload)
+		// n.AddMessageLedger(to, from, topic, portNum, payload)
 		n.NodesMutex.Unlock()
 	default:
-		n.AddMessageLedger(to, from, topic, portNum, payload)
+		// n.AddMessageLedger(to, from, topic, portNum, payload)
 		n.Config.Log.Tracef(`{from: '%v', topic: '%v', portNum: '%s'}`, from, topic, portNum)
 	}
 }

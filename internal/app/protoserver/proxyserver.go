@@ -29,17 +29,19 @@ func (n *ProtoBufServerCmd) freeConnTrack() {
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-
+		i := 0
 		for range ticker.C {
 			now := time.Now().Unix()
 			n.ConnMutex.Lock()
-			for clientAddr, connInfo := range n.ConnTrack {
-				if now-connInfo.ConnectTime > 1800 {
-					delete(n.ConnTrack, clientAddr)
+			for socketAddr, connInfo := range n.ConnTrack {
+				if now-connInfo.ConnectTime > 180 {
+					i++
+					delete(n.ConnTrack, socketAddr)
 				}
 			}
 			n.ConnMutex.Unlock()
 		}
+		n.Config.Log.Tracef("Connection track cleanup completed: %d connections removed", i)
 	}()
 }
 
@@ -95,6 +97,23 @@ func (*ProtoBufServerCmd) TrackClient(conn net.Conn) (clientAddr string) {
 		}
 	}
 	return clientAddr
+}
+
+type InspectorPacket struct {
+	ConnTrack ConnectionInfo
+	MQTT      struct {
+		Type   string
+		Topics []string //Subscribe topics can have multiple topics
+		Packet *packets.ControlPacket
+	}
+	Meshtastic struct {
+		ServiceEnvelope *meshtastic.ServiceEnvelope
+		From            uint32
+		To              uint32
+		PortNum         meshtastic.PortNum
+		Payload         []byte
+		PayloadString   string
+	}
 }
 
 func (n *ProtoBufServerCmd) handleMQTT(connReader *bufio.Reader, backendConn net.Conn, socketAddress string) error {

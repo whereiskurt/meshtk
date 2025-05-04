@@ -54,10 +54,10 @@ func (a *App) RegisterOsArgs() {
 
 	// Gonna add in grpc service
 	g := protoserver.NewServer(a.Config)
-	protobufCmd := cmd.NewCmd([]string{"protobuf", "pb"}, g.Help)
-	cmd.NewSubCmd(protobufCmd, "help", g.Help)
-	cmd.NewSubCmd(protobufCmd, "inspector", g.ProtobufServer)
-	cmd.NewSubCmd(protobufCmd, "proxy", g.ProxyServer)
+	serverCmd := cmd.NewCmd([]string{"server"}, g.Help)
+	cmd.NewSubCmd(serverCmd, "help", g.Help)
+	cmd.NewSubCmd(serverCmd, "protobuf", g.ProtobufServer)
+	cmd.NewSubCmd(serverCmd, "proxy", g.ProxyServer)
 
 	f := fleet.NewFleet(a.Config)
 	fleetCmd := cmd.NewCmd([]string{"fleet", "f"}, f.Help)

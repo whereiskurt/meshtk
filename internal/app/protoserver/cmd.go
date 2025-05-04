@@ -61,7 +61,7 @@ func NewServer(c *config.Config) (n *ProtoBufServerCmd) {
 
 func (n *ProtoBufServerCmd) Help(cmd *cobra.Command, argz []string) {
 	n.CmdOutput.WasSuccess = true
-	fmt.Fprintln(n.Config.Stdout, help.ProtoBufServerHelp(n.Config))
+	fmt.Fprintln(n.Config.Stdout, help.ServerHelp(n.Config))
 }
 
 func (n *ProtoBufServerCmd) ProtobufServer(cmd *cobra.Command, argz []string) {

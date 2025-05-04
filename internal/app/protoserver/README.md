@@ -15,6 +15,36 @@ ProtoBufServer:
 ```
 This starts the reverse proxy listening on :1883 and forwarding to :1884.
 
+```mermaid
+flowchart LR
+    subgraph Client
+        A[MQTT Client<br>IP:1883]
+    end
+
+    subgraph ReverseProxy
+        subgraph Inspector
+            B[Listener<br>Port 1883]
+            C[Parse MQTT Packet]
+            C1[Decode Meshtastic Envelope]
+            C2[Decrypt Channel Payloads]
+        end
+        D{Eval allow/block/ratelimit}
+    end
+
+    subgraph Mosquitto Broker
+        E[MQTT Broker<br>Port 1884]
+    end
+
+    A --> B
+    B --> C
+    C --> C1
+    C1 --> C2
+    C2 --> D
+
+    D -- Yes --> E
+    D -- No --> F[Drop / Reject]
+```
+
 # Why this approach?
 I think this is the happy middle ground between writing a plugin just for mosquitto/emqx/hivemq/etc. and instead having a single fronted solution. If I want to leverage `mosquitto` as broker, and have a security context for each request, this is the only way. While other tools may support proxy protocol out of the box, they won't be able to read `Meshtastic` payloads. 
 

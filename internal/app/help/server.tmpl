@@ -1,0 +1,19 @@
+{{ define "ServerHelp" }}
+{{- template "GlobalHeader" . }}
+
+Usage:
+  meshtk server [ACTION ...] [options]
+
+Actions:
+  protobuf - listen and process mosquitto plugin protobufs
+  proxy     - accept MQTT connections and reverse proxy to broker
+  
+Examples:
+{{ template "ServerExamples" . }}
+{{ end }}
+
+{{ define "ServerExamples" }}
+  $ meshtk server protobuf --verbose=debug
+  $ meshtk server proxy --verbose=debug
+
+{{ end }}

@@ -19,7 +19,7 @@ Usage:
 
 Commands:
   nodeinfo  - broadcast a virtual node
-  protobuf  - listen and process protobuf from mosquitto plugin
+  server    - process meshtastic packets as a reverproxy or mosquitto plugin
   fleet     - create a fleet of virtual nodes for load testing
   
 {{ template "GlobalOptions" . }}
@@ -36,8 +36,8 @@ Global Options:
 {{ define "GlobalExamples" }}
 For more help:
   $ meshtk nodeinfo announce
-  $ meshtk protobuf inspector
-  $ meshtk protobuf proxy
   $ meshtk fleet simulate
+  $ meshtk server proxy
+  $ meshtk server protobuf
 
 {{ end }}

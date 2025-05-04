@@ -18,8 +18,8 @@ var (
 	GlobalTmpl string
 	//go:embed nodeinfo.tmpl
 	NodeInfoTmpl string
-	//go:embed protobufserver.tmpl
-	ProtoBufServerTmpl string
+	//go:embed server.tmpl
+	ServerTmpl string
 	//go:embed fleet.tmpl
 	FleetTmpl string
 )
@@ -27,7 +27,7 @@ var (
 var TEMPLATES = strings.Join([]string{
 	GlobalTmpl,
 	NodeInfoTmpl,
-	ProtoBufServerTmpl,
+	ServerTmpl,
 	FleetTmpl,
 }, "\n")
 
@@ -41,8 +41,8 @@ func NodeInfoHelp(c *config.Config) string {
 	return Render("NodeInfoHelp", c)
 }
 
-func ProtoBufServerHelp(c *config.Config) string {
-	return Render("ProtoBufServerHelp", c)
+func ServerHelp(c *config.Config) string {
+	return Render("ServerHelp", c)
 }
 
 func FleetHelp(c *config.Config) string {

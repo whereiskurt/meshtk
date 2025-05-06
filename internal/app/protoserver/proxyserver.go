@@ -11,38 +11,34 @@ import (
 	"time"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
-	proxyproto "github.com/pires/go-proxyproto"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 	"google.golang.org/protobuf/proto"
 )
 
-// ConnectionInfo stores information about a client connection
-type ConnectionInfo struct {
-	ClientID      string
-	Username      string
-	Password      string
-	SocketAddress string
-	ConnectTime   int64
-}
+type InspectorPacket struct {
+	Track *ConnectionInfo
 
-func (n *ProtoBufServerCmd) freeConnTrack() {
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		i := 0
-		for range ticker.C {
-			now := time.Now().Unix()
-			n.ConnMutex.Lock()
-			for socketAddr, connInfo := range n.ConnTrack {
-				if now-connInfo.ConnectTime > 180 {
-					i++
-					delete(n.ConnTrack, socketAddr)
-				}
-			}
-			n.ConnMutex.Unlock()
-		}
-		n.Config.Log.Tracef("Connection track cleanup completed: %d connections removed", i)
-	}()
+	Raw struct {
+		MQTT        *packets.ControlPacket
+		Meshtastic  *meshtastic.ServiceEnvelope
+		WasModified bool
+	}
+
+	MQTT struct {
+		Type   string
+		Topics []string //Subscribe topics can have multiple topics
+	}
+
+	Meshtastic struct {
+		From            uint32
+		To              uint32
+		PortNum         meshtastic.PortNum
+		Payload         []byte
+		PayloadString   string
+		DecryptKey      []byte
+		WasEncrypted    bool
+		WasPKIEncrypted bool
+	}
 }
 
 func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
@@ -56,7 +52,7 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 		conn.Close()
 	}()
 
-	clientAddr := n.TrackClient(conn)
+	clientAddr := n.TrackConnection(conn)
 
 	backendAddress := n.Config.ProtoBufServer.ProxyForwardAddress
 	backendConn, err := net.DialTimeout("tcp", backendAddress, 5*time.Second)
@@ -71,52 +67,48 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 
 	done := make(chan struct{})
 
-	go n.backendHandler(conn, backend, done)
+	go n.handleBackend(conn, backend, done)
 
 	for {
 		select {
 		case <-done:
 			return
 		default:
-			if err := n.handleMQTT(request, backendConn, clientAddr); err != nil {
+			if err := n.processMQTT(request, backendConn, clientAddr); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func (*ProtoBufServerCmd) TrackClient(conn net.Conn) (clientAddr string) {
-	if conn.RemoteAddr() != nil {
-		clientAddr = conn.RemoteAddr().String()
-	}
+func (n *ProtoBufServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
+	defer func() {
+		done <- struct{}{}
+	}()
 
-	if proxyConn, ok := conn.(*proxyproto.Conn); ok {
-		proxyHeader := proxyConn.ProxyHeader()
-		if proxyHeader != nil && proxyHeader.SourceAddr != nil {
-			clientAddr = proxyHeader.SourceAddr.String()
+	for {
+		backendPacket, err := packets.ReadPacket(backendReader)
+		if err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				n.Config.Log.Errorf("Error reading from backend: %v", err)
+			}
+			return
+		}
+
+		var buf bytes.Buffer
+		if err := backendPacket.Write(&buf); err != nil {
+			n.Config.Log.Errorf("Failed to serialize backend response packet: %v", err)
+			return
+		}
+
+		if _, err := conn.Write(buf.Bytes()); err != nil {
+			n.Config.Log.Errorf("Failed to write backend response to client: %v", err)
+			return
 		}
 	}
-	return clientAddr
 }
 
-type InspectorPacket struct {
-	ConnTrack ConnectionInfo
-	MQTT      struct {
-		Type   string
-		Topics []string //Subscribe topics can have multiple topics
-		Packet *packets.ControlPacket
-	}
-	Meshtastic struct {
-		ServiceEnvelope *meshtastic.ServiceEnvelope
-		From            uint32
-		To              uint32
-		PortNum         meshtastic.PortNum
-		Payload         []byte
-		PayloadString   string
-	}
-}
-
-func (n *ProtoBufServerCmd) handleMQTT(connReader *bufio.Reader, backendConn net.Conn, socketAddress string) error {
+func (n *ProtoBufServerCmd) processMQTT(connReader *bufio.Reader, backendConn net.Conn, socketAddress string) error {
 	packet, err := packets.ReadPacket(connReader)
 	if err != nil {
 		if err != io.EOF {
@@ -159,7 +151,7 @@ func (n *ProtoBufServerCmd) handleMQTT(connReader *bufio.Reader, backendConn net
 		if err := proto.Unmarshal(payload, &envelope); err != nil {
 			n.Config.Log.Warnf("not meshtastic on %v: from: %v: %v", p.TopicName, username, err)
 		} else {
-			n.handleMeshtastic(&envelope, p.TopicName, connInfo)
+			n.processMeshtastic(&envelope, p.TopicName, connInfo)
 		}
 
 	case *packets.SubscribePacket:
@@ -198,34 +190,7 @@ func (n *ProtoBufServerCmd) handleMQTT(connReader *bufio.Reader, backendConn net
 	return nil
 }
 
-func (n *ProtoBufServerCmd) backendHandler(conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
-	defer func() {
-		done <- struct{}{}
-	}()
-
-	for {
-		backendPacket, err := packets.ReadPacket(backendReader)
-		if err != nil {
-			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				n.Config.Log.Errorf("Error reading from backend: %v", err)
-			}
-			return
-		}
-
-		var buf bytes.Buffer
-		if err := backendPacket.Write(&buf); err != nil {
-			n.Config.Log.Errorf("Failed to serialize backend response packet: %v", err)
-			return
-		}
-
-		if _, err := conn.Write(buf.Bytes()); err != nil {
-			n.Config.Log.Errorf("Failed to write backend response to client: %v", err)
-			return
-		}
-	}
-}
-
-func (n *ProtoBufServerCmd) handleMeshtastic(envelope *meshtastic.ServiceEnvelope, topic string, connInfo *ConnectionInfo) {
+func (n *ProtoBufServerCmd) processMeshtastic(envelope *meshtastic.ServiceEnvelope, topic string, connInfo *ConnectionInfo) {
 
 	packet := envelope.GetPacket()
 	if packet == nil {
@@ -245,9 +210,8 @@ func (n *ProtoBufServerCmd) handleMeshtastic(envelope *meshtastic.ServiceEnvelop
 
 		if encrypted != nil {
 			var err error
-
-			n.Config.Log.Tracef("Received encrypted packet from %d on topic %s", from, topic)
-			decoded, err = n.tryCiphers(packet, from, encrypted)
+			// n.Config.Log.Tracef("Received encrypted packet from %d on topic %s", from, topic)
+			decoded, err = n.decipherMeshtastic(packet, from, encrypted)
 			if err != nil {
 				n.Config.Log.Errorf("failed to decrypt data with any cipher")
 				return
@@ -269,7 +233,7 @@ func (n *ProtoBufServerCmd) handleMeshtastic(envelope *meshtastic.ServiceEnvelop
 			n.Config.Log.Warnf("Failed to unmarshal User from NODEINFO_APP: %v", err)
 			return
 		}
-		n.Config.Log.Infof("NODEINFO from %d: id=%s, longName=%s, shortName=%s, hwModel=%s, role=%s", from, user.GetId(), user.GetLongName(), user.GetShortName(), user.GetHwModel().String(), user.GetRole().String())
+		n.Config.Log.Tracef("NODEINFO from %d: id=%s, longName=%s, shortName=%s, hwModel=%s, role=%s", from, user.GetId(), user.GetLongName(), user.GetShortName(), user.GetHwModel().String(), user.GetRole().String())
 
 	case meshtastic.PortNum_POSITION_APP:
 		var position meshtastic.Position
@@ -277,10 +241,10 @@ func (n *ProtoBufServerCmd) handleMeshtastic(envelope *meshtastic.ServiceEnvelop
 			n.Config.Log.Warnf("Failed to unmarshal Position: %v", err)
 			return
 		}
-		n.Config.Log.Infof("POSITION from %d: lat=%d, lng=%d, alt=%d, precision=%d", from, position.GetLatitudeI(), position.GetLongitudeI(), position.GetAltitude(), position.GetPrecisionBits())
+		n.Config.Log.Tracef("POSITION from %d: lat=%d, lng=%d, alt=%d, precision=%d", from, position.GetLatitudeI(), position.GetLongitudeI(), position.GetAltitude(), position.GetPrecisionBits())
 
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
-		n.Config.Log.Infof("TEXT_MESSAGE from %d to %d: %s", from, to, string(payload))
+		n.Config.Log.Tracef("TEXT_MESSAGE from %d to %d: %s", from, to, string(payload))
 
 	case meshtastic.PortNum_MAP_REPORT_APP:
 		var mapReport meshtastic.MapReport
@@ -288,18 +252,13 @@ func (n *ProtoBufServerCmd) handleMeshtastic(envelope *meshtastic.ServiceEnvelop
 			n.Config.Log.Warnf("Failed to unmarshal MapReport: %v", err)
 			return
 		}
-		n.Config.Log.Infof("MAP_REPORT from %d: longName=%s, shortName=%s, lat=%d, lng=%d", from, mapReport.GetLongName(), mapReport.GetShortName(), mapReport.GetLatitudeI(), mapReport.GetLongitudeI())
+		n.Config.Log.Tracef("MAP_REPORT from %d: longName=%s, shortName=%s, lat=%d, lng=%d", from, mapReport.GetLongName(), mapReport.GetShortName(), mapReport.GetLatitudeI(), mapReport.GetLongitudeI())
 
 	case meshtastic.PortNum_TELEMETRY_APP:
 		var telemetry meshtastic.Telemetry
 		if err := proto.Unmarshal(payload, &telemetry); err != nil {
 			n.Config.Log.Warnf("Failed to unmarshal Telemetry: %v", err)
 			return
-		}
-		if deviceMetrics := telemetry.GetDeviceMetrics(); deviceMetrics != nil {
-			n.Config.Log.Infof("TELEMETRY_DEVICE from %d: battery=%d%%, voltage=%.2fV", from, deviceMetrics.GetBatteryLevel(), deviceMetrics.GetVoltage())
-		} else if envMetrics := telemetry.GetEnvironmentMetrics(); envMetrics != nil {
-			n.Config.Log.Infof("TELEMETRY_ENVIRONMENT from %d: temp=%.1f°C, humidity=%.1f%%", from, envMetrics.GetTemperature(), envMetrics.GetRelativeHumidity())
 		}
 
 	case meshtastic.PortNum_NEIGHBORINFO_APP:
@@ -308,7 +267,7 @@ func (n *ProtoBufServerCmd) handleMeshtastic(envelope *meshtastic.ServiceEnvelop
 			n.Config.Log.Warnf("Failed to unmarshal NeighborInfo: %v", err)
 			return
 		}
-		n.Config.Log.Infof("NEIGHBORINFO from %d: nodeId=%d, neighbors=%d", from, neighborInfo.GetNodeId(), len(neighborInfo.GetNeighbors()))
+		n.Config.Log.Tracef("NEIGHBORINFO from %d: nodeId=%d, neighbors=%d", from, neighborInfo.GetNodeId(), len(neighborInfo.GetNeighbors()))
 
 	default:
 		n.Config.Log.Infof("Message with PortNum %s from %d on topic %s", portNum.String(), from, topic)
@@ -316,7 +275,7 @@ func (n *ProtoBufServerCmd) handleMeshtastic(envelope *meshtastic.ServiceEnvelop
 
 }
 
-func (n *ProtoBufServerCmd) tryCiphers(packet *meshtastic.MeshPacket, from uint32, encrypted []byte) (decoded *meshtastic.Data, err error) {
+func (n *ProtoBufServerCmd) decipherMeshtastic(packet *meshtastic.MeshPacket, from uint32, encrypted []byte) (decoded *meshtastic.Data, err error) {
 	nonce := make([]byte, 16)
 	binary.LittleEndian.PutUint32(nonce[0:], packet.GetId())
 	binary.LittleEndian.PutUint32(nonce[8:], from)

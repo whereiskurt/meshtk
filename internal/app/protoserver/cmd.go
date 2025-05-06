@@ -39,17 +39,15 @@ func NewAESCipher(key []byte) cipher.Block {
 
 func NewServer(c *config.Config) (n *ProtoBufServerCmd) {
 
-	// go func() {
-	// 	runtime.SetBlockProfileRate(1)
-	// 	runtime.SetMutexProfileFraction(1)
-	// 	http.ListenAndServe("0.0.0.0:6060", nil)
-	// }()
-
 	n = new(ProtoBufServerCmd)
 	n.Config = c
-	n.ConnTrack = make(map[string]*ConnectionInfo)
-	n.freeConnTrack()
+	n.SetupTracker()
+	n.LoadCiphers(c)
 
+	return n
+}
+
+func (n *ProtoBufServerCmd) LoadCiphers(c *config.Config) {
 	for _, channel := range n.Config.Meshtastic.Channels {
 		base64Key := channel.EncryptKey
 		keyBytes, err := base64.StdEncoding.DecodeString(base64Key)
@@ -62,8 +60,6 @@ func NewServer(c *config.Config) (n *ProtoBufServerCmd) {
 		}
 		n.Ciphers = append(n.Ciphers, NewAESCipher(keyBytes))
 	}
-
-	return n
 }
 
 func (n *ProtoBufServerCmd) Help(cmd *cobra.Command, argz []string) {

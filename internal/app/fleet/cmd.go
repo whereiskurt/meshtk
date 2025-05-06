@@ -56,7 +56,7 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 
 	for idx := range f.Config.Fleet {
 		f.initNodeDb(idx)
-		f.MqttClient = append(f.MqttClient, internal.NewMqttClient(f.Config, &f.Nodes[idx], f.NodeHandler))
+		f.MqttClient = append(f.MqttClient, internal.NewMqttClient(f.Config, &f.Nodes[idx], f.FleetNodeHandler))
 	}
 
 	terminate := make(chan os.Signal, 1)
@@ -121,12 +121,12 @@ func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
 	return done
 }
 
-func (n *FleetCmd) NodeHandler(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
+func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
 	switch portNum {
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
-		n.Config.Log.Tracef(`{from: '%v', topic: '%v', message: '%s'}`, from, topic, payload)
+		// n.Config.Log.Tracef(`{from: '%v', topic: '%v', message: '%s'}`, from, topic, payload)
 
 	default:
-		n.Config.Log.Tracef(`{from: '%v', topic: '%v', portNum: '%s'}`, from, topic, portNum)
+		// n.Config.Log.Tracef(`{from: '%v', topic: '%v', portNum: '%s'}`, from, topic, portNum)
 	}
 }

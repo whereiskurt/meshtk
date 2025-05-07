@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
@@ -19,9 +20,8 @@ type InspectorPacket struct {
 	Track *ConnectionInfo
 
 	Raw struct {
-		MQTT        *packets.ControlPacket
-		Meshtastic  *meshtastic.ServiceEnvelope
-		WasModified bool
+		MQTT       *packets.ControlPacket
+		Meshtastic *meshtastic.ServiceEnvelope
 	}
 
 	MQTT struct {
@@ -30,12 +30,13 @@ type InspectorPacket struct {
 	}
 
 	Meshtastic struct {
+		WasUnmarshalled bool
 		From            uint32
 		To              uint32
 		PortNum         meshtastic.PortNum
 		Payload         []byte
 		PayloadString   string
-		DecryptKey      []byte
+		HexKey          string
 		WasEncrypted    bool
 		WasPKIEncrypted bool
 	}
@@ -44,15 +45,15 @@ type InspectorPacket struct {
 func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 	defer func() {
 		if conn.RemoteAddr() != nil {
-			clientAddr := conn.RemoteAddr().String()
+			socketAddr := conn.RemoteAddr().String()
 			n.ConnMutex.Lock()
-			delete(n.ConnTrack, clientAddr)
+			delete(n.ConnTrack, socketAddr)
 			n.ConnMutex.Unlock()
 		}
 		conn.Close()
 	}()
 
-	clientAddr := n.TrackConnection(conn)
+	socketAddr := n.TrackConnection(conn)
 
 	backendAddress := n.Config.ProtoBufServer.ProxyForwardAddress
 	backendConn, err := net.DialTimeout("tcp", backendAddress, 5*time.Second)
@@ -73,8 +74,28 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 		select {
 		case <-done:
 			return
+
 		default:
-			if err := n.processMQTT(request, backendConn, clientAddr); err != nil {
+			ip := new(InspectorPacket)
+			ip.Track = new(ConnectionInfo)
+			ip.Track.SocketAddress = socketAddr
+
+			if err := n.processMQTT(request, ip); err != nil {
+				//This is a non-fatal error that happens whenever the client disconnects
+				n.Config.Log.Tracef("failed to process MQTT packet: %v", err)
+				return
+			}
+
+			// Serialize the packet for forwarding
+			var buf bytes.Buffer
+			if err := (*ip.Raw.MQTT).Write(&buf); err != nil {
+				n.Config.Log.Tracef("failed to serialize MQTT packet: %v", err)
+				return
+			}
+
+			// Forward the packet to the backend
+			if _, err := backendConn.Write(buf.Bytes()); err != nil {
+				n.Config.Log.Tracef("failed to forward packet to backend: %v", err)
 				return
 			}
 		}
@@ -108,7 +129,9 @@ func (n *ProtoBufServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Re
 	}
 }
 
-func (n *ProtoBufServerCmd) processMQTT(connReader *bufio.Reader, backendConn net.Conn, socketAddress string) error {
+func (n *ProtoBufServerCmd) processMQTT(connReader *bufio.Reader, ip *InspectorPacket) error {
+	socketAddress := ip.Track.SocketAddress
+
 	packet, err := packets.ReadPacket(connReader)
 	if err != nil {
 		if err != io.EOF {
@@ -116,85 +139,85 @@ func (n *ProtoBufServerCmd) processMQTT(connReader *bufio.Reader, backendConn ne
 		}
 		return err
 	}
+	ip.Raw.MQTT = &packet
+
 	switch p := packet.(type) {
 	case *packets.ConnectPacket:
-		connectInfo := &ConnectionInfo{
+		connInfo := &ConnectionInfo{
 			ClientID:      p.ClientIdentifier,
 			Username:      p.Username,
 			Password:      fmt.Sprintf("%x", p.Password),
 			SocketAddress: socketAddress,
 			ConnectTime:   time.Now().Unix(),
 		}
-
+		ip.MQTT.Type = "CONNECT"
+		ip.Track = connInfo
 		n.ConnMutex.Lock()
-		n.ConnTrack[socketAddress] = connectInfo
+		n.ConnTrack[socketAddress] = connInfo
 		n.ConnMutex.Unlock()
 
-		n.Config.Log.Tracef("MQTT CONNECT from %s: client=%s, username=%s, protocol=%d", socketAddress, p.ClientIdentifier, p.Username, p.ProtocolVersion)
-
 	case *packets.PublishPacket:
-		n.ConnMutex.RLock()
-		connInfo, exists := n.ConnTrack[socketAddress]
-		n.ConnMutex.RUnlock()
+		n.newMethod(socketAddress, ip)
+		ip.MQTT.Type = "PUBLISH"
+		topics := make([]string, 0, 1)
+		ip.MQTT.Topics = append(topics, p.TopicName)
 
-		if !exists {
-			return fmt.Errorf("connection %s not found in clientIDByConnID map", socketAddress)
-		}
-
-		username := connInfo.Username
-		clientID := connInfo.ClientID
-
-		n.Config.Log.Tracef("MQTT PUBLISH from %s (user=%s, client=%s): topic=%s, QoS=%d, retained=%v", socketAddress, username, clientID, p.TopicName, p.Qos, p.Retain)
-
-		payload := p.Payload
-		var envelope meshtastic.ServiceEnvelope
-		if err := proto.Unmarshal(payload, &envelope); err != nil {
-			n.Config.Log.Warnf("not meshtastic on %v: from: %v: %v", p.TopicName, username, err)
-		} else {
-			n.processMeshtastic(&envelope, p.TopicName, connInfo)
+		var env meshtastic.ServiceEnvelope
+		if err := proto.Unmarshal(p.Payload, &env); err == nil {
+			ip.Raw.Meshtastic = &env
+			n.processMeshtastic(ip)
 		}
 
 	case *packets.SubscribePacket:
+		n.newMethod(socketAddress, ip)
+		ip.MQTT.Type = "SUBSCRIBE"
+		topics := make([]string, 0, len(p.Topics))
+		ip.MQTT.Topics = append(topics, p.Topics...)
+
+	case *packets.PingreqPacket:
+		n.newMethod(socketAddress, ip)
+		ip.MQTT.Type = "PINGREQ"
+	case *packets.PingrespPacket:
+		n.newMethod(socketAddress, ip)
+		ip.MQTT.Type = "PINGRESP"
+
+	default:
+		ip.MQTT.Type = fmt.Sprintf("%T", packet)
+		ip.MQTT.Type = ip.MQTT.Type[strings.LastIndex(ip.MQTT.Type, ".")+1:]
 		n.ConnMutex.RLock()
 		connInfo, exists := n.ConnTrack[socketAddress]
 		n.ConnMutex.RUnlock()
-
-		if !exists {
-			return fmt.Errorf("connection %s not found in clientIDByConnID map", socketAddress)
+		if exists {
+			ip.Track = connInfo
 		}
-
-		username := connInfo.Username
-		clientID := connInfo.ClientID
-
-		topics := make([]string, 0, len(p.Topics))
-		topics = append(topics, p.Topics...)
-		n.Config.Log.Tracef("MQTT SUBSCRIBE from %s (user=%s, client=%s): topics=%v", socketAddress, username, clientID, topics)
-
-	default:
-		// Other packet types
 	}
 
-	// Serialize the packet for forwarding
-	var buf bytes.Buffer
-	if err := packet.Write(&buf); err != nil {
-		n.Config.Log.Errorf("Failed to serialize MQTT packet: %v", err)
-		return err
-	}
-
-	// Forward the packet to the backend
-	if _, err := backendConn.Write(buf.Bytes()); err != nil {
-		n.Config.Log.Errorf("Failed to forward packet to backend: %v", err)
-		return err
-	}
+	// n.Config.Log.Tracef("MQTT packet details: %+v, %+v", ip.MQTT, ip.Meshtastic)
+	n.Config.Log.Tracef("%s,%s,%s,%s,%s", ip.Track.ClientID, ip.Track.Username, ip.Track.SocketAddress, ip.MQTT.Type, ip.Meshtastic.PortNum)
 
 	return nil
 }
 
-func (n *ProtoBufServerCmd) processMeshtastic(envelope *meshtastic.ServiceEnvelope, topic string, connInfo *ConnectionInfo) {
+func (n *ProtoBufServerCmd) newMethod(socketAddress string, ip *InspectorPacket) {
+	n.ConnMutex.RLock()
+	connInfo, exists := n.ConnTrack[socketAddress]
+	n.ConnMutex.RUnlock()
+	if exists {
+		ip.Track = connInfo
+	}
+}
+
+func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
+	if ip.Raw.Meshtastic == nil {
+		return
+	}
+
+	envelope := ip.Raw.Meshtastic
+	topic := ip.MQTT.Topics[0] //Meshtastic are publish packets, and are only for one topic
 
 	packet := envelope.GetPacket()
 	if packet == nil {
-		n.Config.Log.Errorf("Empty packet in envelope from topic %s", topic)
+		ip.Meshtastic.WasUnmarshalled = false
 		return
 	}
 
@@ -209,12 +232,12 @@ func (n *ProtoBufServerCmd) processMeshtastic(envelope *meshtastic.ServiceEnvelo
 		encrypted := packet.GetEncrypted()
 
 		if encrypted != nil {
-			var err error
-			// n.Config.Log.Tracef("Received encrypted packet from %d on topic %s", from, topic)
-			decoded, err = n.decipherMeshtastic(packet, from, encrypted)
-			if err != nil {
-				n.Config.Log.Errorf("failed to decrypt data with any cipher")
-				return
+			d, hexKey, err := n.decipherMeshtastic(packet, from, encrypted)
+			if err == nil {
+				decoded = d
+				ip.Meshtastic.HexKey = hexKey
+				ip.Meshtastic.WasEncrypted = true
+				ip.Meshtastic.WasUnmarshalled = true
 			}
 
 		} else {
@@ -225,68 +248,68 @@ func (n *ProtoBufServerCmd) processMeshtastic(envelope *meshtastic.ServiceEnvelo
 
 	portNum = decoded.GetPortnum()
 	payload = decoded.GetPayload()
-	// Process the message based on portNum (only for decoded messages)
+
 	switch portNum {
+	case meshtastic.PortNum_TEXT_MESSAGE_APP:
+		ip.Meshtastic.WasUnmarshalled = true
+
 	case meshtastic.PortNum_NODEINFO_APP:
 		var user meshtastic.User
-		if err := proto.Unmarshal(payload, &user); err != nil {
-			n.Config.Log.Warnf("Failed to unmarshal User from NODEINFO_APP: %v", err)
-			return
+		if err := proto.Unmarshal(payload, &user); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
 		}
-		n.Config.Log.Tracef("NODEINFO from %d: id=%s, longName=%s, shortName=%s, hwModel=%s, role=%s", from, user.GetId(), user.GetLongName(), user.GetShortName(), user.GetHwModel().String(), user.GetRole().String())
 
 	case meshtastic.PortNum_POSITION_APP:
 		var position meshtastic.Position
-		if err := proto.Unmarshal(payload, &position); err != nil {
-			n.Config.Log.Warnf("Failed to unmarshal Position: %v", err)
-			return
+		if err := proto.Unmarshal(payload, &position); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
 		}
-		n.Config.Log.Tracef("POSITION from %d: lat=%d, lng=%d, alt=%d, precision=%d", from, position.GetLatitudeI(), position.GetLongitudeI(), position.GetAltitude(), position.GetPrecisionBits())
-
-	case meshtastic.PortNum_TEXT_MESSAGE_APP:
-		n.Config.Log.Tracef("TEXT_MESSAGE from %d to %d: %s", from, to, string(payload))
 
 	case meshtastic.PortNum_MAP_REPORT_APP:
 		var mapReport meshtastic.MapReport
-		if err := proto.Unmarshal(payload, &mapReport); err != nil {
-			n.Config.Log.Warnf("Failed to unmarshal MapReport: %v", err)
-			return
+		if err := proto.Unmarshal(payload, &mapReport); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
 		}
-		n.Config.Log.Tracef("MAP_REPORT from %d: longName=%s, shortName=%s, lat=%d, lng=%d", from, mapReport.GetLongName(), mapReport.GetShortName(), mapReport.GetLatitudeI(), mapReport.GetLongitudeI())
 
 	case meshtastic.PortNum_TELEMETRY_APP:
 		var telemetry meshtastic.Telemetry
-		if err := proto.Unmarshal(payload, &telemetry); err != nil {
-			n.Config.Log.Warnf("Failed to unmarshal Telemetry: %v", err)
-			return
+		if err := proto.Unmarshal(payload, &telemetry); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
 		}
 
 	case meshtastic.PortNum_NEIGHBORINFO_APP:
 		var neighborInfo meshtastic.NeighborInfo
-		if err := proto.Unmarshal(payload, &neighborInfo); err != nil {
-			n.Config.Log.Warnf("Failed to unmarshal NeighborInfo: %v", err)
-			return
+		if err := proto.Unmarshal(payload, &neighborInfo); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
 		}
-		n.Config.Log.Tracef("NEIGHBORINFO from %d: nodeId=%d, neighbors=%d", from, neighborInfo.GetNodeId(), len(neighborInfo.GetNeighbors()))
 
 	default:
 		n.Config.Log.Infof("Message with PortNum %s from %d on topic %s", portNum.String(), from, topic)
 	}
 
+	ip.Meshtastic.From = from
+	ip.Meshtastic.To = to
+	ip.Meshtastic.PortNum = decoded.GetPortnum()
+	ip.Meshtastic.Payload = decoded.GetPayload()
+	ip.Meshtastic.PayloadString = string(decoded.GetPayload())
+
 }
 
-func (n *ProtoBufServerCmd) decipherMeshtastic(packet *meshtastic.MeshPacket, from uint32, encrypted []byte) (decoded *meshtastic.Data, err error) {
+func (n *ProtoBufServerCmd) decipherMeshtastic(packet *meshtastic.MeshPacket, from uint32, encrypted []byte) (decoded *meshtastic.Data, hexkey string, err error) {
 	nonce := make([]byte, 16)
 	binary.LittleEndian.PutUint32(nonce[0:], packet.GetId())
 	binary.LittleEndian.PutUint32(nonce[8:], from)
 	decrypted := make([]byte, len(encrypted))
 
-	for _, cipherInstance := range n.Ciphers {
+	for k, cipherInstance := range n.Ciphers {
+		hexKey := n.Config.Meshtastic.Channels[k].EncryptKey
+
 		cipher.NewCTR(cipherInstance, nonce).XORKeyStream(decrypted, encrypted)
 		decoded = new(meshtastic.Data)
 		if err := proto.Unmarshal(decrypted, decoded); err == nil {
-			return decoded, nil
+			return decoded, hexKey, nil
 		}
+
 	}
-	return nil, fmt.Errorf("failed to decrypt data with any cipher")
+	return nil, "", fmt.Errorf("failed to decrypt data with any cipher")
 }

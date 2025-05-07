@@ -86,6 +86,8 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 				return
 			}
 
+			n.Config.Log.Tracef("%s,%s,%s,%s,%s", ip.Track.Username, ip.Track.ClientID, ip.Track.SocketAddress, ip.MQTT.Type, ip.Meshtastic.PortNum)
+
 			// Serialize the packet for forwarding
 			var buf bytes.Buffer
 			if err := (*ip.Raw.MQTT).Write(&buf); err != nil {
@@ -157,7 +159,7 @@ func (n *ProtoBufServerCmd) processMQTT(connReader *bufio.Reader, ip *InspectorP
 		n.ConnMutex.Unlock()
 
 	case *packets.PublishPacket:
-		n.newMethod(socketAddress, ip)
+		n.SetConnTrack(ip, socketAddress)
 		ip.MQTT.Type = "PUBLISH"
 		topics := make([]string, 0, 1)
 		ip.MQTT.Topics = append(topics, p.TopicName)
@@ -169,16 +171,16 @@ func (n *ProtoBufServerCmd) processMQTT(connReader *bufio.Reader, ip *InspectorP
 		}
 
 	case *packets.SubscribePacket:
-		n.newMethod(socketAddress, ip)
+		n.SetConnTrack(ip, socketAddress)
 		ip.MQTT.Type = "SUBSCRIBE"
 		topics := make([]string, 0, len(p.Topics))
 		ip.MQTT.Topics = append(topics, p.Topics...)
 
 	case *packets.PingreqPacket:
-		n.newMethod(socketAddress, ip)
+		n.SetConnTrack(ip, socketAddress)
 		ip.MQTT.Type = "PINGREQ"
 	case *packets.PingrespPacket:
-		n.newMethod(socketAddress, ip)
+		n.SetConnTrack(ip, socketAddress)
 		ip.MQTT.Type = "PINGRESP"
 
 	default:
@@ -192,19 +194,7 @@ func (n *ProtoBufServerCmd) processMQTT(connReader *bufio.Reader, ip *InspectorP
 		}
 	}
 
-	// n.Config.Log.Tracef("MQTT packet details: %+v, %+v", ip.MQTT, ip.Meshtastic)
-	n.Config.Log.Tracef("%s,%s,%s,%s,%s", ip.Track.ClientID, ip.Track.Username, ip.Track.SocketAddress, ip.MQTT.Type, ip.Meshtastic.PortNum)
-
 	return nil
-}
-
-func (n *ProtoBufServerCmd) newMethod(socketAddress string, ip *InspectorPacket) {
-	n.ConnMutex.RLock()
-	connInfo, exists := n.ConnTrack[socketAddress]
-	n.ConnMutex.RUnlock()
-	if exists {
-		ip.Track = connInfo
-	}
 }
 
 func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {

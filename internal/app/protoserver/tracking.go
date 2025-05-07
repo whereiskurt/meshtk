@@ -16,18 +16,27 @@ type ConnectionInfo struct {
 	ConnectTime   int64
 }
 
-func (*ProtoBufServerCmd) TrackConnection(conn net.Conn) (clientAddr string) {
+func (*ProtoBufServerCmd) TrackConnection(conn net.Conn) (socketAddr string) {
 	if conn.RemoteAddr() != nil {
-		clientAddr = conn.RemoteAddr().String()
+		socketAddr = conn.RemoteAddr().String()
 	}
 
 	if proxyConn, ok := conn.(*proxyproto.Conn); ok {
 		proxyHeader := proxyConn.ProxyHeader()
 		if proxyHeader != nil && proxyHeader.SourceAddr != nil {
-			clientAddr = proxyHeader.SourceAddr.String()
+			socketAddr = proxyHeader.SourceAddr.String()
 		}
 	}
-	return clientAddr
+	return socketAddr
+}
+
+func (n *ProtoBufServerCmd) SetConnTrack(ip *InspectorPacket, socketAddress string) {
+	n.ConnMutex.RLock()
+	connInfo, exists := n.ConnTrack[socketAddress]
+	n.ConnMutex.RUnlock()
+	if exists {
+		ip.Track = connInfo
+	}
 }
 
 func (n *ProtoBufServerCmd) SetupTracker() {

@@ -76,28 +76,48 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 			return
 
 		default:
-			ip := new(InspectorPacket)
-			ip.Track = new(ConnectionInfo)
-			ip.Track.SocketAddress = socketAddr
-
-			if err := n.processMQTT(request, ip); err != nil {
-				//This is a non-fatal error that happens whenever the client disconnects
-				n.Config.Log.Tracef("failed to process MQTT packet: %v", err)
+			packet, err := packets.ReadPacket(request)
+			if err != nil {
+				if err != io.EOF {
+					n.Config.Log.Errorf("failed to parse MQTT packet from %s: %v", socketAddr, err)
+				}
 				return
 			}
 
-			n.Config.Log.Tracef("%s,%s,%s,%s,%s", ip.Track.Username, ip.Track.ClientID, ip.Track.SocketAddress, ip.MQTT.Type, ip.Meshtastic.PortNum)
+			ip := &InspectorPacket{Track: &ConnectionInfo{SocketAddress: socketAddr}}
+			ip.Raw.MQTT = &packet
+
+			n.inspectMQTT(ip)
+			n.Config.Log.Tracef("%s,%s,%s,%s", ip.Track.Username, ip.Track.ClientID, ip.Track.SocketAddress, ip.MQTT.Type)
+
+			if ip.Meshtastic.WasUnmarshalled {
+				n.Config.Log.Tracef("%s,%s,%s,%s,!%08x,!%08x", ip.Track.Username, ip.Track.ClientID, ip.Track.SocketAddress, ip.Meshtastic.PortNum, ip.Meshtastic.To, ip.Meshtastic.From)
+			}
+
+			result := n.Decider.Decide(ip)
+			switch result.Decision {
+			case Drop:
+				n.Config.Log.Debugf("DROP from %s: %s", ip.Track.ClientID, result.Reason)
+				continue // Skip to next packet without forwarding
+			case Block:
+				n.Config.Log.Debugf("BLOCK from %s: %s", ip.Track.ClientID, result.Reason)
+				continue // Skip to next packet without forwarding
+			case Keep:
+				if strings.Contains(strings.ToLower(result.Reason), "no match") {
+					n.Config.Log.Debugf("KEEP from %s: %s: %+v", ip.Track.ClientID, result.Reason, *ip.Raw.MQTT)
+				}
+			}
 
 			// Serialize the packet for forwarding
 			var buf bytes.Buffer
 			if err := (*ip.Raw.MQTT).Write(&buf); err != nil {
-				n.Config.Log.Tracef("failed to serialize MQTT packet: %v", err)
+				n.Config.Log.Errorf("failed to serialize MQTT packet: %v", err)
 				return
 			}
 
 			// Forward the packet to the backend
 			if _, err := backendConn.Write(buf.Bytes()); err != nil {
-				n.Config.Log.Tracef("failed to forward packet to backend: %v", err)
+				n.Config.Log.Errorf("failed to forward packet to backend: %v", err)
 				return
 			}
 		}
@@ -112,11 +132,13 @@ func (n *ProtoBufServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Re
 	for {
 		backendPacket, err := packets.ReadPacket(backendReader)
 		if err != nil {
-			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				n.Config.Log.Errorf("Error reading from backend: %v", err)
-			}
+			// if err != io.EOF && err != io.ErrUnexpectedEOF {
+			// 	n.Config.Log.Errorf("Error reading from backend: %v", err)
+			// }
 			return
 		}
+
+		//TODO: Consider adding a mosquitto response interceptor here - not sure if this would ever be useful
 
 		var buf bytes.Buffer
 		if err := backendPacket.Write(&buf); err != nil {
@@ -131,35 +153,25 @@ func (n *ProtoBufServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Re
 	}
 }
 
-func (n *ProtoBufServerCmd) processMQTT(connReader *bufio.Reader, ip *InspectorPacket) error {
-	socketAddress := ip.Track.SocketAddress
+func (n *ProtoBufServerCmd) inspectMQTT(ip *InspectorPacket) {
 
-	packet, err := packets.ReadPacket(connReader)
-	if err != nil {
-		if err != io.EOF {
-			n.Config.Log.Errorf("Failed to parse MQTT packet from %s: %v", socketAddress, err)
-		}
-		return err
-	}
-	ip.Raw.MQTT = &packet
-
-	switch p := packet.(type) {
+	switch p := (*ip.Raw.MQTT).(type) {
 	case *packets.ConnectPacket:
 		connInfo := &ConnectionInfo{
 			ClientID:      p.ClientIdentifier,
 			Username:      p.Username,
 			Password:      fmt.Sprintf("%x", p.Password),
-			SocketAddress: socketAddress,
+			SocketAddress: ip.Track.SocketAddress,
 			ConnectTime:   time.Now().Unix(),
 		}
 		ip.MQTT.Type = "CONNECT"
 		ip.Track = connInfo
 		n.ConnMutex.Lock()
-		n.ConnTrack[socketAddress] = connInfo
+		n.ConnTrack[ip.Track.SocketAddress] = connInfo
 		n.ConnMutex.Unlock()
 
 	case *packets.PublishPacket:
-		n.SetConnTrack(ip, socketAddress)
+		n.SetConnTrack(ip)
 		ip.MQTT.Type = "PUBLISH"
 		topics := make([]string, 0, 1)
 		ip.MQTT.Topics = append(topics, p.TopicName)
@@ -171,30 +183,24 @@ func (n *ProtoBufServerCmd) processMQTT(connReader *bufio.Reader, ip *InspectorP
 		}
 
 	case *packets.SubscribePacket:
-		n.SetConnTrack(ip, socketAddress)
+		n.SetConnTrack(ip)
 		ip.MQTT.Type = "SUBSCRIBE"
 		topics := make([]string, 0, len(p.Topics))
 		ip.MQTT.Topics = append(topics, p.Topics...)
 
 	case *packets.PingreqPacket:
-		n.SetConnTrack(ip, socketAddress)
+		n.SetConnTrack(ip)
 		ip.MQTT.Type = "PINGREQ"
 	case *packets.PingrespPacket:
-		n.SetConnTrack(ip, socketAddress)
+		n.SetConnTrack(ip)
 		ip.MQTT.Type = "PINGRESP"
 
 	default:
-		ip.MQTT.Type = fmt.Sprintf("%T", packet)
+		n.SetConnTrack(ip)
+		ip.MQTT.Type = fmt.Sprintf("%T", *ip.Raw.MQTT)
 		ip.MQTT.Type = ip.MQTT.Type[strings.LastIndex(ip.MQTT.Type, ".")+1:]
-		n.ConnMutex.RLock()
-		connInfo, exists := n.ConnTrack[socketAddress]
-		n.ConnMutex.RUnlock()
-		if exists {
-			ip.Track = connInfo
-		}
-	}
 
-	return nil
+	}
 }
 
 func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
@@ -222,12 +228,17 @@ func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
 		encrypted := packet.GetEncrypted()
 
 		if encrypted != nil {
-			d, hexKey, err := n.decipherMeshtastic(packet, from, encrypted)
-			if err == nil {
-				decoded = d
-				ip.Meshtastic.HexKey = hexKey
-				ip.Meshtastic.WasEncrypted = true
-				ip.Meshtastic.WasUnmarshalled = true
+			ip.Meshtastic.WasEncrypted = true
+
+			if packet.GetPkiEncrypted() {
+				ip.Meshtastic.WasPKIEncrypted = true
+			} else {
+				d, hexKey, err := n.decipherMeshtastic(packet, from, encrypted)
+				if err == nil {
+					decoded = d
+					ip.Meshtastic.HexKey = hexKey
+					ip.Meshtastic.WasUnmarshalled = true
+				}
 			}
 
 		} else {

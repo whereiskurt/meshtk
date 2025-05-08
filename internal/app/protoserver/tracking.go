@@ -30,13 +30,16 @@ func (*ProtoBufServerCmd) TrackConnection(conn net.Conn) (socketAddr string) {
 	return socketAddr
 }
 
-func (n *ProtoBufServerCmd) SetConnTrack(ip *InspectorPacket, socketAddress string) {
-	n.ConnMutex.RLock()
-	connInfo, exists := n.ConnTrack[socketAddress]
-	n.ConnMutex.RUnlock()
+func (n *ProtoBufServerCmd) SetConnTrack(ip *InspectorPacket) {
+	n.ConnMutex.Lock()
+	connInfo, exists := n.ConnTrack[ip.Track.SocketAddress]
 	if exists {
+		// Update the connection time
+		connInfo.ConnectTime = time.Now().Unix()
+		n.ConnTrack[ip.Track.SocketAddress] = connInfo
 		ip.Track = connInfo
 	}
+	n.ConnMutex.Unlock()
 }
 
 func (n *ProtoBufServerCmd) SetupTracker() {

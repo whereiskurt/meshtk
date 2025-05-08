@@ -27,6 +27,7 @@ type ProtoBufServerCmd struct {
 	ConnMutex sync.RWMutex
 
 	Ciphers []cipher.Block
+	Decider Decider // Interface for making packet routing decisions
 }
 
 func NewAESCipher(key []byte) cipher.Block {
@@ -38,11 +39,11 @@ func NewAESCipher(key []byte) cipher.Block {
 }
 
 func NewServer(c *config.Config) (n *ProtoBufServerCmd) {
-
 	n = new(ProtoBufServerCmd)
 	n.Config = c
 	n.SetupTracker()
 	n.LoadCiphers(c)
+	n.LoadInspectorRules()
 
 	return n
 }

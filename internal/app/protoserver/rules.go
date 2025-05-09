@@ -61,7 +61,10 @@ func (n *ProtoBufServerCmd) LoadInspectorRules() {
 			Description: "Allow MQTT connect/sub/unsub packets",
 			Matcher: func(ip *InspectorPacket) bool {
 				switch (*ip.Raw.MQTT).(type) {
-				case *packets.ConnectPacket, *packets.SubscribePacket, *packets.UnsubscribePacket, *packets.PublishPacket:
+				case *packets.ConnectPacket,
+					*packets.SubscribePacket,
+					*packets.UnsubscribePacket,
+					*packets.PublishPacket:
 					return true
 				default:
 					return false
@@ -69,20 +72,6 @@ func (n *ProtoBufServerCmd) LoadInspectorRules() {
 			},
 			Action: Keep,
 			Reason: "MQTT Connect packets are allowed",
-		},
-		{
-			Name:        "DropMQTTTypes",
-			Description: "Block MQTT ping packets",
-			Matcher: func(ip *InspectorPacket) bool {
-				switch (*ip.Raw.MQTT).(type) {
-				case *packets.PingreqPacket, *packets.PingrespPacket:
-					return true
-				default:
-					return false
-				}
-			},
-			Action: Block,
-			Reason: "MQTT type blocked",
 		},
 		{
 			Name:        "BlockInvalidEncryption",
@@ -95,22 +84,15 @@ func (n *ProtoBufServerCmd) LoadInspectorRules() {
 			Reason: "Failed to decrypt with any known key",
 		},
 		{
-			Name:        "AllowNodeInfo",
+			Name:        "AllowedMeshtasticApps",
 			Description: "Always allow NodeInfo packets",
 			Matcher: func(packet *InspectorPacket) bool {
-				return packet.Meshtastic.PortNum == meshtastic.PortNum_NODEINFO_APP
+				return packet.Meshtastic.PortNum == meshtastic.PortNum_NODEINFO_APP ||
+					packet.Meshtastic.PortNum == meshtastic.PortNum_POSITION_APP ||
+					packet.Meshtastic.PortNum == meshtastic.PortNum_TEXT_MESSAGE_APP
 			},
 			Action: Keep,
-			Reason: "NodeInfo packets are always allowed",
-		},
-		{
-			Name:        "AllowPositionInfo",
-			Description: "Always allow Position packets",
-			Matcher: func(packet *InspectorPacket) bool {
-				return packet.Meshtastic.PortNum == meshtastic.PortNum_POSITION_APP
-			},
-			Action: Keep,
-			Reason: "Position packets are always allowed",
+			Reason: "NodeInfo/Position/Text Message packets are always allowed",
 		},
 		{
 			Name:        "FilterByClientID",

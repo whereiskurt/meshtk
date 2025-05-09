@@ -13,6 +13,11 @@ Meshtastic:
       EncryptKey: "AQ=="
       IsEncrypted: true
       IsPrimary: true
+    - Slot: "secondary"
+      Name: "dc.run"
+      EncryptKey: "Wjt8kzHci9lqdS4tBzSF2VbQd86u6U3nhHaBl7V5TGE="
+      IsEncrypted: true
+      IsPrimary: false
 
 NodeInfo:
   ClientId: "!28a1b2c3"
@@ -49,7 +54,7 @@ NodeInfo:
     - "msh/+/2/#"
     - "msh/+/+/2/map"
 
-ProtoBufServer:
+Server:
   ProxyListenAddress: "0.0.0.0:1883"
   ProxyForwardAddress: "localhost:1884"
   InspectorListenAddress: "localhost:50051"

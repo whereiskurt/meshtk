@@ -1,4 +1,4 @@
-package protoserver
+package server
 
 import (
 	"io"
@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func (n *ProtoBufServerCmd) handleProtobuf(conn net.Conn) {
+func (n *ServerCmd) handleProtobuf(conn net.Conn) {
 	defer conn.Close()
 
 	// Read incoming request

@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/whereiskurt/meshtk/internal/app/fleet"
 	"github.com/whereiskurt/meshtk/internal/app/nodeinfo"
-	"github.com/whereiskurt/meshtk/internal/app/protoserver"
+	"github.com/whereiskurt/meshtk/internal/app/server"
 	"github.com/whereiskurt/meshtk/pkg/config"
 )
 
@@ -53,7 +53,7 @@ func (a *App) RegisterOsArgs() {
 	cmd.NewSubCmd(nodeInfoCmd, "announce", ni.Announce)
 
 	// Gonna add in grpc service
-	g := protoserver.NewServer(a.Config)
+	g := server.NewServer(a.Config)
 	serverCmd := cmd.NewCmd([]string{"server"}, g.Help)
 	cmd.NewSubCmd(serverCmd, "help", g.Help)
 	cmd.NewSubCmd(serverCmd, "protobuf", g.ProtobufServer)

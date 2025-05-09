@@ -1,19 +1,23 @@
-package protoserver
+package server
 
 import (
+	"crypto/cipher"
+	"encoding/base64"
+	"encoding/binary"
+	"fmt"
 	"strings"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 type Decision int
 
 const (
-	Keep Decision = iota
-	Drop
+	Allow Decision = iota
 	Block
-	Rewritten
+	Rewrote
 )
 
 type DecisionResult struct {
@@ -40,21 +44,25 @@ type Rule struct {
 // Decide implements the Decider interface
 func (d *RuleBasedDecider) Decide(packet *InspectorPacket) DecisionResult {
 	for _, rule := range d.Rules {
-		if rule.Matcher(packet) && rule.Action != Rewritten {
+		if rule.Matcher(packet) && rule.Action != Rewrote {
 			return DecisionResult{
 				Decision: rule.Action,
 				Reason:   rule.Reason,
 			}
 		}
 	}
-	return DecisionResult{Decision: Keep, Reason: "No matching rule found"}
+	return DecisionResult{Decision: Allow, Reason: "No matching rule found"}
 }
 
 func NewRuleBasedDecider(rules []Rule) *RuleBasedDecider {
 	return &RuleBasedDecider{Rules: rules}
 }
 
-func (n *ProtoBufServerCmd) LoadInspectorRules() {
+func (n *ServerCmd) LoadInspectorRules() {
+	n.Decider = NewRuleBasedDecider(append(n.rewriteRules(), n.inspectRules()...))
+}
+
+func (*ServerCmd) inspectRules() []Rule {
 	rules := []Rule{
 		{
 			Name:        "AllowMQTTTypes",
@@ -63,6 +71,8 @@ func (n *ProtoBufServerCmd) LoadInspectorRules() {
 				switch (*ip.Raw.MQTT).(type) {
 				case *packets.ConnectPacket,
 					*packets.SubscribePacket,
+					*packets.PubackPacket,
+					*packets.PingreqPacket,
 					*packets.UnsubscribePacket,
 					*packets.PublishPacket:
 					return true
@@ -70,15 +80,15 @@ func (n *ProtoBufServerCmd) LoadInspectorRules() {
 					return false
 				}
 			},
-			Action: Keep,
+			Action: Allow,
 			Reason: "MQTT Connect packets are allowed",
 		},
 		{
 			Name:        "BlockInvalidEncryption",
 			Description: "Block packets that failed to decrypt with any known key",
 			Matcher: func(packet *InspectorPacket) bool {
-				//TODO: Double check this works with PKI messages we didn't decrypt
-				return packet.Meshtastic.WasEncrypted && !packet.Meshtastic.WasUnmarshalled
+				return (!packet.Meshtastic.WasPKIEncrypted) &&
+					(packet.Meshtastic.WasEncrypted && !packet.Meshtastic.WasUnmarshalled)
 			},
 			Action: Block,
 			Reason: "Failed to decrypt with any known key",
@@ -91,39 +101,14 @@ func (n *ProtoBufServerCmd) LoadInspectorRules() {
 					packet.Meshtastic.PortNum == meshtastic.PortNum_POSITION_APP ||
 					packet.Meshtastic.PortNum == meshtastic.PortNum_TEXT_MESSAGE_APP
 			},
-			Action: Keep,
+			Action: Allow,
 			Reason: "NodeInfo/Position/Text Message packets are always allowed",
 		},
-		{
-			Name:        "FilterByClientID",
-			Description: "Block packets from clients with suspicious IDs",
-			Matcher: func(packet *InspectorPacket) bool {
-				// Block packets from clients with IDs containing "malicious"
-				return packet.Track != nil &&
-					packet.Track.ClientID != "" &&
-					strings.Contains(strings.ToLower(packet.Track.ClientID), "malicious")
-			},
-			Action: Block,
-			Reason: "Suspicious client ID detected",
-		},
-		{
-			Name:        "FilterByUsername",
-			Description: "Block packets from users with suspicious usernames",
-			Matcher: func(packet *InspectorPacket) bool {
-				// Block packets from specific usernames
-				return packet.Track != nil &&
-					packet.Track.Username != "" &&
-					strings.Contains(strings.ToLower(packet.Track.Username), "banned")
-			},
-			Action: Block,
-			Reason: "Banned username detected",
-		},
 	}
-
-	n.Decider = NewRuleBasedDecider(append(n.rewriteRules(), rules...))
+	return rules
 }
 
-func (n *ProtoBufServerCmd) rewriteRules() []Rule {
+func (n *ServerCmd) rewriteRules() []Rule {
 	return []Rule{
 		{
 			Name:        "RewriteHopLimit",
@@ -138,7 +123,7 @@ func (n *ProtoBufServerCmd) rewriteRules() []Rule {
 				ip.Raw.Meshtastic.Packet.HopLimit = 3
 				return true
 			},
-			Action: Rewritten,
+			Action: Rewrote,
 			Reason: "MQTT Connect packets are rewritten",
 		},
 		{
@@ -160,13 +145,52 @@ func (n *ProtoBufServerCmd) rewriteRules() []Rule {
 					ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "fuck", "🤬")
 				}
 
-				n.RewriteFromPayloadString(ip)
+				n.RewritePayloadString(ip)
 
 				return true
 			},
-			Action: Rewritten,
+			Action: Rewrote,
 			Reason: "MQTT Connect packets are rewritten",
 		},
 	}
 
+}
+
+func (n *ServerCmd) RewritePayloadString(ip *InspectorPacket) (error, bool) {
+	if ip.Meshtastic.WasPKIEncrypted {
+		return fmt.Errorf("cannot rewrite packet is PKI encrypted"), false
+	}
+
+	dataBytes, _ := proto.Marshal(&meshtastic.Data{
+		Portnum: ip.Meshtastic.PortNum,
+		Payload: []byte(ip.Meshtastic.PayloadString),
+	})
+
+	// Prepare the encrypted payload
+	encrypted := make([]byte, len(dataBytes))
+	nonce := make([]byte, 16)
+	binary.LittleEndian.PutUint32(nonce[0:], ip.Meshtastic.Id)
+	binary.LittleEndian.PutUint32(nonce[8:], ip.Meshtastic.From)
+	base64Key := ip.Meshtastic.HexKey
+	keyBytes, _ := base64.StdEncoding.DecodeString(base64Key)
+	if len(keyBytes) == 1 {
+		keyBytes = append(keyBytes, make([]byte, 15)...)
+	}
+	c := NewAESCipher(keyBytes)
+	cipher.NewCTR(c, nonce).XORKeyStream(encrypted, dataBytes)
+
+	ip.Raw.Meshtastic.Packet.PayloadVariant = &meshtastic.MeshPacket_Encrypted{
+		Encrypted: encrypted,
+	}
+
+	switch p := (*ip.Raw.MQTT).(type) {
+	case *packets.PublishPacket:
+		payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
+		if err != nil {
+			return fmt.Errorf("failed to marshal Meshtastic payload: %v", err), false
+		}
+		p.Payload = payloadBytes
+	}
+
+	return nil, false
 }

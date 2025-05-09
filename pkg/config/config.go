@@ -36,19 +36,19 @@ type Config struct {
 		Hash    string
 	} `json:"release"`
 
-	Mqtt           Mqtt `json:"MQTT"`
-	Meshtastic     Meshtastic
-	NodeInfo       NodeInfo
-	TextMessage    TextMessage
-	Fleet          []Fleet
-	ProtoBufServer ProtoBufServer
+	Mqtt        Mqtt `json:"MQTT"`
+	Meshtastic  Meshtastic
+	NodeInfo    NodeInfo
+	TextMessage TextMessage
+	Fleet       []Fleet
+	Server      Server
 
 	NodeDbPath string `default:"./meshtk.db"`
 
 	WasSuccess bool
 }
 
-type ProtoBufServer struct {
+type Server struct {
 	InspectorListenAddress string `default:"localhost:50051"`
 	ProxyListenAddress     string `default:"0.0.0.0:1883"`
 	ProxyForwardAddress    string `default:"localhost:1884"`

@@ -14,7 +14,7 @@ Start a listener defined in the config by default:
 `./meshtk server proxy --debug=trace`
 
 ```yaml
-ProtoBufServer:
+Server:
   ProxyListenAddress: "0.0.0.0:1883"
   ProxyForwardAddress: "0.0.0.0:1884"
 ```

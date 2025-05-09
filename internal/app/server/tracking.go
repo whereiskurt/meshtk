@@ -1,4 +1,4 @@
-package protoserver
+package server
 
 import (
 	"net"
@@ -16,7 +16,7 @@ type ConnectionInfo struct {
 	ConnectTime   int64
 }
 
-func (*ProtoBufServerCmd) TrackConnection(conn net.Conn) (socketAddr string) {
+func (*ServerCmd) TrackConnection(conn net.Conn) (socketAddr string) {
 	if conn.RemoteAddr() != nil {
 		socketAddr = conn.RemoteAddr().String()
 	}
@@ -30,7 +30,7 @@ func (*ProtoBufServerCmd) TrackConnection(conn net.Conn) (socketAddr string) {
 	return socketAddr
 }
 
-func (n *ProtoBufServerCmd) SetConnTrack(ip *InspectorPacket) {
+func (n *ServerCmd) SetConnTrack(ip *InspectorPacket) {
 	n.ConnMutex.Lock()
 	connInfo, exists := n.ConnTrack[ip.Track.SocketAddress]
 	if exists {
@@ -42,7 +42,7 @@ func (n *ProtoBufServerCmd) SetConnTrack(ip *InspectorPacket) {
 	n.ConnMutex.Unlock()
 }
 
-func (n *ProtoBufServerCmd) SetupTracker() {
+func (n *ServerCmd) SetupTracker() {
 	n.ConnTrack = make(map[string]*ConnectionInfo)
 
 	go func() {

@@ -1,10 +1,9 @@
-package protoserver
+package server
 
 import (
 	"bufio"
 	"bytes"
 	"crypto/cipher"
-	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -50,46 +49,7 @@ func (i *InspectorPacket) String() string {
 		i.Track.ClientID, i.Track.Username, i.Track.SocketAddress, i.MQTT.Type, i.Meshtastic.PortNum)
 }
 
-func (n *ProtoBufServerCmd) RewriteFromPayloadString(ip *InspectorPacket) (error, bool) {
-	if ip.Meshtastic.WasPKIEncrypted {
-		return fmt.Errorf("cannot rewrite packet is PKI encrypted"), false
-	}
-
-	dataBytes, _ := proto.Marshal(&meshtastic.Data{
-		Portnum: ip.Meshtastic.PortNum,
-		Payload: []byte(ip.Meshtastic.PayloadString),
-	})
-
-	// Prepare the encrypted payload
-	encrypted := make([]byte, len(dataBytes))
-	nonce := make([]byte, 16)
-	binary.LittleEndian.PutUint32(nonce[0:], ip.Meshtastic.Id)
-	binary.LittleEndian.PutUint32(nonce[8:], ip.Meshtastic.From)
-	base64Key := ip.Meshtastic.HexKey
-	keyBytes, _ := base64.StdEncoding.DecodeString(base64Key)
-	if len(keyBytes) == 1 {
-		keyBytes = append(keyBytes, make([]byte, 15)...)
-	}
-	c := NewAESCipher(keyBytes)
-	cipher.NewCTR(c, nonce).XORKeyStream(encrypted, dataBytes)
-
-	ip.Raw.Meshtastic.Packet.PayloadVariant = &meshtastic.MeshPacket_Encrypted{
-		Encrypted: encrypted,
-	}
-
-	switch p := (*ip.Raw.MQTT).(type) {
-	case *packets.PublishPacket:
-		payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
-		if err != nil {
-			return fmt.Errorf("failed to marshal Meshtastic payload: %v", err), false
-		}
-		p.Payload = payloadBytes
-	}
-
-	return nil, false
-}
-
-func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
+func (n *ServerCmd) handleProxy(conn net.Conn) {
 	defer func() {
 		if conn.RemoteAddr() != nil {
 			socketAddr := conn.RemoteAddr().String()
@@ -102,7 +62,7 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 
 	socketAddr := n.TrackConnection(conn)
 
-	backendAddress := n.Config.ProtoBufServer.ProxyForwardAddress
+	backendAddress := n.Config.Server.ProxyForwardAddress
 	backendConn, err := net.DialTimeout("tcp", backendAddress, 5*time.Second)
 	if err != nil {
 		n.Config.Log.Errorf("Failed to connect to backend MQTT broker: %v", err)
@@ -143,13 +103,10 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 
 			result := n.Decider.Decide(ip)
 			switch result.Decision {
-			case Drop:
-				n.Config.Log.Debugf("DROP from %s: %s", ip.Track.ClientID, result.Reason)
-				continue // Skip to next packet without forwarding
 			case Block:
 				n.Config.Log.Debugf("BLOCK from %s: %s", ip.Track.ClientID, result.Reason)
 				continue // Skip to next packet without forwarding
-			case Keep:
+			case Allow:
 				if strings.Contains(strings.ToLower(result.Reason), "no match") {
 					n.Config.Log.Debugf("KEEP from %s: %s: %+v", ip.Track.ClientID, result.Reason, *ip.Raw.MQTT)
 				}
@@ -171,7 +128,7 @@ func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
 	}
 }
 
-func (n *ProtoBufServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
+func (n *ServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
 	defer func() {
 		done <- struct{}{}
 	}()
@@ -200,7 +157,7 @@ func (n *ProtoBufServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Re
 	}
 }
 
-func (n *ProtoBufServerCmd) inspectMQTT(ip *InspectorPacket) {
+func (n *ServerCmd) inspectMQTT(ip *InspectorPacket) {
 
 	switch p := (*ip.Raw.MQTT).(type) {
 	case *packets.ConnectPacket:
@@ -226,7 +183,7 @@ func (n *ProtoBufServerCmd) inspectMQTT(ip *InspectorPacket) {
 		var env meshtastic.ServiceEnvelope
 		if err := proto.Unmarshal(p.Payload, &env); err == nil {
 			ip.Raw.Meshtastic = &env
-			n.processMeshtastic(ip)
+			n.inspectMeshtastic(ip)
 		}
 
 	case *packets.SubscribePacket:
@@ -250,7 +207,7 @@ func (n *ProtoBufServerCmd) inspectMQTT(ip *InspectorPacket) {
 	}
 }
 
-func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
+func (n *ServerCmd) inspectMeshtastic(ip *InspectorPacket) {
 	if ip.Raw.Meshtastic == nil {
 		return
 	}
@@ -279,7 +236,7 @@ func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
 			if packet.GetPkiEncrypted() {
 				ip.Meshtastic.WasPKIEncrypted = true
 			} else {
-				d, hexKey, err := n.decipherMeshtastic(packet, from, encrypted)
+				d, hexKey, err := n.decrypt(packet.Id, from, encrypted)
 				if err == nil {
 					decoded = d
 					ip.Meshtastic.HexKey = hexKey
@@ -336,7 +293,7 @@ func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
 		n.Config.Log.Infof("Message with PortNum %s from %d on topic %s", portNum.String(), from, topic)
 	}
 
-	ip.Meshtastic.Id = envelope.Packet.Id
+	ip.Meshtastic.Id = packet.Id
 	ip.Meshtastic.From = from
 	ip.Meshtastic.To = to
 	ip.Meshtastic.Decoded = decoded
@@ -346,16 +303,16 @@ func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
 
 }
 
-func (n *ProtoBufServerCmd) decipherMeshtastic(packet *meshtastic.MeshPacket, from uint32, encrypted []byte) (decoded *meshtastic.Data, hexkey string, err error) {
+func (n *ServerCmd) decrypt(id, from uint32, payload []byte) (decoded *meshtastic.Data, hexkey string, err error) {
 	nonce := make([]byte, 16)
-	binary.LittleEndian.PutUint32(nonce[0:], packet.GetId())
+	binary.LittleEndian.PutUint32(nonce[0:], id)
 	binary.LittleEndian.PutUint32(nonce[8:], from)
-	decrypted := make([]byte, len(encrypted))
+	decrypted := make([]byte, len(payload))
 
 	for k, cipherInstance := range n.Ciphers {
 		hexKey := n.Config.Meshtastic.Channels[k].EncryptKey
 
-		cipher.NewCTR(cipherInstance, nonce).XORKeyStream(decrypted, encrypted)
+		cipher.NewCTR(cipherInstance, nonce).XORKeyStream(decrypted, payload)
 		decoded = new(meshtastic.Data)
 		if err := proto.Unmarshal(decrypted, decoded); err == nil {
 			return decoded, hexKey, nil

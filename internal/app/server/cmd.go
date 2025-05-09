@@ -1,4 +1,4 @@
-package protoserver
+package server
 
 import (
 	"crypto/aes"
@@ -17,7 +17,7 @@ import (
 	"github.com/whereiskurt/meshtk/pkg/config"
 )
 
-type ProtoBufServerCmd struct {
+type ServerCmd struct {
 	Config    *config.Config
 	CmdOutput struct {
 		WasSuccess bool
@@ -38,8 +38,8 @@ func NewAESCipher(key []byte) cipher.Block {
 	return c
 }
 
-func NewServer(c *config.Config) (n *ProtoBufServerCmd) {
-	n = new(ProtoBufServerCmd)
+func NewServer(c *config.Config) (n *ServerCmd) {
+	n = new(ServerCmd)
 	n.Config = c
 	n.SetupTracker()
 	n.LoadCiphers(c)
@@ -48,7 +48,7 @@ func NewServer(c *config.Config) (n *ProtoBufServerCmd) {
 	return n
 }
 
-func (n *ProtoBufServerCmd) LoadCiphers(c *config.Config) {
+func (n *ServerCmd) LoadCiphers(c *config.Config) {
 	for _, channel := range n.Config.Meshtastic.Channels {
 		base64Key := channel.EncryptKey
 		keyBytes, err := base64.StdEncoding.DecodeString(base64Key)
@@ -63,12 +63,12 @@ func (n *ProtoBufServerCmd) LoadCiphers(c *config.Config) {
 	}
 }
 
-func (n *ProtoBufServerCmd) Help(cmd *cobra.Command, argz []string) {
+func (n *ServerCmd) Help(cmd *cobra.Command, argz []string) {
 	n.CmdOutput.WasSuccess = true
 	fmt.Fprintln(n.Config.Stdout, help.ServerHelp(n.Config))
 }
 
-func (n *ProtoBufServerCmd) ProtobufServer(cmd *cobra.Command, argz []string) {
+func (n *ServerCmd) ProtobufServer(cmd *cobra.Command, argz []string) {
 	n.CmdOutput.WasSuccess = true
 	s := help.Render("GlobalHeader", n.Config)
 	n.Config.Stdout.Write([]byte(s + "\n"))
@@ -79,7 +79,7 @@ func (n *ProtoBufServerCmd) ProtobufServer(cmd *cobra.Command, argz []string) {
 	n.StartProtobufServer()
 }
 
-func (n *ProtoBufServerCmd) ProxyServer(cmd *cobra.Command, argz []string) {
+func (n *ServerCmd) ProxyServer(cmd *cobra.Command, argz []string) {
 	n.CmdOutput.WasSuccess = true
 	s := help.Render("GlobalHeader", n.Config)
 	n.Config.Stdout.Write([]byte(s + "\n"))
@@ -90,8 +90,8 @@ func (n *ProtoBufServerCmd) ProxyServer(cmd *cobra.Command, argz []string) {
 	n.StartProxyServer()
 }
 
-func (n *ProtoBufServerCmd) StartProtobufServer() error {
-	address := n.Config.ProtoBufServer.InspectorListenAddress
+func (n *ServerCmd) StartProtobufServer() error {
+	address := n.Config.Server.InspectorListenAddress
 
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
@@ -121,8 +121,8 @@ func (n *ProtoBufServerCmd) StartProtobufServer() error {
 
 }
 
-func (n *ProtoBufServerCmd) StartProxyServer() error {
-	address := n.Config.ProtoBufServer.ProxyListenAddress
+func (n *ServerCmd) StartProxyServer() error {
+	address := n.Config.Server.ProxyListenAddress
 
 	listener, err := net.Listen("tcp", address)
 	if err != nil {

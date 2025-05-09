@@ -45,6 +45,72 @@ flowchart LR
     D -- No --> F[Drop / Reject]
 ```
 
+# Rules and Rewrites
+
+Rules block/accept packets and can also rewrite MQTT or the Meshtastic details. Full details in the [Rules.go](https://github.com/whereiskurt/meshtk/blob/main/internal/app/protoserver/rules.go) file itself, but here are some highlights.
+
+Here's a `BLOCK` example that only allows traffic you can decrypt (naively blocks PKI too):
+```golang
+{
+  Name:        "BlockInvalidEncryption",
+  Description: "Block packets that failed to decrypt with any known key",
+  Matcher: func(packet *InspectorPacket) bool {
+    return packet.Meshtastic.WasEncrypted && !packet.Meshtastic.WasUnmarshalled
+  },
+  Action: Block,
+  Reason: "Failed to decrypt with any known key",
+},
+```
+
+Here's a `KEEP` rule an example that allows only certains types of Meshtastic apps:
+```golang
+{
+  Name:        "AllowedMeshtasticApps",
+  Description: "Always allow NodeInfo packets",
+  Matcher: func(packet *InspectorPacket) bool {
+    return packet.Meshtastic.PortNum == meshtastic.PortNum_NODEINFO_APP ||
+      packet.Meshtastic.PortNum == meshtastic.PortNum_POSITION_APP ||
+      packet.Meshtastic.PortNum == meshtastic.PortNum_TEXT_MESSAGE_APP
+  },
+  Action: Keep,
+  Reason: "NodeInfo/Position/Text Message packets are always allowed",
+},
+```
+
+Here are some rewrites:
+```golang
+func(ip *InspectorPacket) bool {
+  // Check if the packet is a Meshtastic packet
+  if ip.Raw.Meshtastic == nil ||
+    ip.Raw.Meshtastic.Packet == nil ||
+    ip.Raw.Meshtastic.Packet.HopLimit <= 3 {
+    return false
+  }
+  ip.Raw.Meshtastic.Packet.HopLimit = 3
+  return true
+},
+```
+Here's a Meshtastic example:
+```golang
+func(ip *InspectorPacket) bool {
+  // Check if the packet is a Meshtastic packet that's not PKI
+  if ip.Raw.Meshtastic == nil ||
+    ip.Raw.Meshtastic.Packet == nil ||
+    ip.Meshtastic.Decoded == nil ||
+    ip.Meshtastic.Decoded.Portnum != meshtastic.PortNum_TEXT_MESSAGE_APP ||
+    ip.Meshtastic.WasPKIEncrypted {
+    return false
+  }
+
+  ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "hello", "👋")
+  ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "fuck", "🤬")
+
+   n.RewriteFromPayloadString(ip)
+
+  return true
+}
+```
+
 # Why this approach?
 I think this is the happy middle ground between writing a plugin just for mosquitto/emqx/hivemq/etc. and instead having a single fronted solution. If I want to leverage `mosquitto` as broker, and have a security context for each request, this is the only way. While other tools may support proxy protocol out of the box, they won't be able to read `Meshtastic` payloads. 
 

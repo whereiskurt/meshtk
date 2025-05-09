@@ -47,7 +47,9 @@ flowchart LR
 
 # Rules and Rewrites
 
-Rules block/accept packets and can also rewrite MQTT or the Meshtastic details. Full details in the [Rules.go](https://github.com/whereiskurt/meshtk/blob/main/internal/app/protoserver/rules.go) file itself, but here are some highlights.
+Rules block/accept packets and can also rewrite MQTT or the Meshtastic details.
+
+Full details in the [Rules.go](https://github.com/whereiskurt/meshtk/blob/main/internal/app/protoserver/rules.go) file itself, but here are some highlights.
 
 Here's a `BLOCK` example that only allows traffic you can decrypt (naively blocks PKI too):
 ```golang

@@ -77,6 +77,15 @@ func (n *ProtoBufServerCmd) RewriteFromPayloadString(ip *InspectorPacket) (error
 		Encrypted: encrypted,
 	}
 
+	switch p := (*ip.Raw.MQTT).(type) {
+	case *packets.PublishPacket:
+		payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
+		if err != nil {
+			return fmt.Errorf("failed to marshal Meshtastic payload: %v", err), false
+		}
+		p.Payload = payloadBytes
+	}
+
 	return nil, false
 }
 

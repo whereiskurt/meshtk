@@ -7,7 +7,7 @@ I want to deploy `mosquitto` (a standard MQTT broker) to support Meshtastic clie
 
 Each MQTT CONNECT/PUBLISH request arriving at :1883 will 1) use proxy protocol to get the correct IP address for the request, 2) evaluate and decrypt Meshtastic payload with the correct channel key and 3) provide an opportunity for rate limiting/blocking/rewriting.
 
-By running `./meshtk protobuf proxy --debug=trace` you will start a listener defined in the config by default:
+By running `./meshtk server proxy --debug=trace` you will start a listener defined in the config by default:
 ```yaml
 ProtoBufServer:
   ProxyListenAddress: "0.0.0.0:1883"

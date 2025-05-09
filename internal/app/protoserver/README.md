@@ -1,13 +1,18 @@
 # MQTT + Meshtastic packet inspector
 I want to deploy `mosquitto` (a standard MQTT broker) to support Meshtastic clients, but I also want to have security rules to support rate limiting, blocking and packet rewriting based on IP addresses, MQTT users, and the Meshtastic payload properties.
 
+`./meshtk server proxy --debug=trace`
+
 >mosquitto doesn't support "proxy protocol" which means it doesn't know the actual requesters IP address in many situations. Example, an AWS Network Load Balancer forwarding traffic to an ECS/EC2 cluster running `mosquitto` would think all traffic is from the NLB's IP addresses. Proxy Protocol is designed for this exact situation and implemented in many tools (nginx, HAproxy, etc.)
 
 >mosquitto doesn't "speak Meshtastic" because it's an MQTT broker that simply brokers payloads. Meshtastic has a concept of channels, which map to topics, which are able to use differnt channel keys for encryption. mosquitto cannot see into these payloads.
 
 Each MQTT CONNECT/PUBLISH request arriving at :1883 will 1) use proxy protocol to get the correct IP address for the request, 2) evaluate and decrypt Meshtastic payload with the correct channel key and 3) provide an opportunity for rate limiting/blocking/rewriting.
 
-By running `./meshtk server proxy --debug=trace` you will start a listener defined in the config by default:
+Start a listener defined in the config by default:
+
+`./meshtk server proxy --debug=trace`
+
 ```yaml
 ProtoBufServer:
   ProxyListenAddress: "0.0.0.0:1883"
@@ -125,3 +130,7 @@ Here are some limits driving this implementation:
 1. mosquitto doesn't "speak Meshtastic" because it's an MQTT broker that simply brokers payloads. Meshtastic has a concept of channels, which map to topics, which are able to use differnt channel keys for encryption. mosquitto cannot see into these payloads.
 
 1. moquitto plugin architecture expects native C and makes it best suited for protobufs and remote procedure calls. While robust flowing in-out-in of mosquitto isn't cache friendly and feels 'out-of-order.'
+
+# TODO
+* Consider adding backend connection pool to preconnect 100-1000x connects.
+

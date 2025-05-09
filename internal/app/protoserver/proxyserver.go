@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/cipher"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -30,7 +31,9 @@ type InspectorPacket struct {
 	}
 
 	Meshtastic struct {
+		Decoded         *meshtastic.Data
 		WasUnmarshalled bool
+		Id              uint32
 		From            uint32
 		To              uint32
 		PortNum         meshtastic.PortNum
@@ -40,6 +43,41 @@ type InspectorPacket struct {
 		WasEncrypted    bool
 		WasPKIEncrypted bool
 	}
+}
+
+func (i *InspectorPacket) String() string {
+	return fmt.Sprintf("ClientID: %s, Username: %s, SocketAddress: %s, MQTTType: %s, MeshtasticPortNum: %d",
+		i.Track.ClientID, i.Track.Username, i.Track.SocketAddress, i.MQTT.Type, i.Meshtastic.PortNum)
+}
+
+func (n *ProtoBufServerCmd) RewriteFromPayloadString(ip *InspectorPacket) (error, bool) {
+	if ip.Meshtastic.WasPKIEncrypted {
+		return fmt.Errorf("cannot rewrite packet is PKI encrypted"), false
+	}
+
+	dataBytes, _ := proto.Marshal(&meshtastic.Data{
+		Portnum: ip.Meshtastic.PortNum,
+		Payload: []byte(ip.Meshtastic.PayloadString),
+	})
+
+	// Prepare the encrypted payload
+	encrypted := make([]byte, len(dataBytes))
+	nonce := make([]byte, 16)
+	binary.LittleEndian.PutUint32(nonce[0:], ip.Meshtastic.Id)
+	binary.LittleEndian.PutUint32(nonce[8:], ip.Meshtastic.From)
+	base64Key := ip.Meshtastic.HexKey
+	keyBytes, _ := base64.StdEncoding.DecodeString(base64Key)
+	if len(keyBytes) == 1 {
+		keyBytes = append(keyBytes, make([]byte, 15)...)
+	}
+	c := NewAESCipher(keyBytes)
+	cipher.NewCTR(c, nonce).XORKeyStream(encrypted, dataBytes)
+
+	ip.Raw.Meshtastic.Packet.PayloadVariant = &meshtastic.MeshPacket_Encrypted{
+		Encrypted: encrypted,
+	}
+
+	return nil, false
 }
 
 func (n *ProtoBufServerCmd) handleProxy(conn net.Conn) {
@@ -226,7 +264,6 @@ func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
 	decoded := packet.GetDecoded()
 	if decoded == nil {
 		encrypted := packet.GetEncrypted()
-
 		if encrypted != nil {
 			ip.Meshtastic.WasEncrypted = true
 
@@ -240,11 +277,13 @@ func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
 					ip.Meshtastic.WasUnmarshalled = true
 				}
 			}
-
 		} else {
-			n.Config.Log.Errorf("Packet contains neither decoded nor encrypted data from topic %s", topic)
+			n.Config.Log.Errorf("packet contains neither decoded nor encrypted data from topic %s", topic)
 			return
 		}
+	}
+	if decoded == nil {
+		return
 	}
 
 	portNum = decoded.GetPortnum()
@@ -288,8 +327,10 @@ func (n *ProtoBufServerCmd) processMeshtastic(ip *InspectorPacket) {
 		n.Config.Log.Infof("Message with PortNum %s from %d on topic %s", portNum.String(), from, topic)
 	}
 
+	ip.Meshtastic.Id = envelope.Packet.Id
 	ip.Meshtastic.From = from
 	ip.Meshtastic.To = to
+	ip.Meshtastic.Decoded = decoded
 	ip.Meshtastic.PortNum = decoded.GetPortnum()
 	ip.Meshtastic.Payload = decoded.GetPayload()
 	ip.Meshtastic.PayloadString = string(decoded.GetPayload())

@@ -153,9 +153,32 @@ func (n *ProtoBufServerCmd) rewriteRules() []Rule {
 					ip.Raw.Meshtastic.Packet.HopLimit <= 3 {
 					return false
 				}
-
-				n.Config.Log.Tracef("Rewriting hop limit for packet: %+v", ip.Raw.Meshtastic)
 				ip.Raw.Meshtastic.Packet.HopLimit = 3
+				return true
+			},
+			Action: Rewritten,
+			Reason: "MQTT Connect packets are rewritten",
+		},
+		{
+			Name:        "RewriteHelloGoodbye",
+			Description: "Replace words in channel messages",
+			Matcher: func(ip *InspectorPacket) bool {
+				// Check if the packet is a Meshtastic packet
+				if ip.Raw.Meshtastic == nil ||
+					ip.Raw.Meshtastic.Packet == nil ||
+					ip.Meshtastic.Decoded == nil ||
+					ip.Meshtastic.Decoded.Portnum != meshtastic.PortNum_TEXT_MESSAGE_APP ||
+					ip.Meshtastic.WasPKIEncrypted {
+					return false
+				}
+
+				n.Config.Log.Tracef("Rewriting packet from !%08x to !%08x", ip.Meshtastic.From, ip.Meshtastic.To)
+
+				ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "hi", "bye")
+				ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "hello", "👋")
+				ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "fuck", "🤬")
+
+				n.RewriteFromPayloadString(ip)
 
 				return true
 			},

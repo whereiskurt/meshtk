@@ -104,10 +104,11 @@ func(ip *InspectorPacket) bool {
     return false
   }
 
-  ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "hello", "👋")
-  ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "fuck", "🤬")
-
-   n.RewriteFromPayloadString(ip)
+  if ip.Track.Username == "public" {
+    ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "hello", "👋")
+    ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "fuck", "🤬")
+    n.RewriteFromPayloadString(ip)
+  }
 
   return true
 }

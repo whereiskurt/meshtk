@@ -1,0 +1,220 @@
+package server
+
+import (
+	"crypto/cipher"
+	"encoding/binary"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/eclipse/paho.mqtt.golang/packets"
+	log "github.com/sirupsen/logrus"
+	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"google.golang.org/protobuf/proto"
+)
+
+type InspectorPacket struct {
+	Track *ConnectionInfo
+	Log   *log.Logger
+	Raw   *RawPacket
+
+	MQTT struct {
+		Type   string
+		Topics []string //Subscribe topics can have multiple topics
+	}
+
+	Meshtastic struct {
+		Decoded         *meshtastic.Data
+		Cipher          *cipher.Block
+		WasUnmarshalled bool
+		Id              uint32
+		From            uint32
+		To              uint32
+		PortNum         meshtastic.PortNum
+		Payload         []byte
+		PayloadString   string
+		HexKey          string
+		WasEncrypted    bool
+		WasPKIEncrypted bool
+	}
+}
+type RawPacket struct {
+	MQTT       *packets.ControlPacket
+	Meshtastic *meshtastic.ServiceEnvelope
+}
+
+func (i *InspectorPacket) String() string {
+	return fmt.Sprintf("ClientID: %s, Username: %s, SocketAddress: %s, MQTTType: %s, MeshtasticPortNum: %d",
+		i.Track.ClientID, i.Track.Username, i.Track.SocketAddress, i.MQTT.Type, i.Meshtastic.PortNum)
+}
+
+// TODO: Refactor the inspcet* functions to work on InspectorPacket instead of ServerCmd
+func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
+
+	switch p := (*ip.Raw.MQTT).(type) {
+	case *packets.ConnectPacket:
+		connInfo := &ConnectionInfo{
+			ClientID:      p.ClientIdentifier,
+			Username:      p.Username,
+			Password:      fmt.Sprintf("%x", p.Password),
+			SocketAddress: ip.Track.SocketAddress,
+			ConnectTime:   time.Now().Unix(),
+		}
+		ip.MQTT.Type = "CONNECT"
+		ip.Track = connInfo
+		n.ConnMutex.Lock()
+		n.ConnTrack[ip.Track.SocketAddress] = connInfo
+		n.ConnMutex.Unlock()
+
+	case *packets.PublishPacket:
+		n.SetConnTrack(ip)
+		ip.MQTT.Type = "PUBLISH"
+		topics := make([]string, 0, 1)
+		ip.MQTT.Topics = append(topics, p.TopicName)
+
+		var env meshtastic.ServiceEnvelope
+		if err := proto.Unmarshal(p.Payload, &env); err == nil {
+			ip.Raw.Meshtastic = &env
+			ip.inspectMeshtastic(n)
+		}
+
+	case *packets.SubscribePacket:
+		n.SetConnTrack(ip)
+		ip.MQTT.Type = "SUBSCRIBE"
+		topics := make([]string, 0, len(p.Topics))
+		ip.MQTT.Topics = append(topics, p.Topics...)
+
+	case *packets.PingreqPacket:
+		n.SetConnTrack(ip)
+		ip.MQTT.Type = "PINGREQ"
+	case *packets.PingrespPacket:
+		n.SetConnTrack(ip)
+		ip.MQTT.Type = "PINGRESP"
+
+	default:
+		n.SetConnTrack(ip)
+		ip.MQTT.Type = fmt.Sprintf("%T", *ip.Raw.MQTT)
+		ip.MQTT.Type = ip.MQTT.Type[strings.LastIndex(ip.MQTT.Type, ".")+1:]
+
+	}
+}
+
+func (ip *InspectorPacket) inspectMeshtastic(n *ServerCmd) {
+	if ip.Raw.Meshtastic == nil {
+		return
+	}
+
+	envelope := ip.Raw.Meshtastic
+	topic := ip.MQTT.Topics[0] //Meshtastic are publish packets, and are only for one topic
+
+	packet := envelope.GetPacket()
+	if packet == nil {
+		ip.Meshtastic.WasUnmarshalled = false
+		return
+	}
+
+	ip.Meshtastic.Id = packet.GetId()
+	ip.Meshtastic.From = packet.GetFrom()
+	ip.Meshtastic.To = packet.GetTo()
+
+	decoded := packet.GetDecoded()
+	if decoded == nil {
+		encrypted := packet.GetEncrypted()
+		if encrypted != nil {
+			if packet.GetPkiEncrypted() {
+				ip.Meshtastic.WasPKIEncrypted = true
+			} else {
+				d, hexKey, c, err := n.DecryptMeshtastic(packet.Id, ip.Meshtastic.From, encrypted)
+				if err == nil {
+					decoded = d
+					ip.Meshtastic.HexKey = hexKey
+					ip.Meshtastic.Cipher = c
+					ip.Meshtastic.WasEncrypted = true
+				}
+			}
+		} else {
+			ip.Log.Errorf("packet contains neither decoded nor encrypted data from topic %s", topic)
+			return
+		}
+		if decoded == nil {
+			return
+		}
+	}
+
+	ip.Meshtastic.Decoded = decoded
+	ip.Meshtastic.PortNum = decoded.GetPortnum()
+	ip.Meshtastic.Payload = decoded.GetPayload()
+	ip.Meshtastic.PayloadString = string(decoded.GetPayload())
+
+	switch ip.Meshtastic.PortNum {
+	case meshtastic.PortNum_TEXT_MESSAGE_APP:
+		ip.Meshtastic.WasUnmarshalled = true
+
+	case meshtastic.PortNum_NODEINFO_APP:
+		var user meshtastic.User
+		if err := proto.Unmarshal(ip.Meshtastic.Payload, &user); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
+		}
+
+	case meshtastic.PortNum_POSITION_APP:
+		var position meshtastic.Position
+		if err := proto.Unmarshal(ip.Meshtastic.Payload, &position); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
+		}
+
+	case meshtastic.PortNum_MAP_REPORT_APP:
+		var mapReport meshtastic.MapReport
+		if err := proto.Unmarshal(ip.Meshtastic.Payload, &mapReport); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
+		}
+
+	case meshtastic.PortNum_TELEMETRY_APP:
+		var telemetry meshtastic.Telemetry
+		if err := proto.Unmarshal(ip.Meshtastic.Payload, &telemetry); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
+		}
+
+	case meshtastic.PortNum_NEIGHBORINFO_APP:
+		var neighborInfo meshtastic.NeighborInfo
+		if err := proto.Unmarshal(ip.Meshtastic.Payload, &neighborInfo); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
+		}
+
+	default:
+		ip.Log.Infof("Message with PortNum %s from %d on topic %s", ip.Meshtastic.PortNum.String(), ip.Meshtastic.From, topic)
+	}
+
+}
+
+func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
+	if ip.Meshtastic.WasPKIEncrypted {
+		return fmt.Errorf("cannot rewrite packet is PKI encrypted"), false
+	}
+
+	dataBytes, _ := proto.Marshal(&meshtastic.Data{
+		Portnum: ip.Meshtastic.PortNum,
+		Payload: []byte(ip.Meshtastic.PayloadString),
+	})
+
+	// Prepare the encrypted payload
+	encrypted := make([]byte, len(dataBytes))
+	nonce := make([]byte, 16)
+	binary.LittleEndian.PutUint32(nonce[0:], ip.Meshtastic.Id)
+	binary.LittleEndian.PutUint32(nonce[8:], ip.Meshtastic.From)
+	cipher.NewCTR(*ip.Meshtastic.Cipher, nonce).XORKeyStream(encrypted, dataBytes)
+
+	ip.Raw.Meshtastic.Packet.PayloadVariant = &meshtastic.MeshPacket_Encrypted{
+		Encrypted: encrypted,
+	}
+
+	switch p := (*ip.Raw.MQTT).(type) {
+	case *packets.PublishPacket:
+		payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
+		if err != nil {
+			return fmt.Errorf("failed to marshal Meshtastic payload: %v", err), false
+		}
+		p.Payload = payloadBytes
+	}
+
+	return nil, false
+}

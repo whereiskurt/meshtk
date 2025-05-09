@@ -77,16 +77,14 @@ func (c *MqttClient) PublishMessagePlain(from uint32, to uint32, topic string, p
 
 	// Publish the message
 	var lastErr error
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		token := c.client.Publish(topic, 0, false, envelopeBytes)
 		<-token.Done()
 		if err := token.Error(); err != nil {
-			c.log.Errorf("PublishMessagePlain failed attempt %d to publish: %v", i+1, err)
 			lastErr = err
 			c.Connect()
 			continue
 		}
-		// Successfully published
 		return nil
 	}
 
@@ -154,16 +152,14 @@ func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic strin
 
 	// Attempt to publish the message up to 3 times
 	var lastErr error
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		token := c.client.Publish(topic, 0, false, envelopeBytes)
 		<-token.Done()
 		if err := token.Error(); err != nil {
-			c.log.Errorf("PublishMessageEncrypted failed attempt %d to publish: %v", i+1, err)
 			lastErr = err
 			c.Connect()
 			continue
 		}
-		// Successfully published
 		return nil
 	}
 

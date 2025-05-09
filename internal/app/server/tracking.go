@@ -53,6 +53,8 @@ func (n *ServerCmd) SetupTracker() {
 			now := time.Now().Unix()
 			n.ConnMutex.Lock()
 			for socketAddr, connInfo := range n.ConnTrack {
+				n.Config.Log.Tracef("Checking connection track for %s: %d: %d", socketAddr, connInfo.ConnectTime, now)
+				n.Config.Log.Tracef("Diff %d", now-connInfo.ConnectTime)
 				if now-connInfo.ConnectTime > 180 {
 					delete(n.ConnTrack, socketAddr)
 					i++

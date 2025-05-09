@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
@@ -15,6 +16,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/whereiskurt/meshtk/internal/app/help"
 	"github.com/whereiskurt/meshtk/pkg/config"
+	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 type ServerCmd struct {
@@ -61,6 +64,25 @@ func (n *ServerCmd) LoadCiphers(c *config.Config) {
 		}
 		n.Ciphers = append(n.Ciphers, NewAESCipher(keyBytes))
 	}
+}
+
+func (n *ServerCmd) DecryptMeshtastic(id, from uint32, payload []byte) (decoded *meshtastic.Data, hexkey string, c *cipher.Block, err error) {
+	nonce := make([]byte, 16)
+	binary.LittleEndian.PutUint32(nonce[0:], id)
+	binary.LittleEndian.PutUint32(nonce[8:], from)
+	decrypted := make([]byte, len(payload))
+
+	for k, cipherInstance := range n.Ciphers {
+		hexKey := n.Config.Meshtastic.Channels[k].EncryptKey
+
+		cipher.NewCTR(cipherInstance, nonce).XORKeyStream(decrypted, payload)
+		decoded = new(meshtastic.Data)
+		if err := proto.Unmarshal(decrypted, decoded); err == nil {
+			return decoded, hexKey, &cipherInstance, nil
+		}
+
+	}
+	return nil, "", nil, fmt.Errorf("failed to decrypt data with any cipher")
 }
 
 func (n *ServerCmd) Help(cmd *cobra.Command, argz []string) {

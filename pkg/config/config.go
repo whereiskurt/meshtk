@@ -175,6 +175,7 @@ func (c *Config) Init() {
 func (c *Config) Read() {
 	viper.SetConfigType("yaml")
 	viper.SetEnvPrefix("meshtk")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	errDefault := viper.MergeConfig(strings.NewReader(DefaultConfig))
 	if errDefault != nil {
@@ -205,6 +206,9 @@ func (c *Config) Read() {
 		}
 	}
 
+	viper.Unmarshal(&c)
+
+	viper.AutomaticEnv()
 	viper.Unmarshal(&c)
 
 	//Slurp stdin into a variable

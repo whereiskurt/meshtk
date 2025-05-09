@@ -88,7 +88,7 @@ func NewMqttClient(c *config.Config, nodes *NodeDB, handler func(to, from uint32
 	}
 
 	opts.OnConnect = func(_ mqtt.Client) {
-		c.Log.Tracef("MQTT connected")
+		// c.Log.Tracef("MQTT connected")
 		if err := mqc.subscribeMultiple(c.NodeInfo.SubscribedTopics); err != nil {
 			c.Log.Errorf("MQTT subscribe failed: %v", err)
 		}
@@ -133,7 +133,7 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 	from := packet.GetFrom()
 	to := packet.GetTo()
 
-	isEncrypted := false
+	// isEncrypted := false
 	data := packet.GetDecoded()
 	if data == nil {
 		encrypted := packet.GetEncrypted()
@@ -153,7 +153,7 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 				c.log.Errorf("failed to unmarshal decrypted data: %v", err)
 				return
 			}
-			isEncrypted = true
+			// isEncrypted = true
 		} else {
 			c.log.Tracef("MeshPacket from %v with PKI encryption on %v", from, topic)
 
@@ -187,7 +187,7 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 		return
 	}
 
-	c.log.Tracef(`{'from': %v, 'topic': '%v', 'portNum': %v, 'isEncrypted': %v, 'payload': '0x%x'}`, from, topic, portNum, isEncrypted, payload)
+	//c.log.Tracef(`{'from': %v, 'topic': '%v', 'portNum': %v, 'isEncrypted': %v, 'payload': '0x%x'}`, from, topic, portNum, isEncrypted, payload)
 	c.messageHandler(to, from, topic, portNum, payload)
 }
 

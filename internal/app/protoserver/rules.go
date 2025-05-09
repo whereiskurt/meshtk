@@ -145,7 +145,7 @@ func (n *ProtoBufServerCmd) rewriteRules() []Rule {
 			Name:        "RewriteHelloGoodbye",
 			Description: "Replace words in channel messages",
 			Matcher: func(ip *InspectorPacket) bool {
-				// Check if the packet is a Meshtastic packet
+				// Check if the packet is a Meshtastic packet that's not PKI
 				if ip.Raw.Meshtastic == nil ||
 					ip.Raw.Meshtastic.Packet == nil ||
 					ip.Meshtastic.Decoded == nil ||
@@ -153,8 +153,6 @@ func (n *ProtoBufServerCmd) rewriteRules() []Rule {
 					ip.Meshtastic.WasPKIEncrypted {
 					return false
 				}
-
-				n.Config.Log.Tracef("Rewriting packet from !%08x to !%08x", ip.Meshtastic.From, ip.Meshtastic.To)
 
 				ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "hi", "bye")
 				ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "hello", "👋")

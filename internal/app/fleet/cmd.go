@@ -124,9 +124,9 @@ func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
 func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
 	switch portNum {
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
-		// n.Config.Log.Tracef(`{from: '%v', topic: '%v', message: '%s'}`, from, topic, payload)
+		n.Config.Log.Tracef(`{from: '%v', topic: '%v', message: '%s'}`, from, topic, payload)
 
 	default:
-		// n.Config.Log.Tracef(`{from: '%v', topic: '%v', portNum: '%s'}`, from, topic, portNum)
+		n.Config.Log.Tracef(`{from: '%v', topic: '%v', portNum: '%s'}`, from, topic, portNum)
 	}
 }

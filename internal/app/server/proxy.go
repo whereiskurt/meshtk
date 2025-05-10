@@ -46,10 +46,6 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 		default:
 			packet, err := packets.ReadPacket(request)
 			if err != nil {
-				// Not a valuable log message because hangs and cutoffs happen.
-				// if err != io.EOF {
-				// 	n.Config.Log.Tracef("failed to read MQTT control packet from %s: %v", socketAddr, err)
-				// }
 				return
 			}
 
@@ -103,13 +99,8 @@ func (n *ServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Reader, do
 	for {
 		backendPacket, err := packets.ReadPacket(backendReader)
 		if err != nil {
-			// if err != io.EOF && err != io.ErrUnexpectedEOF {
-			// 	n.Config.Log.Errorf("Error reading from backend: %v", err)
-			// }
 			return
 		}
-
-		//TODO: Consider adding a mosquitto response interceptor here - not sure if this would ever be useful
 
 		var buf bytes.Buffer
 		if err := backendPacket.Write(&buf); err != nil {

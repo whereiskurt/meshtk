@@ -94,7 +94,6 @@ TIMER:
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️ Fleet[%d]: Steady state timer expired.\n", idx)))
 			break TIMER
 		default:
-
 			totalNodes := fleet.NodesPerSteadyInterval[tic%len(fleet.NodesPerSteadyInterval)]
 			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Running steady state: tic %d/%d\n", idx, tic+1, maxTics)))
 			for range totalNodes {

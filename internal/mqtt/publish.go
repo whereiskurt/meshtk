@@ -131,9 +131,10 @@ func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic strin
 		},
 		Channel:  uint32(GenerateChannelHash(c.channel, c.key)),
 		RxTime:   uint32(time.Now().Unix()),
-		RxRssi:   -20,
+		RxRssi:   -2,
 		ViaMqtt:  true,
-		HopLimit: 5,
+		RxSnr:    2,
+		HopLimit: 3,
 	}
 
 	// Create ServiceEnvelope

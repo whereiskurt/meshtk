@@ -53,15 +53,14 @@ func (n *ServerCmd) SetupTracker() {
 			now := time.Now().Unix()
 			n.ConnMutex.Lock()
 			for socketAddr, connInfo := range n.ConnTrack {
-				n.Config.Log.Tracef("Checking connection track for %s: %d: %d", socketAddr, connInfo.ConnectTime, now)
-				n.Config.Log.Tracef("Diff %d", now-connInfo.ConnectTime)
+				n.Config.Log.Tracef("ConnTrack: %s: %d: %d: diff: %d", socketAddr, connInfo.ConnectTime, now, now-connInfo.ConnectTime)
 				if now-connInfo.ConnectTime > 180 {
+					n.Config.Log.Tracef("ConnTrack: purging connection %d: %s", i, socketAddr)
 					delete(n.ConnTrack, socketAddr)
 					i++
 				}
 			}
 			n.ConnMutex.Unlock()
-			n.Config.Log.Tracef("Connection track cleanup completed: %d connections removed", i)
 		}
 	}()
 }

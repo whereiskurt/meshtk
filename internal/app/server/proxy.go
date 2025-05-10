@@ -11,10 +11,6 @@ import (
 )
 
 func (n *ServerCmd) handleProxy(conn net.Conn) {
-	startTime := time.Now()
-
-	// Track metrics for this connection
-	var packetCount int
 
 	defer func() {
 		if conn.RemoteAddr() != nil {
@@ -24,10 +20,6 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 			n.ConnMutex.Unlock()
 			conn.Close()
 		}
-
-		// Log connection summary on close
-		duration := time.Since(startTime)
-		n.Config.Log.Tracef("Connection handled %d packets over %v before closing", packetCount, duration)
 	}()
 
 	socketAddr := n.TrackConnection(conn)
@@ -44,7 +36,6 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 	defer func() {
 		// Check if connection is still valid before returning to pool
 		if backendConn != nil && backendConn.Conn != nil {
-			n.Config.Log.Debugf("Returning backend connection to pool from %s session", socketAddr)
 			n.BackendPool.Put(backendConn)
 		}
 	}()
@@ -55,13 +46,9 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 	// Handle responses from the backend
 	go n.handleBackend(conn, backendConn.Reader, done)
 
-	// Set a reasonable read timeout to avoid stuck connections
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-
 	for {
 		select {
 		case <-done:
-			n.Config.Log.Debugf("Backend connection signaled completion for %s", socketAddr)
 			return
 
 		default:
@@ -70,10 +57,10 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			packet, err := packets.ReadPacket(request)
 			if err != nil {
-				n.Config.Log.Debugf("Error reading packet from %s: %v", socketAddr, err)
+				//More like 'failed' - lots of ways this can legimately fail - not actually an error
 				return
 			}
-			packetCount++
+
 			ip := &InspectorPacket{
 				Log:   n.Config.Log,
 				Track: &ConnectionInfo{SocketAddress: socketAddr},
@@ -92,18 +79,18 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 			result := n.Decider.Decide(ip)
 			switch result.Decision {
 			case Block:
-				n.Config.Log.Debugf("BLOCK packet #%d from %s: %s", packetCount, ip.Track.ClientID, result.Reason)
+				n.Config.Log.Debugf("BLOCK packet from %s: %s", ip.Track.ClientID, result.Reason)
 				continue // Skip to next packet without forwarding
 			case Allow:
 				if strings.Contains(strings.ToLower(result.Reason), "no match") {
-					n.Config.Log.Debugf("ALLOW packet #%d from %s: %s", packetCount, ip.Track.ClientID, result.Reason)
+					n.Config.Log.Debugf("ALLOW packet from %s: %s", ip.Track.ClientID, result.Reason)
 				}
 			}
 
 			// Serialize the packet for forwarding
 			var buf bytes.Buffer
 			if err := (*ip.Raw.MQTT).Write(&buf); err != nil {
-				n.Config.Log.Errorf("Failed to serialize MQTT packet #%d: %v", packetCount, err)
+				n.Config.Log.Errorf("Failed to serialize MQTT packet: %v", err)
 				return
 			}
 
@@ -142,12 +129,9 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 }
 
 func (n *ServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
-	var packetCount int
-	startTime := time.Now()
 
 	defer func() {
 		done <- struct{}{}
-		n.Config.Log.Tracef("Backend handler processed %d packets over %v before closing", packetCount, time.Since(startTime))
 	}()
 
 	for {
@@ -156,18 +140,15 @@ func (n *ServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Reader, do
 			return
 		}
 
-		packetCount++
-
 		var buf bytes.Buffer
 		if err := backendPacket.Write(&buf); err != nil {
-			n.Config.Log.Errorf("Failed to serialize backend response packet #%d: %v", packetCount, err)
+			n.Config.Log.Errorf("failed to serialize backend response packet: %v", err)
 			return
 		}
 
 		if _, err := conn.Write(buf.Bytes()); err != nil {
-			n.Config.Log.Errorf("Failed to write backend response packet #%d to client: %v", packetCount, err)
+			n.Config.Log.Errorf("failed to write backend response packet: %v", err)
 			return
 		}
-
 	}
 }

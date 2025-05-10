@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// ConnectionPool manages a pool of network connections
 type ConnectionPool struct {
 	mu          sync.Mutex
 	pool        []net.Conn
@@ -17,13 +16,11 @@ type ConnectionPool struct {
 	dialTimeout time.Duration
 }
 
-// BackendConn wraps a connection with its reader
 type BackendConn struct {
 	Conn   net.Conn
 	Reader *bufio.Reader
 }
 
-// BackendConnectionPool manages a pool of backend connections
 type BackendConnectionPool struct {
 	mu          sync.Mutex
 	pool        []*BackendConn
@@ -86,7 +83,6 @@ func (p *ConnectionPool) Put(conn net.Conn) {
 	p.pool = append(p.pool, conn)
 }
 
-// Get returns a backend connection from the pool or creates a new one
 func (p *BackendConnectionPool) Get() (*BackendConn, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -123,7 +119,6 @@ func (p *BackendConnectionPool) Get() (*BackendConn, error) {
 	}, nil
 }
 
-// Put returns a backend connection to the pool
 func (p *BackendConnectionPool) Put(backendConn *BackendConn) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

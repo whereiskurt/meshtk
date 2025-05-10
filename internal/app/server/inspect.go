@@ -4,10 +4,12 @@ import (
 	"crypto/cipher"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
+	proxyproto "github.com/pires/go-proxyproto"
 	log "github.com/sirupsen/logrus"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 	"google.golang.org/protobuf/proto"
@@ -41,6 +43,14 @@ type InspectorPacket struct {
 type RawPacket struct {
 	MQTT       *packets.ControlPacket
 	Meshtastic *meshtastic.ServiceEnvelope
+}
+
+type ConnectionInfo struct {
+	ClientID      string
+	Username      string
+	Password      string
+	SocketAddress string
+	ConnectTime   int64
 }
 
 func (i *InspectorPacket) String() string {
@@ -217,4 +227,53 @@ func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 	}
 
 	return nil, false
+}
+
+func (*ServerCmd) TrackConnection(conn net.Conn) (socketAddr string) {
+	if conn.RemoteAddr() != nil {
+		socketAddr = conn.RemoteAddr().String()
+	}
+
+	if proxyConn, ok := conn.(*proxyproto.Conn); ok {
+		proxyHeader := proxyConn.ProxyHeader()
+		if proxyHeader != nil && proxyHeader.SourceAddr != nil {
+			socketAddr = proxyHeader.SourceAddr.String()
+		}
+	}
+	return socketAddr
+}
+
+func (n *ServerCmd) SetConnTrack(ip *InspectorPacket) {
+	n.ConnMutex.Lock()
+	connInfo, exists := n.ConnTrack[ip.Track.SocketAddress]
+	if exists {
+		// Update the connection time
+		connInfo.ConnectTime = time.Now().Unix()
+		n.ConnTrack[ip.Track.SocketAddress] = connInfo
+		ip.Track = connInfo
+	}
+	n.ConnMutex.Unlock()
+}
+
+func (n *ServerCmd) SetupTracker() {
+	n.ConnTrack = make(map[string]*ConnectionInfo)
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			i := 0
+			now := time.Now().Unix()
+			n.ConnMutex.Lock()
+			for socketAddr, connInfo := range n.ConnTrack {
+				n.Config.Log.Tracef("ConnTrack: %s: %d: %d: diff: %d", socketAddr, connInfo.ConnectTime, now, now-connInfo.ConnectTime)
+				if now-connInfo.ConnectTime > 180 {
+					n.Config.Log.Tracef("ConnTrack: purging connection %d: %s", i, socketAddr)
+					delete(n.ConnTrack, socketAddr)
+					i++
+				}
+			}
+			n.ConnMutex.Unlock()
+		}
+	}()
 }

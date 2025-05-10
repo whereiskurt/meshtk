@@ -8,7 +8,7 @@ import (
 )
 
 func (n *ServerCmd) LoadInspectorRules() {
-	n.Decider = NewRuleBasedDecider(append(rewriteRules(), inspectRules()...))
+	n.PacketDecider = NewRuleBasedDecider(append(rewriteRules(), inspectRules()...))
 }
 
 func inspectRules() []Rule {

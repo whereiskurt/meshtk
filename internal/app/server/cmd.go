@@ -26,15 +26,14 @@ type ServerCmd struct {
 		WasSuccess bool
 	}
 
-	ConnTrack map[string]*ConnectionInfo // maps connection ID to client ID
-	ConnMutex sync.RWMutex
-
-	Ciphers []cipher.Block
-	Decider Decider // Interface for making packet routing decisions
-
-	// Connection pools
 	FrontendPool *ConnectionPool
 	BackendPool  *BackendConnectionPool
+	ConnTrack    map[string]*ConnectionInfo // maps connection ID to client ID
+	ConnMutex    sync.RWMutex
+
+	Ciphers       []cipher.Block
+	PacketDecider Decider // Interface for making packet routing decisions
+
 }
 
 // NewBackendConnectionPool creates a new backend connection pool

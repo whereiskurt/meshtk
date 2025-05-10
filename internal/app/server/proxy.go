@@ -76,7 +76,7 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 			}
 
 			// Apply decision rules
-			result := n.Decider.Decide(ip)
+			result := n.PacketDecider.Decide(ip)
 			switch result.Decision {
 			case Block:
 				n.Config.Log.Debugf("BLOCK packet from %s: %s", ip.Track.ClientID, result.Reason)
@@ -86,6 +86,19 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 					n.Config.Log.Debugf("ALLOW packet from %s: %s", ip.Track.ClientID, result.Reason)
 				}
 			}
+
+			// 	log.Printf("action=%s src_ip=%s src_port=%d dst_ip=%s dst_port=%d username=%s clientid=%s mqtt_packet=%s topic=%s message_size=%d",
+			// 	action,
+			// 	srcIP,
+			// 	srcPort,
+			// 	dstIP,
+			// 	dstPort,
+			// 	username,
+			// 	clientID,
+			// 	packetType,
+			// 	topic,
+			// 	messageSize,
+			// )
 
 			// Serialize the packet for forwarding
 			var buf bytes.Buffer

@@ -27,7 +27,7 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 		// Log connection summary on close
 		duration := time.Since(startTime)
-		n.Config.Log.Debugf("Connection handled %d packets over %v before closing", packetCount, duration)
+		n.Config.Log.Tracef("Connection handled %d packets over %v before closing", packetCount, duration)
 	}()
 
 	socketAddr := n.TrackConnection(conn)
@@ -73,7 +73,7 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 				n.Config.Log.Debugf("Error reading packet from %s: %v", socketAddr, err)
 				return
 			}
-
+			packetCount++
 			ip := &InspectorPacket{
 				Log:   n.Config.Log,
 				Track: &ConnectionInfo{SocketAddress: socketAddr},

@@ -250,6 +250,7 @@ func (c *MqttClient) subscribeMultiple(topics []string) error {
 }
 
 func (c *MqttClient) Connect() error {
+
 	token := c.client.Connect()
 
 	if !token.WaitTimeout(5 * time.Second) {

@@ -79,7 +79,18 @@ func (c *MqttClient) PublishMessagePlain(from uint32, to uint32, topic string, p
 	var lastErr error
 	for range 3 {
 		token := c.client.Publish(topic, 0, false, envelopeBytes)
-		<-token.Done()
+
+		// Add timeout to avoid hanging indefinitely
+		select {
+		case <-token.Done():
+			// Token completed normally
+		case <-time.After(5 * time.Second):
+			c.log.Warnf("Publish operation timed out after 5 seconds")
+			lastErr = fmt.Errorf("publish operation timed out")
+			c.Connect()
+			continue
+		}
+
 		if err := token.Error(); err != nil {
 			lastErr = err
 			c.Connect()
@@ -155,7 +166,17 @@ func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic strin
 	var lastErr error
 	for range 3 {
 		token := c.client.Publish(topic, 0, false, envelopeBytes)
-		<-token.Done()
+
+		// Add timeout to avoid hanging indefinitely
+		select {
+		case <-token.Done():
+		case <-time.After(5 * time.Second):
+			c.log.Warnf("Publish operation timed out after 5 seconds...")
+			lastErr = fmt.Errorf("publish operation timed out")
+			c.Connect()
+			continue
+		}
+
 		if err := token.Error(); err != nil {
 			lastErr = err
 			c.Connect()

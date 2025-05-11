@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"net"
 	"time"
 
@@ -22,41 +23,38 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 	}()
 
 	socketAddr := n.TrackConnection(conn)
-	n.Config.Log.Debugf("Starting to handle connection from %s", socketAddr)
 
-	// Get a backend connection from the pool
-	backendConn, err := n.BackendPool.Get()
+	// Create a direct connection to the backend instead of using a pool
+	backendConn, err := net.DialTimeout("tcp", n.Config.Server.ProxyForwardAddress, 10*time.Second)
 	if err != nil {
-		n.Config.Log.Errorf("Failed to get backend connection from pool: %v", err)
+		n.Config.Log.Errorf("failed to connect to backend: %v", err)
 		return
 	}
-
-	// Ensure the backend connection is returned to the pool when done
-	defer func() {
-		// Check if connection is still valid before returning to pool
-		if backendConn != nil && backendConn.Conn != nil {
-			n.BackendPool.Put(backendConn)
-		}
-	}()
+	defer backendConn.Close()
 
 	request := bufio.NewReader(conn)
+	backendReader := bufio.NewReader(backendConn)
 	done := make(chan struct{})
 
+	// Create a context with cancel for proper goroutine cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // Ensure we cancel the context when this function exits
+
 	// Handle responses from the backend
-	go n.handleBackend(conn, backendConn.Reader, done)
+	go n.handleBackend(ctx, conn, backendReader, done)
 
 	for {
 		select {
 		case <-done:
+			n.Config.Log.Debugf("Connection from %s closed by backend", socketAddr)
 			return
-
 		default:
 			// Update the read deadline for each packet
 			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 			packet, err := packets.ReadPacket(request)
 			if err != nil {
-				//More like 'failed' - lots of ways this can legimately fail - not actually an error
+				n.Config.Log.Debugf("Connection from %s closed: %v", socketAddr, err)
 				return
 			}
 
@@ -73,15 +71,15 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			switch result.Decision {
 			//TODO: Add the idea of a "block" log instead of just logging to the config log
+			case Allow:
+				if n.Config.Server.ShouldWriteAllows {
+					n.Config.Log.Infof("%s", ip.FormattedLog(result))
+				}
 			case Block:
 				if n.Config.Server.ShouldWriteBlocks {
 					n.Config.Log.Infof("%s", ip.FormattedLog(result))
 				}
 				return
-			case Allow:
-				if n.Config.Server.ShouldWriteAllows {
-					n.Config.Log.Infof("%s", ip.FormattedLog(result))
-				}
 			default:
 				if n.Config.Server.ShouldWriteAllows || n.Config.Server.ShouldWriteBlocks {
 					n.Config.Log.Infof("%s", ip.FormattedLog(result))
@@ -91,65 +89,48 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 			// Serialize the packet for forwarding
 			var buf bytes.Buffer
 			if err := (*ip.Raw.MQTT).Write(&buf); err != nil {
-				n.Config.Log.Errorf("Failed to serialize MQTT packet: %v", err)
+				n.Config.Log.Errorf("failed to serialize MQTT packet: %v", err)
 				return
 			}
 
 			// Forward the packet to the backend
-			if _, err := backendConn.Conn.Write(buf.Bytes()); err != nil {
-				newBackendConn, err := n.BackendPool.Get()
-				if err != nil {
-					n.Config.Log.Errorf("Failed to get replacement backend connection: %v", err)
-					return
-				}
-
-				// Replace the old connection
-				oldBackendConn := backendConn
-				backendConn = newBackendConn
-
-				// Start a new goroutine to handle responses from the new backend connection
-				oldDone := done
-				done = make(chan struct{})
-				go n.handleBackend(conn, backendConn.Reader, done)
-
-				// Try to send the packet again with the new connection
-				if _, err := backendConn.Conn.Write(buf.Bytes()); err != nil {
-					n.Config.Log.Errorf("Failed to forward packet with replacement connection: %v", err)
-					return
-				}
-
-				go func() {
-					<-oldDone
-					if oldBackendConn.Conn != nil {
-						oldBackendConn.Conn.Close()
-					}
-				}()
+			if _, err := backendConn.Write(buf.Bytes()); err != nil {
+				n.Config.Log.Errorf("Failed to write to backend: %v", err)
+				return
 			}
 		}
 	}
 }
 
-func (n *ServerCmd) handleBackend(conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
+func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
 
 	defer func() {
 		done <- struct{}{}
 	}()
 
 	for {
-		backendPacket, err := packets.ReadPacket(backendReader)
-		if err != nil {
+		select {
+		case <-ctx.Done():
 			return
-		}
+		default:
+			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
-		var buf bytes.Buffer
-		if err := backendPacket.Write(&buf); err != nil {
-			n.Config.Log.Errorf("failed to serialize backend response packet: %v", err)
-			return
-		}
+			backendPacket, err := packets.ReadPacket(backendReader)
+			if err != nil {
+				n.Config.Log.Debugf("Backend connection error: %v", err)
+				return
+			}
 
-		if _, err := conn.Write(buf.Bytes()); err != nil {
-			n.Config.Log.Errorf("failed to write backend response packet: %v", err)
-			return
+			var buf bytes.Buffer
+			if err := backendPacket.Write(&buf); err != nil {
+				n.Config.Log.Errorf("failed to serialize backend response packet: %v", err)
+				return
+			}
+
+			if _, err := conn.Write(buf.Bytes()); err != nil {
+				n.Config.Log.Errorf("failed to write backend response packet: %v", err)
+				return
+			}
 		}
 	}
 }

@@ -26,46 +26,12 @@ type ServerCmd struct {
 		WasSuccess bool
 	}
 
-	FrontendPool *ConnectionPool
-	BackendPool  *BackendConnectionPool
-	ConnTrack    map[string]*ConnectionInfo // maps connection ID to client ID
-	ConnMutex    sync.RWMutex
+	ConnTrack map[string]*ConnectionInfo // maps connection ID to client ID
+	ConnMutex sync.RWMutex
 
 	Ciphers       []cipher.Block
 	PacketDecider Decider // Interface for making packet routing decisions
 	LogFileMutex  sync.RWMutex
-}
-
-// NewBackendConnectionPool creates a new backend connection pool
-func (n *ServerCmd) NewBackendConnectionPool(address string, maxSize int, dialTimeout time.Duration) {
-	r := &BackendConnectionPool{
-		pool:        make([]*BackendConn, 0, maxSize),
-		address:     address,
-		maxSize:     maxSize,
-		currentSize: 0,
-		dialTimeout: dialTimeout,
-	}
-	n.BackendPool = r
-
-	preConnectCount := maxSize / 4
-	successCount := 0
-	n.Config.Log.Infof("Pre-establishing %d backend connections to %s", preConnectCount, address)
-
-	for i := range preConnectCount {
-		backendConn, err := n.BackendPool.Get()
-		if err != nil {
-			time.Sleep(100 * time.Millisecond)
-			n.Config.Log.Warnf("Failed to pre-establish backend connection #%d: %v", i+1, err)
-			continue
-		}
-		n.BackendPool.Put(backendConn)
-		successCount++
-
-		if (i+1)%10 == 0 {
-			n.Config.Log.Infof("Pre-established %d/%d backend connections", i+1, preConnectCount)
-		}
-	}
-	n.Config.Log.Infof("✅ Successfully pre-established %d/%d backend connections", successCount, preConnectCount)
 }
 
 func NewAESCipher(key []byte) cipher.Block {
@@ -181,9 +147,6 @@ func (n *ServerCmd) StartProtobufServer() error {
 func (n *ServerCmd) StartProxyServer() error {
 	address := n.Config.Server.ProxyListenAddress
 	backendAddress := n.Config.Server.ProxyForwardAddress
-
-	poolSize := 200
-	n.NewBackendConnectionPool(backendAddress, poolSize, 5*time.Second)
 
 	listener, err := net.Listen("tcp", address)
 	if err != nil {

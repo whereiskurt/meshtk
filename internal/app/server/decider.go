@@ -6,6 +6,7 @@ const (
 	Allow Decision = iota
 	Block
 	Rewrote
+	NoMatch
 )
 
 type DecisionResult struct {
@@ -39,7 +40,7 @@ func (d *RuleBasedDecider) Decide(packet *InspectorPacket) DecisionResult {
 			}
 		}
 	}
-	return DecisionResult{Decision: Allow, Reason: "No matching rule found"}
+	return DecisionResult{Decision: NoMatch, Reason: "No matching rule found"}
 }
 
 func NewRuleBasedDecider(rules []Rule) *RuleBasedDecider {

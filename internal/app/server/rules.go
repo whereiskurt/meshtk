@@ -23,7 +23,8 @@ func inspectRules() []Rule {
 					*packets.PubackPacket,
 					*packets.PingreqPacket,
 					*packets.UnsubscribePacket,
-					*packets.PublishPacket:
+					*packets.PublishPacket,
+					*packets.DisconnectPacket:
 					return true
 				default:
 					return false
@@ -52,6 +53,16 @@ func inspectRules() []Rule {
 			},
 			Action: Allow,
 			Reason: "NodeInfo/Position/Text Message packets are always allowed",
+		},
+		{
+			Name:        "AllowTelemetryForSensorUser",
+			Description: "Allow telemetry packets for sensor users",
+			Matcher: func(packet *InspectorPacket) bool {
+				return packet.Meshtastic.PortNum == meshtastic.PortNum_TELEMETRY_APP &&
+					packet.Track.Username == "sensor"
+			},
+			Action: Allow,
+			Reason: "Telemetry packets are allowed for 'public' users",
 		},
 	}
 	return rules

@@ -58,6 +58,9 @@ Server:
   ProxyListenAddress: "0.0.0.0:1883"
   ProxyForwardAddress: "localhost:1884"
   InspectorListenAddress: "localhost:50051"
+  BlockFilenameTmpl: "./blocklist.{{.DTS}}.log"
+  ShouldWriteBlocks: true
+  ShouldWriteAllows: true
 
 Fleet:
   - Id: "rebar-fleet"

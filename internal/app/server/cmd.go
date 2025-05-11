@@ -33,7 +33,7 @@ type ServerCmd struct {
 
 	Ciphers       []cipher.Block
 	PacketDecider Decider // Interface for making packet routing decisions
-
+	LogFileMutex  sync.RWMutex
 }
 
 // NewBackendConnectionPool creates a new backend connection pool

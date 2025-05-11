@@ -229,6 +229,25 @@ func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 	return nil, false
 }
 
+// FormattedLog formats the decision log for an InspectorPacket
+func (ip *InspectorPacket) FormattedLog(result DecisionResult) string {
+	action_log := "action=ALLOW"
+	switch result.Decision {
+	case Block:
+		action_log = "action=BLOCK"
+	}
+
+	action_log += fmt.Sprintf(",clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%+v",
+		ip.Track.ClientID, ip.Track.Username, ip.MQTT.Type, ip.MQTT.Topics)
+
+	if ip.Meshtastic.WasUnmarshalled {
+		action_log += fmt.Sprintf(",mesh_type=%s, mesh_from=%08x, mesh_to=%08x, payload=%02x",
+			ip.Meshtastic.PortNum.String(), ip.Meshtastic.From, ip.Meshtastic.To, ip.Meshtastic.Payload)
+	}
+
+	return action_log
+}
+
 func (*ServerCmd) TrackConnection(conn net.Conn) (socketAddr string) {
 	if conn.RemoteAddr() != nil {
 		socketAddr = conn.RemoteAddr().String()

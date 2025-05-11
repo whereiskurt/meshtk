@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
@@ -69,36 +68,25 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			ip.inspectRawPacket(n)
 
-			if ip.Meshtastic.WasUnmarshalled {
-				n.Config.Log.Tracef("MQTT packet from %s: %s,%s,%s,!%08x,!%08x", socketAddr, ip.Track.Username, ip.Track.ClientID, ip.Meshtastic.PortNum, ip.Meshtastic.To, ip.Meshtastic.From)
-			} else {
-				n.Config.Log.Tracef("MQTT packet from %s: %s,%s,%s", socketAddr, ip.Track.Username, ip.Track.ClientID, ip.MQTT.Type)
-			}
-
 			// Apply decision rules
 			result := n.PacketDecider.Decide(ip)
+
 			switch result.Decision {
+			//TODO: Add the idea of a "block" log instead of just logging to the config log
 			case Block:
-				n.Config.Log.Debugf("BLOCK packet from %s: %s", ip.Track.ClientID, result.Reason)
-				continue // Skip to next packet without forwarding
+				if n.Config.Server.ShouldWriteBlocks {
+					n.Config.Log.Infof("%s", ip.FormattedLog(result))
+				}
+				return
 			case Allow:
-				if strings.Contains(strings.ToLower(result.Reason), "no match") {
-					n.Config.Log.Debugf("ALLOW packet from %s: %s", ip.Track.ClientID, result.Reason)
+				if n.Config.Server.ShouldWriteAllows {
+					n.Config.Log.Infof("%s", ip.FormattedLog(result))
+				}
+			default:
+				if n.Config.Server.ShouldWriteAllows || n.Config.Server.ShouldWriteBlocks {
+					n.Config.Log.Infof("%s", ip.FormattedLog(result))
 				}
 			}
-
-			// 	log.Printf("action=%s src_ip=%s src_port=%d dst_ip=%s dst_port=%d username=%s clientid=%s mqtt_packet=%s topic=%s message_size=%d",
-			// 	action,
-			// 	srcIP,
-			// 	srcPort,
-			// 	dstIP,
-			// 	dstPort,
-			// 	username,
-			// 	clientID,
-			// 	packetType,
-			// 	topic,
-			// 	messageSize,
-			// )
 
 			// Serialize the packet for forwarding
 			var buf bytes.Buffer

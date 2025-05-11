@@ -72,17 +72,17 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 			switch result.Decision {
 			//TODO: Add the idea of a "block" log instead of just logging to the config log
 			case Allow:
-				if n.Config.Server.ShouldWriteAllows {
-					n.Config.Log.Infof("%s", ip.FormattedLog(result))
+				if n.Config.Server.ShouldLogAllows {
+					ip.WriteLog(result)
 				}
 			case Block:
-				if n.Config.Server.ShouldWriteBlocks {
-					n.Config.Log.Infof("%s", ip.FormattedLog(result))
+				if n.Config.Server.ShouldLogBlocks {
+					ip.WriteLog(result)
 				}
 				return
 			default:
-				if n.Config.Server.ShouldWriteAllows || n.Config.Server.ShouldWriteBlocks {
-					n.Config.Log.Infof("%s", ip.FormattedLog(result))
+				if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
+					ip.WriteLog(result)
 				}
 			}
 
@@ -95,7 +95,7 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			// Forward the packet to the backend
 			if _, err := backendConn.Write(buf.Bytes()); err != nil {
-				n.Config.Log.Errorf("Failed to write to backend: %v", err)
+				n.Config.Log.Errorf("failed to write to backend: %v", err)
 				return
 			}
 		}

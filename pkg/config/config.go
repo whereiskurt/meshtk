@@ -53,8 +53,8 @@ type Server struct {
 	ProxyListenAddress     string `default:"0.0.0.0:1883"`
 	ProxyForwardAddress    string `default:"localhost:1884"`
 	BlockFilenameTmpl      string `default:"./blocklist.{{.DTS}}.log"`
-	ShouldWriteBlocks      bool   `default:"true"`
-	ShouldWriteAllows      bool   `default:"true"`
+	ShouldLogBlocks        bool   `default:"true"`
+	ShouldLogAllows        bool   `default:"true"`
 }
 
 type Fleet struct {

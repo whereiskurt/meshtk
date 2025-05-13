@@ -229,8 +229,33 @@ func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 	return nil, false
 }
 
-// WriteLog formats the decision log for an InspectorPacket
-func (ip *InspectorPacket) WriteLog(result DecisionResult) string {
+func (ip *InspectorPacket) WriteLimiterLog(decision Decision, tokenCount float64, penalty time.Duration) string {
+	var action_log string
+	switch decision {
+	case Slow:
+		action_log = "action=SLOW"
+	case Kill:
+		action_log = "action=KILL"
+	default:
+		panic(fmt.Sprintf("unknown decision: %v", decision))
+	}
+
+	action_log += fmt.Sprintf(",tokenCount=%.02f, penalty=%v", tokenCount, penalty)
+
+	action_log += fmt.Sprintf(",clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%+v",
+		ip.Track.ClientID, ip.Track.Username, ip.MQTT.Type, ip.MQTT.Topics)
+
+	if ip.Meshtastic.WasUnmarshalled {
+		action_log += fmt.Sprintf(",mesh_type=%s, mesh_from=%08x, mesh_to=%08x, payload=%02x",
+			ip.Meshtastic.PortNum.String(), ip.Meshtastic.From, ip.Meshtastic.To, ip.Meshtastic.Payload)
+	}
+	ip.Log.Infof("%s", action_log)
+
+	return action_log
+}
+
+// WriteDecisionLog formats the decision log for an InspectorPacket
+func (ip *InspectorPacket) WriteDecisionLog(result DecisionResult) string {
 	action_log := "action=ALLOW"
 	switch result.Decision {
 	case Block:

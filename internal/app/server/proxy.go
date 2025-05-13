@@ -8,7 +8,17 @@ import (
 	"time"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
+	"github.com/whereiskurt/meshtk/pkg/network"
 )
+
+var rateLimiter = network.NewLimiter(
+	5,             // 5 tokens per second
+	10,            // allow a burst of 10
+	2*time.Minute, // forget after 10 minutes of inactivity
+	15,            // if more than 15 missing tokens -> kill
+)
+
+const socketPenalty = time.Duration(200) * time.Millisecond
 
 func (n *ServerCmd) handleProxy(conn net.Conn) {
 
@@ -46,20 +56,18 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 	for {
 		select {
 		case <-done:
-			n.Config.Log.Debugf("Connection from %s closed by backend", socketAddr)
 			return
 		default:
 			// Update the read deadline for each packet
-			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+			conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
 			packet, err := packets.ReadPacket(request)
 			if err != nil {
-				n.Config.Log.Debugf("Connection from %s closed: %v", socketAddr, err)
 				return
 			}
 
 			ip := &InspectorPacket{
-				Log:   n.Config.Log,
+				Log:   n.InspectorLogger,
 				Track: &ConnectionInfo{SocketAddress: socketAddr},
 				Raw:   &RawPacket{MQTT: &packet},
 			}
@@ -69,20 +77,32 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 			// Apply decision rules
 			result := n.PacketDecider.Decide(ip)
 
+			// slowed, kill, tokenCount := rateLimiter.CheckLimit(socketAddr)
+			slowed, kill, tokenCount := rateLimiter.EnforceLimit(socketAddr, socketPenalty)
+			penalty := min(socketPenalty*time.Duration(-tokenCount), 10*time.Second)
+
+			if slowed {
+				ip.WriteLimiterLog(Slow, tokenCount, penalty)
+			} else if kill {
+				ip.WriteLimiterLog(Kill, tokenCount, penalty)
+				conn.Close()
+				backendConn.Close()
+				return
+			}
+
 			switch result.Decision {
-			//TODO: Add the idea of a "block" log instead of just logging to the config log
 			case Allow:
 				if n.Config.Server.ShouldLogAllows {
-					ip.WriteLog(result)
+					ip.WriteDecisionLog(result)
 				}
 			case Block:
 				if n.Config.Server.ShouldLogBlocks {
-					ip.WriteLog(result)
+					ip.WriteDecisionLog(result)
 				}
 				return
 			default:
 				if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
-					ip.WriteLog(result)
+					ip.WriteDecisionLog(result)
 				}
 			}
 
@@ -117,7 +137,6 @@ func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, backendRea
 
 			backendPacket, err := packets.ReadPacket(backendReader)
 			if err != nil {
-				n.Config.Log.Debugf("Backend connection error: %v", err)
 				return
 			}
 

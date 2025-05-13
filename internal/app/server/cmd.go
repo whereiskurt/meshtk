@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
@@ -9,13 +10,17 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
+	"text/template"
 	"time"
 
 	proxyproto "github.com/pires/go-proxyproto"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/whereiskurt/meshtk/internal/app/help"
 	"github.com/whereiskurt/meshtk/pkg/config"
+	"github.com/whereiskurt/meshtk/pkg/network"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 	"google.golang.org/protobuf/proto"
 )
@@ -29,9 +34,11 @@ type ServerCmd struct {
 	ConnTrack map[string]*ConnectionInfo // maps connection ID to client ID
 	ConnMutex sync.RWMutex
 
-	Ciphers       []cipher.Block
-	PacketDecider Decider // Interface for making packet routing decisions
-	LogFileMutex  sync.RWMutex
+	Ciphers         []cipher.Block
+	PacketDecider   Decider // Interface for making packet routing decisions
+	Limiters        []network.Limiter
+	LogFileMutex    sync.RWMutex
+	InspectorLogger *log.Logger
 }
 
 func NewAESCipher(key []byte) cipher.Block {
@@ -48,7 +55,6 @@ func NewServer(c *config.Config) (n *ServerCmd) {
 	n.SetupTracker()
 	n.LoadCiphers(c)
 	n.LoadInspectorRules()
-
 	return n
 }
 
@@ -109,6 +115,8 @@ func (n *ServerCmd) ProxyServer(cmd *cobra.Command, argz []string) {
 
 	n.Config.Log.Trace("protobuf.ProxyServer")
 	n.Config.Log.Tracef("%+v", n.Config)
+
+	n.SetupInspectorLogger()
 
 	n.StartProxyServer()
 }
@@ -186,4 +194,50 @@ func (n *ServerCmd) StartProxyServer() error {
 	<-stop
 	n.Config.Log.Infof("Shutting down the proxy server gracefully...")
 	return nil
+}
+
+type SimpleFormatter struct {
+	TimestampFormat string
+}
+
+func (f *SimpleFormatter) Format(entry *log.Entry) ([]byte, error) {
+	timestamp := entry.Time.Format(f.TimestampFormat)
+	return []byte(fmt.Sprintf("%s %s\n", timestamp, entry.Message)), nil
+}
+
+func (n *ServerCmd) SetupInspectorLogger() {
+	logger := log.New()
+
+	logger.Level = n.Config.Log.Level
+
+	logger.SetFormatter(&SimpleFormatter{
+		TimestampFormat: "2006-01-02 15:04:05.000",
+	})
+
+	path := filepath.Join(n.Config.Cwd, n.Config.LogFolder)
+	filename := n.Config.Server.BlockFilenameTmpl
+
+	tmplData := map[string]interface{}{
+		"DTS": time.Now().Format("20060102.150405"),
+	}
+	tmpl, _ := template.New("log.filename").Parse(filename)
+
+	var tmplBuffer bytes.Buffer
+	if err := tmpl.Execute(&tmplBuffer, tmplData); err != nil {
+		panic(fmt.Sprintf("failed to execute render logfile name %s: %v", filename, err))
+	}
+	filename = tmplBuffer.String()
+
+	abs, _ := filepath.Abs(path)
+	os.MkdirAll(abs, 0777)
+
+	f, err := os.OpenFile(filepath.Join(abs, filename), os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		panic(fmt.Sprintf("error: cannot open file: %v", err))
+	}
+
+	logger.SetOutput(f)
+
+	n.InspectorLogger = logger
+
 }

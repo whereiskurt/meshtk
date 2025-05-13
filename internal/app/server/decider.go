@@ -7,6 +7,8 @@ const (
 	Block
 	Rewrote
 	NoMatch
+	Kill
+	Slow
 )
 
 type DecisionResult struct {

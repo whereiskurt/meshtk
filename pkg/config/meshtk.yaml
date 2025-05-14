@@ -62,6 +62,8 @@ Server:
   BlockFilenameTmpl: "./blocklist.{{.DTS}}.log"
   ShouldLogBlocks: true
   ShouldLogAllows: true
+  MaxMBLogSize: 100
+	CheckLogIntervalMins: 15
 
 Fleet:
   - Id: "rebar-fleet"

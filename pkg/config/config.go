@@ -53,6 +53,8 @@ type Server struct {
 	ProxyListenAddress     string `default:"0.0.0.0:1883"`
 	ProxyForwardAddress    string `default:"localhost:1884"`
 	BlockFilenameTmpl      string `default:"blocklist.{{.DTS}}.log"`
+	MaxMBLogSize           int    `default:"100"`
+	CheckLogIntervalMins   int    `default:"15"`
 	ShouldLogBlocks        bool   `default:"true"`
 	ShouldLogAllows        bool   `default:"true"`
 }

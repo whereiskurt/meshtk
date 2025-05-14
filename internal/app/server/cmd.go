@@ -34,11 +34,12 @@ type ServerCmd struct {
 	ConnTrack map[string]*ConnectionInfo // maps connection ID to client ID
 	ConnMutex sync.RWMutex
 
-	Ciphers         []cipher.Block
-	PacketDecider   Decider // Interface for making packet routing decisions
-	Limiters        []network.Limiter
-	LogFileMutex    sync.RWMutex
-	InspectorLogger *log.Logger
+	Ciphers              []cipher.Block
+	PacketDecider        Decider // Interface for making packet routing decisions
+	Limiters             []network.Limiter
+	LogFileMutex         sync.RWMutex
+	InspectorLogger      *log.Logger
+	InspectorLogFilename string
 }
 
 func NewAESCipher(key []byte) cipher.Block {
@@ -116,8 +117,7 @@ func (n *ServerCmd) ProxyServer(cmd *cobra.Command, argz []string) {
 	n.Config.Log.Trace("protobuf.ProxyServer")
 	n.Config.Log.Tracef("%+v", n.Config)
 
-	n.SetupInspectorLogger()
-
+	n.InitInspectorLogger()
 	n.StartProxyServer()
 }
 
@@ -196,6 +196,31 @@ func (n *ServerCmd) StartProxyServer() error {
 	return nil
 }
 
+func (n *ServerCmd) InitInspectorLogger() {
+	go func() {
+		n.SetupInspectorLogger()
+		ticker := time.NewTicker(time.Duration(n.Config.Server.CheckLogIntervalMins) * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+
+			fileSizeMB := 0.0
+			fileInfo, err := os.Stat(filepath.Join(n.Config.Cwd, n.Config.LogFolder, n.InspectorLogFilename))
+			if err != nil {
+				n.Config.Log.Errorf("failed to get file info for %s: %v", n.InspectorLogFilename, err)
+				return
+			}
+			fileSizeMB = float64(fileInfo.Size()) / (1024 * 1024)
+
+			if fileSizeMB > float64(n.Config.Server.MaxMBLogSize) {
+				n.SetupInspectorLogger()
+			} else {
+				n.Config.Log.Tracef("logfile %s size: %.2f MB smaller than %.2f", n.InspectorLogFilename, fileSizeMB, float64(n.Config.Server.MaxMBLogSize))
+			}
+		}
+	}()
+}
+
 type SimpleFormatter struct {
 	TimestampFormat string
 }
@@ -237,6 +262,7 @@ func (n *ServerCmd) SetupInspectorLogger() {
 	}
 
 	logger.SetOutput(f)
+	n.InspectorLogFilename = filename
 
 	n.InspectorLogger = logger
 

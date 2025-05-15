@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -212,7 +213,7 @@ func (n *ServerCmd) InitInspectorLogger() {
 			}
 			fileSizeMB = float64(fileInfo.Size()) / (1024 * 1024)
 
-			if fileSizeMB*10 > float64(n.Config.Server.MaxMBLogSize) {
+			if fileSizeMB > float64(n.Config.Server.MaxMBLogSize) {
 				n.MoveToBucket(filename)
 
 				n.SetupInspectorLogger()
@@ -293,7 +294,12 @@ func (n *ServerCmd) SetupInspectorLogger() {
 		panic(fmt.Sprintf("error: cannot open file: %v", err))
 	}
 
-	logger.SetOutput(f)
+	mw := io.MultiWriter(f)
+	if n.Config.VerboseLevel == "debug" || n.Config.VerboseLevel == "trace" {
+		mw = io.MultiWriter(os.Stdout, f)
+	}
+
+	logger.SetOutput(mw)
 	n.InspectorLogFilename = filename
 
 	n.InspectorLogger = logger

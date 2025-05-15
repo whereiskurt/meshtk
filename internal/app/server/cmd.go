@@ -203,22 +203,54 @@ func (n *ServerCmd) InitInspectorLogger() {
 		defer ticker.Stop()
 
 		for range ticker.C {
-
+			filename := filepath.Join(n.Config.Cwd, n.Config.LogFolder, n.InspectorLogFilename)
 			fileSizeMB := 0.0
-			fileInfo, err := os.Stat(filepath.Join(n.Config.Cwd, n.Config.LogFolder, n.InspectorLogFilename))
+			fileInfo, err := os.Stat(filename)
 			if err != nil {
-				n.Config.Log.Errorf("failed to get file info for %s: %v", n.InspectorLogFilename, err)
+				n.Config.Log.Errorf("failed to get file info for %s: %v", filename, err)
 				return
 			}
 			fileSizeMB = float64(fileInfo.Size()) / (1024 * 1024)
 
-			if fileSizeMB > float64(n.Config.Server.MaxMBLogSize) {
+			if fileSizeMB*10 > float64(n.Config.Server.MaxMBLogSize) {
+				n.MoveToBucket(filename)
+
 				n.SetupInspectorLogger()
 			} else {
 				n.Config.Log.Tracef("logfile %s size: %.2f MB smaller than %.2f", n.InspectorLogFilename, fileSizeMB, float64(n.Config.Server.MaxMBLogSize))
 			}
 		}
 	}()
+}
+
+func (n *ServerCmd) MoveToBucket(filename string) {
+	awsRegion := os.Getenv("AWS_REGION")
+	if awsRegion == "" {
+		awsRegion = "us-east-1"
+	}
+
+	s3BucketRegion := os.Getenv("MESHTK_BLOCK_S3_REGION")
+	if s3BucketRegion == "" {
+		s3BucketRegion = "us-east-1"
+	}
+
+	s3BucketName := os.Getenv("MESHTK_BLOCK_S3_NAME")
+	if s3BucketName == "" {
+		s3BucketName = "meshtk-block-20250514"
+	}
+
+	scopy, err := network.NewS3Mover(
+		awsRegion,
+		s3BucketRegion,
+		s3BucketName,
+	)
+	if err != nil {
+		n.Config.Log.Errorf("failed to create S3 mover: %v", err)
+	}
+	_, err = scopy.MoveToS3(filename)
+	if err != nil {
+		n.Config.Log.Errorf("failed to move log file to S3: %s:%s:  %v", s3BucketName, s3BucketRegion, err)
+	}
 }
 
 type SimpleFormatter struct {

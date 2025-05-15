@@ -12,12 +12,14 @@ require (
 )
 
 require (
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250115164207-1a7da9e5054f // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )
 
 require (
+	github.com/aws/aws-sdk-go v1.55.7
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect

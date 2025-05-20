@@ -44,6 +44,15 @@ func inspectRules() []Rule {
 			Reason: "Failed to decrypt with any known key",
 		},
 		{
+			Name:        "RequireMQTTUserName",
+			Description: "Require a MQTT username",
+			Matcher: func(packet *InspectorPacket) bool {
+				return packet.Track.Username == ""
+			},
+			Action: Block,
+			Reason: "Username required for MQTT",
+		},
+		{
 			Name:        "AllowedMeshtasticApps",
 			Description: "Always allow NodeInfo packets",
 			Matcher: func(packet *InspectorPacket) bool {

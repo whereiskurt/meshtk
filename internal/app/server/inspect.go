@@ -262,8 +262,8 @@ func (ip *InspectorPacket) WriteDecisionLog(result DecisionResult) string {
 		action_log = "action=BLOCK"
 	}
 
-	action_log += fmt.Sprintf(",clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%+v",
-		ip.Track.ClientID, ip.Track.Username, ip.MQTT.Type, ip.MQTT.Topics)
+	action_log += fmt.Sprintf("ip=%s, clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%+v",
+		ip.Track.SocketAddress, ip.Track.ClientID, ip.Track.Username, ip.MQTT.Type, ip.MQTT.Topics)
 
 	if ip.Meshtastic.WasUnmarshalled {
 		action_log += fmt.Sprintf(",mesh_type=%s, mesh_from=%08x, mesh_to=%08x, payload=%02x",

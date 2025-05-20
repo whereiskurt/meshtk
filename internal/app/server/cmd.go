@@ -215,7 +215,7 @@ func (n *ServerCmd) InitInspectorLogger() {
 
 			if fileSizeMB > float64(n.Config.Server.MaxMBLogSize) {
 				n.MoveToBucket(filename)
-
+				//This rolls the log file over by creating a new one
 				n.SetupInspectorLogger()
 			} else {
 				n.Config.Log.Tracef("logfile %s size: %.2f MB smaller than %.2f", n.InspectorLogFilename, fileSizeMB, float64(n.Config.Server.MaxMBLogSize))
@@ -225,19 +225,17 @@ func (n *ServerCmd) InitInspectorLogger() {
 }
 
 func (n *ServerCmd) MoveToBucket(filename string) {
+
+	if !n.Config.Server.UseS3Bucket {
+		return
+	}
+	s3BucketRegion := n.Config.Server.S3BucketRegion
+	s3BucketName := n.Config.Server.S3BucketName
+	s3BucketPrefix := n.Config.Server.S3BucketPrefix
+
 	awsRegion := os.Getenv("AWS_REGION")
 	if awsRegion == "" {
 		awsRegion = "us-east-1"
-	}
-
-	s3BucketRegion := os.Getenv("MESHTK_BLOCK_S3_REGION")
-	if s3BucketRegion == "" {
-		s3BucketRegion = "us-east-1"
-	}
-
-	s3BucketName := os.Getenv("MESHTK_BLOCK_S3_NAME")
-	if s3BucketName == "" {
-		s3BucketName = "meshtk-block-20250514"
 	}
 
 	scopy, err := network.NewS3Mover(
@@ -246,9 +244,10 @@ func (n *ServerCmd) MoveToBucket(filename string) {
 		s3BucketName,
 	)
 	if err != nil {
-		n.Config.Log.Errorf("failed to create S3 mover: %v", err)
+		n.Config.Log.Warnf("failed to create S3 mover: %v", err)
+		return
 	}
-	_, err = scopy.MoveToS3(filename)
+	_, err = scopy.Move(filename, s3BucketPrefix)
 	if err != nil {
 		n.Config.Log.Errorf("failed to move log file to S3: %s:%s:  %v", s3BucketName, s3BucketRegion, err)
 	}

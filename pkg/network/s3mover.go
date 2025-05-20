@@ -42,15 +42,14 @@ func NewS3Mover(region, bucketRegion, bucket string) (*S3Mover, error) {
 		return nil, fmt.Errorf("failed to create AWS session: %v", err)
 	}
 
+	// By default the "awsCfg.Credentials" will use environment/.aws/... conventions
 	metadataClient := ec2metadata.New(sess)
 	if metadataClient.Available() {
 		awsCfg.Credentials = ec2rolecreds.NewCredentials(sess)
 	} else {
 		envCreds := credentials.NewEnvCredentials()
 		_, err := envCreds.Get()
-		if err != nil {
-			fmt.Printf("Environment credentials not found, falling back to default AWS credential chain: %v\n", err)
-		} else {
+		if err == nil {
 			awsCfg.Credentials = envCreds
 		}
 	}
@@ -69,13 +68,16 @@ func NewS3Mover(region, bucketRegion, bucket string) (*S3Mover, error) {
 	}, nil
 }
 
-func (m *S3Mover) MoveToS3(filePath string) (*S3MoveResult, error) {
+func (m *S3Mover) Move(filePath, s3prefix string) (*S3MoveResult, error) {
 	fileName := filepath.Base(filePath)
 	s3Key := fmt.Sprintf("%s/%s", time.Now().Format("2006/01/02"), fileName)
-	return m.MoveToS3WithCustomKey(filePath, s3Key)
+	if s3prefix != "" {
+		s3Key = fmt.Sprintf("%s/%s", s3prefix, s3Key)
+	}
+	return m.WithCustomKey(filePath, s3Key)
 }
 
-func (m *S3Mover) MoveToS3WithCustomKey(filePath, customKey string) (*S3MoveResult, error) {
+func (m *S3Mover) WithCustomKey(filePath, customKey string) (*S3MoveResult, error) {
 	result := &S3MoveResult{
 		SourceFile: filePath,
 		S3Bucket:   m.BucketName,

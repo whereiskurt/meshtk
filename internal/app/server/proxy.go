@@ -34,7 +34,6 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 	socketAddr := n.TrackConnection(conn)
 
-	// Create a direct connection to the backend instead of using a pool
 	backendConn, err := net.DialTimeout("tcp", n.Config.Server.ProxyForwardAddress, 10*time.Second)
 	if err != nil {
 		n.Config.Log.Errorf("failed to connect to backend: %v", err)
@@ -44,18 +43,15 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 	request := bufio.NewReader(conn)
 	backendReader := bufio.NewReader(backendConn)
-	done := make(chan struct{})
 
-	// Create a context with cancel for proper goroutine cleanup
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // Ensure we cancel the context when this function exits
 
-	// Handle responses from the backend
-	go n.handleBackend(ctx, conn, backendReader, done)
+	go n.handleBackend(ctx, conn, backendReader)
 
 	for {
 		select {
-		case <-done:
+		case <-ctx.Done():
 			return
 		default:
 			// Update the read deadline for each packet
@@ -122,12 +118,7 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 	}
 }
 
-func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, backendReader *bufio.Reader, done chan struct{}) {
-
-	defer func() {
-		done <- struct{}{}
-	}()
-
+func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, backendReader *bufio.Reader) {
 	for {
 		select {
 		case <-ctx.Done():

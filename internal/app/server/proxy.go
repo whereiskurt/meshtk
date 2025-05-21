@@ -59,6 +59,7 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			packet, err := packets.ReadPacket(request)
 			if err != nil {
+				backendConn.Close()
 				return
 			}
 
@@ -81,8 +82,8 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 				ip.WriteLimiterLog(Slow, tokenCount, penalty)
 			} else if kill {
 				ip.WriteLimiterLog(Kill, tokenCount, penalty)
-				conn.Close()
 				backendConn.Close()
+				conn.Close()
 				return
 			}
 
@@ -106,6 +107,8 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 			var buf bytes.Buffer
 			if err := (*ip.Raw.MQTT).Write(&buf); err != nil {
 				n.Config.Log.Errorf("failed to serialize MQTT packet: %v", err)
+				backendConn.Close()
+				conn.Close()
 				return
 			}
 

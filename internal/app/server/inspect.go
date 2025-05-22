@@ -254,7 +254,6 @@ func (ip *InspectorPacket) WriteLimiterLog(decision Decision, tokenCount float64
 	return action_log
 }
 
-// WriteDecisionLog formats the decision log for an InspectorPacket
 func (ip *InspectorPacket) WriteDecisionLog(result DecisionResult) string {
 	action_log := "action=ALLOW"
 	switch result.Decision {

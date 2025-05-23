@@ -34,7 +34,7 @@ func (l *Limiter) EnforceLimit(key string, penalty time.Duration) (wasSlowed boo
 	if kill {
 		return false, true, debt
 	} else if slow {
-		penalty := min(penalty*time.Duration(-debt), 30*time.Second)
+		penalty := min(penalty*time.Duration(-debt+1), 30*time.Second)
 		time.Sleep(penalty)
 		return true, false, debt
 	} else {

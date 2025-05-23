@@ -12,27 +12,23 @@ import (
 )
 
 var rateLimiter = network.NewLimiter(
-	5,             // 5 tokens per second
-	10,            // allow a burst of 10
-	2*time.Minute, // forget after 10 minutes of inactivity
-	15,            // if more than 15 missing tokens -> kill
+	1,              // tokens per second
+	3,              // allow a burst size / start size
+	20*time.Minute, // inactivity window
+	5,              // threshold tokens for kill
 )
 
-const socketPenalty = time.Duration(200) * time.Millisecond
+const socketPenalty = time.Duration(2000) * time.Millisecond
 
 func (n *ServerCmd) handleProxy(conn net.Conn) {
-
-	defer func() {
-		if conn.RemoteAddr() != nil {
-			socketAddr := conn.RemoteAddr().String()
-			n.ConnMutex.Lock()
-			delete(n.ConnTrack, socketAddr)
-			n.ConnMutex.Unlock()
-			conn.Close()
-		}
-	}()
-
 	socketAddr := n.TrackConnection(conn)
+
+	defer func(conn net.Conn, socketAddr string) {
+		n.ConnMutex.Lock()
+		delete(n.ConnTrack, socketAddr)
+		n.ConnMutex.Unlock()
+		conn.Close()
+	}(conn, socketAddr)
 
 	backendConn, err := net.DialTimeout("tcp", n.Config.Server.ProxyForwardAddress, 10*time.Second)
 	if err != nil {
@@ -76,14 +72,12 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			// slowed, kill, tokenCount := rateLimiter.CheckLimit(socketAddr)
 			slowed, kill, tokenCount := rateLimiter.EnforceLimit(socketAddr, socketPenalty)
-			penalty := min(socketPenalty*time.Duration(-tokenCount), 10*time.Second)
+			penalty := min(socketPenalty*time.Duration(-tokenCount+1), 10*time.Second)
 
 			if slowed {
 				ip.WriteLimiterLog(Slow, tokenCount, penalty)
 			} else if kill {
 				ip.WriteLimiterLog(Kill, tokenCount, penalty)
-				backendConn.Close()
-				conn.Close()
 				return
 			}
 
@@ -107,8 +101,6 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 			var buf bytes.Buffer
 			if err := (*ip.Raw.MQTT).Write(&buf); err != nil {
 				n.Config.Log.Errorf("failed to serialize MQTT packet: %v", err)
-				backendConn.Close()
-				conn.Close()
 				return
 			}
 

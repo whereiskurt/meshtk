@@ -62,8 +62,8 @@ Server:
   BlockFilenameTmpl: "./blocklist.{{.DTS}}.log"
   ShouldLogBlocks: true
   ShouldLogAllows: true
-  MaxMBLogSize: 1
-  CheckLogIntervalMins: 10
+  MaxMBLogSize: 0
+  CheckLogIntervalMins: 2
   UseS3Bucket: true
   S3BucketRegion: "us-east-1"
   S3BucketName: "mestk-blocklist-20250101"

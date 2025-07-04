@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<gpx version="1.1" creator="GDAL 2.2.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ogr="http://osgeo.org/gdal" xmlns="http://www.topografix.com/GPX/1/1" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+<metadata><bounds minlat="36.114167999999999" minlon="-115.173758699999993" maxlat="36.114988199999999" maxlon="-115.146575799999994"/></metadata>
+<trk>
+  <name>Classic East</name>
+  <trkseg>
+    <trkpt lat="36.1149848" lon="-115.1732933">
+    </trkpt>
+    <trkpt lat="36.114869" lon="-115.1737386">
+    </trkpt>
+    <trkpt lat="36.1144595" lon="-115.1737587">
+    </trkpt>
+    <trkpt lat="36.1142598" lon="-115.1598883">
+    </trkpt>
+    <trkpt lat="36.114168" lon="-115.1541655">
+    </trkpt>
+    <trkpt lat="36.1146074" lon="-115.1504887">
+    </trkpt>
+    <trkpt lat="36.1145266" lon="-115.1465758">
+    </trkpt>
+    <trkpt lat="36.1148646" lon="-115.1466215">
+    </trkpt>
+    <trkpt lat="36.114903" lon="-115.1486217">
+    </trkpt>
+    <trkpt lat="36.1148916" lon="-115.1507481">
+    </trkpt>
+    <trkpt lat="36.11447" lon="-115.1543114">
+    </trkpt>
+    <trkpt lat="36.1145668" lon="-115.159201">
+    </trkpt>
+    <trkpt lat="36.1148124" lon="-115.1682099">
+    </trkpt>
+    <trkpt lat="36.1149882" lon="-115.1732706">
+    </trkpt>
+  </trkseg>
+</trk>
+</gpx>

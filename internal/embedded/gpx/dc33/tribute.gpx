@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<gpx version="1.1" creator="GDAL 2.2.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ogr="http://osgeo.org/gdal" xmlns="http://www.topografix.com/GPX/1/1" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+<metadata><bounds minlat="36.093447400000002" minlon="-115.173143100000004" maxlat="36.114346099999999" maxlon="-115.160662400000007"/></metadata>
+<trk>
+  <name>This is a Tribute!</name>
+  <trkseg>
+    <trkpt lat="36.0934474" lon="-115.1731431">
+    </trkpt>
+    <trkpt lat="36.0934632" lon="-115.1712802">
+    </trkpt>
+    <trkpt lat="36.093578" lon="-115.1707518">
+    </trkpt>
+    <trkpt lat="36.0940787" lon="-115.1703628">
+    </trkpt>
+    <trkpt lat="36.0966542" lon="-115.1703718">
+    </trkpt>
+    <trkpt lat="36.0969912" lon="-115.1702386">
+    </trkpt>
+    <trkpt lat="36.0972242" lon="-115.1698908">
+    </trkpt>
+    <trkpt lat="36.0971288" lon="-115.1643654">
+    </trkpt>
+    <trkpt lat="36.0975363" lon="-115.1637968">
+    </trkpt>
+    <trkpt lat="36.1080425" lon="-115.1637754">
+    </trkpt>
+    <trkpt lat="36.1143461" lon="-115.1638918">
+    </trkpt>
+    <trkpt lat="36.1143114" lon="-115.1606731">
+    </trkpt>
+    <trkpt lat="36.113592" lon="-115.1606624">
+    </trkpt>
+  </trkseg>
+</trk>
+</gpx>

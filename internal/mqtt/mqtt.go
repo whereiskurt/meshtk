@@ -118,6 +118,11 @@ func NewMqttClient(c *config.Config, nodes *NodeDB, handler func(to, from uint32
 func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 	topic := msg.Topic()
 
+	if topic == "/will" {
+		c.log.Debugf("skippng parse ServiceEnvelope on %v: %+v", topic, msg.Payload())
+		return
+	}
+
 	var envelope meshtastic.ServiceEnvelope
 	if err := proto.Unmarshal(msg.Payload(), &envelope); err != nil {
 		c.log.Warnf("could not parse ServiceEnvelope on %v: %v: %+v", topic, err, msg.Payload())

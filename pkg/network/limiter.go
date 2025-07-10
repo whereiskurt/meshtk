@@ -6,7 +6,7 @@ import (
 )
 
 type Limiter struct {
-	Buckets             map[string]*LimiterBucket
+	Slots               map[string]*LimiterBucket
 	Rate                float64       // tokens per second
 	Burst               int           // maximum burst size
 	Lifetime            time.Duration // how long to keep inactive buckets
@@ -21,7 +21,7 @@ type LimiterBucket struct {
 
 func NewLimiter(tokenPerSecond float64, burstTokens int, lifetime time.Duration, penaltyThreshold float64) *Limiter {
 	return &Limiter{
-		Buckets:             make(map[string]*LimiterBucket),
+		Slots:               make(map[string]*LimiterBucket),
 		Rate:                tokenPerSecond,
 		Burst:               burstTokens,
 		Lifetime:            lifetime,
@@ -47,10 +47,10 @@ func (l *Limiter) CheckLimit(key string) (slowConnection bool, killConnection bo
 	defer l.mu.Unlock()
 
 	now := time.Now()
-	b, ok := l.Buckets[key]
+	b, ok := l.Slots[key]
 	if !ok {
 		b = &LimiterBucket{Tokens: float64(l.Burst), Last: now}
-		l.Buckets[key] = b
+		l.Slots[key] = b
 	}
 
 	elapsed := now.Sub(b.Last).Seconds()
@@ -78,9 +78,9 @@ func (l *Limiter) Cleanup() {
 	defer l.mu.Unlock()
 
 	now := time.Now()
-	for key, b := range l.Buckets {
+	for key, b := range l.Slots {
 		if now.Sub(b.Last) > l.Lifetime {
-			delete(l.Buckets, key)
+			delete(l.Slots, key)
 		}
 	}
 }

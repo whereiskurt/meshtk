@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
@@ -67,33 +68,41 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			ip.inspectRawPacket(n)
 
-			// Apply decision rules
-			result := n.PacketDecider.Decide(ip)
-
-			// slowed, kill, tokenCount := rateLimiter.CheckLimit(socketAddr)
-			slowed, kill, tokenCount := rateLimiter.EnforceLimit(socketAddr, socketPenalty)
-			penalty := min(socketPenalty*time.Duration(-tokenCount+1), 10*time.Second)
-
-			if slowed {
-				ip.WriteLimiterLog(Slow, tokenCount, penalty)
-			} else if kill {
-				ip.WriteLimiterLog(Kill, tokenCount, penalty)
-				return
+			// TODO: Build this out as an actual ALLOW_LIST
+			shouldInspect := true
+			if strings.Contains(strings.ToLower(ip.Track.ClientID), "meshtk") {
+				shouldInspect = false
 			}
 
-			switch result.Decision {
-			case Allow:
-				if n.Config.Server.ShouldLogAllows {
-					ip.WriteDecisionLog(result)
+			if shouldInspect {
+				// Apply decision rules
+				result := n.PacketDecider.Decide(ip)
+
+				// slowed, kill, tokenCount := rateLimiter.CheckLimit(socketAddr)
+				slowed, kill, tokenCount := rateLimiter.EnforceLimit(socketAddr, socketPenalty)
+				penalty := min(socketPenalty*time.Duration(-tokenCount+1), 10*time.Second)
+
+				if slowed {
+					ip.WriteLimiterLog(Slow, tokenCount, penalty)
+				} else if kill {
+					ip.WriteLimiterLog(Kill, tokenCount, penalty)
+					return
 				}
-			case Block:
-				if n.Config.Server.ShouldLogBlocks {
-					ip.WriteDecisionLog(result)
-				}
-				return
-			default:
-				if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
-					ip.WriteDecisionLog(result)
+
+				switch result.Decision {
+				case Allow:
+					if n.Config.Server.ShouldLogAllows {
+						ip.WriteDecisionLog(result)
+					}
+				case Block:
+					if n.Config.Server.ShouldLogBlocks {
+						ip.WriteDecisionLog(result)
+					}
+					return
+				default:
+					if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
+						ip.WriteDecisionLog(result)
+					}
 				}
 			}
 

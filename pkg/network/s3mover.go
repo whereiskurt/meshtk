@@ -8,9 +8,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/credentials/ec2rolecreds"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
@@ -42,27 +39,10 @@ func NewS3Mover(region, bucketRegion, bucket string) (*S3Mover, error) {
 		return nil, fmt.Errorf("failed to create AWS session: %v", err)
 	}
 
-	// By default the "awsCfg.Credentials" will use environment/.aws/... conventions
-	metadataClient := ec2metadata.New(sess)
-	if metadataClient.Available() {
-		awsCfg.Credentials = ec2rolecreds.NewCredentials(sess)
-	} else {
-		envCreds := credentials.NewEnvCredentials()
-		_, err := envCreds.Get()
-		if err == nil {
-			awsCfg.Credentials = envCreds
-		}
-	}
-
-	finalSess, err := session.NewSession(awsCfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AWS session with credentials: %v", err)
-	}
-
-	s3Client := s3.New(finalSess)
+	s3Client := s3.New(sess)
 
 	return &S3Mover{
-		BucketRegion: bucketRegion,
+		BucketRegion: region,
 		BucketName:   bucket,
 		S3Client:     s3Client,
 	}, nil

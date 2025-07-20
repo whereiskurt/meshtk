@@ -31,10 +31,14 @@ type S3MoveResult struct {
 func NewS3Mover(region, bucketRegion, bucket string) (*S3Mover, error) {
 
 	awsCfg := &aws.Config{
-		Region: aws.String(region),
+		Region:                        aws.String(region),
+		CredentialsChainVerboseErrors: aws.Bool(true),
 	}
 
-	sess, err := session.NewSession(awsCfg)
+	sess, err := session.NewSessionWithOptions(session.Options{
+		Config:            *awsCfg,
+		SharedConfigState: session.SharedConfigEnable,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AWS session: %v", err)
 	}
@@ -42,7 +46,7 @@ func NewS3Mover(region, bucketRegion, bucket string) (*S3Mover, error) {
 	s3Client := s3.New(sess)
 
 	return &S3Mover{
-		BucketRegion: region,
+		BucketRegion: bucketRegion,
 		BucketName:   bucket,
 		S3Client:     s3Client,
 	}, nil

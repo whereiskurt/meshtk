@@ -42,7 +42,7 @@ func (l *Limiter) EnforceLimit(key string, penalty time.Duration) (wasSlowed boo
 	}
 }
 
-func (l *Limiter) CheckLimit(key string) (slowConnection bool, killConnection bool, debt float64) {
+func (l *Limiter) CheckLimit(key string) (wouldSlow bool, shouldKill bool, debt float64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

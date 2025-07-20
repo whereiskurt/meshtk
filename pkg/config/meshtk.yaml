@@ -64,6 +64,7 @@ Server:
   ShouldLogAllows: true
   MaxMBLogSize: 0
   CheckLogIntervalMins: 2
+  CheckLogIntervalSecs: 10
   UseS3Bucket: true
   S3BucketRegion: "us-east-1"
   S3BucketName: "mestk-blocklist-20250101"

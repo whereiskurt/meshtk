@@ -59,6 +59,7 @@ type Server struct {
 	S3BucketName           string `default:"mestk-blocklist-20250101"`
 	S3BucketPrefix         string `default:"meshtk/blocklist"`
 	CheckLogIntervalMins   int    `default:"15"`
+	CheckLogIntervalSecs   int    `default:"10"`
 	ShouldLogBlocks        bool   `default:"true"`
 	ShouldLogAllows        bool   `default:"true"`
 }

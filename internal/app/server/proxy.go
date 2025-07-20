@@ -70,7 +70,7 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			// TODO: Build this out as an actual ALLOW_LIST
 			shouldInspect := true
-			if strings.Contains(strings.ToLower(ip.Track.ClientID), "meshtk") {
+			if strings.Contains(strings.ToLower(ip.Track.ClientID), "kphkphkph") {
 				shouldInspect = false
 			}
 

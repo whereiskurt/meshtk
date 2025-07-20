@@ -200,7 +200,7 @@ func (n *ServerCmd) StartProxyServer() error {
 func (n *ServerCmd) InitInspectorLogger() {
 	go func() {
 		n.SetupInspectorLogger()
-		ticker := time.NewTicker(time.Duration(n.Config.Server.CheckLogIntervalMins) * time.Minute)
+		ticker := time.NewTicker((time.Duration(n.Config.Server.CheckLogIntervalMins) * time.Minute) + (time.Duration(n.Config.Server.CheckLogIntervalSecs) * time.Second))
 		defer ticker.Stop()
 
 		for range ticker.C {
@@ -214,6 +214,7 @@ func (n *ServerCmd) InitInspectorLogger() {
 			fileSizeMB = float64(fileInfo.Size()) / (1024 * 1024)
 
 			if fileSizeMB > float64(n.Config.Server.MaxMBLogSize) {
+				n.Config.Log.Debugf("logfile %s size: %.2f MB larger than %.2f, moving to bucket", n.InspectorLogFilename, fileSizeMB, float64(n.Config.Server.MaxMBLogSize))
 				n.MoveToBucket(filename)
 				//This rolls the log file over by creating a new one
 				n.SetupInspectorLogger()
@@ -247,9 +248,10 @@ func (n *ServerCmd) MoveToBucket(filename string) {
 		n.Config.Log.Warnf("failed to create S3 mover: %v", err)
 		return
 	}
-	_, err = scopy.Move(filename, s3BucketPrefix)
-	if err != nil {
-		n.Config.Log.Errorf("failed to move log file to S3: %s:%s:  %v", s3BucketName, s3BucketRegion, err)
+
+	res, err2 := scopy.Move(filename, s3BucketPrefix)
+	if err2 != nil {
+		n.Config.Log.Errorf("failed to move log file to S3: %s:%s:  %v", s3BucketName, s3BucketRegion, res.ErrorMessage)
 	}
 }
 

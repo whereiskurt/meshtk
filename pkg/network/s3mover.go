@@ -35,9 +35,12 @@ func NewS3Mover(region, bucketRegion, bucket string) (*S3Mover, error) {
 		CredentialsChainVerboseErrors: aws.Bool(true),
 	}
 
+	// Create session with ECS Task Role support
 	sess, err := session.NewSessionWithOptions(session.Options{
 		Config:            *awsCfg,
 		SharedConfigState: session.SharedConfigEnable,
+		// This enables ECS container credentials through the AWS_CONTAINER_CREDENTIALS_RELATIVE_URI environment variable
+		SharedConfigFiles: []string{},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AWS session: %v", err)

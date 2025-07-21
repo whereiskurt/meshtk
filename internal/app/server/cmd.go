@@ -213,7 +213,7 @@ func (n *ServerCmd) InitInspectorLogger() {
 			}
 			fileSizeMB = float64(fileInfo.Size()) / (1024 * 1024)
 
-			if fileSizeMB > float64(n.Config.Server.MaxMBLogSize) {
+			if fileSizeMB >= float64(n.Config.Server.MaxMBLogSize) {
 				n.Config.Log.Debugf("logfile %s size: %.2f MB larger than %.2f, moving to bucket", n.InspectorLogFilename, fileSizeMB, float64(n.Config.Server.MaxMBLogSize))
 				n.MoveToBucket(filename)
 				//This rolls the log file over by creating a new one

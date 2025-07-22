@@ -62,6 +62,15 @@ type Server struct {
 	CheckLogIntervalSecs   int    `default:"10"`
 	ShouldLogBlocks        bool   `default:"true"`
 	ShouldLogAllows        bool   `default:"true"`
+	// DynamoDB settings for user authentication
+	UseDynamoAuth      bool   `default:"false"`
+	DynamoRegion       string `default:"us-east-1"`
+	DynamoTableName    string `default:"meshtk-users"`
+	DynamoAccessKey    string `default:""`
+	DynamoSecretKey    string `default:""`
+	DynamoEndpoint     string `default:""`
+	DynamoIndexName    string `default:"gsi2"`
+	DynamoGSI2PKPrefix string `default:"$auth#mqtt_username_"`
 }
 
 type Fleet struct {

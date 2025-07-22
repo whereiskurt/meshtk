@@ -1,0 +1,49 @@
+NodeDbPath: "./nodes.default.json"
+LogFolder: "logs/"
+
+Mqtt:
+  # BrokerUri: "ssl://mqtt.defcon.run:8883"
+  BrokerUri: "tcp://localhost:1883"
+  Username: "asdfasdf"
+  Password: "31337"
+  ClientId: "kphkphkph"
+
+Meshtastic:
+  Channels:
+    - Slot: "primary"
+      Name: "dc.run"
+      EncryptKey: "Wjt8kzHci9lqdS4tBzSF2VbQd86u6U3nhHaBl7V5TGE="
+      IsEncrypted: true
+      IsPrimary: true
+    - Slot: "secondary"
+      Name: "defcon"
+      EncryptKey: "AQ=="
+      IsEncrypted: true
+      IsPrimary: false
+
+Server:
+  ProxyListenAddress: "0.0.0.0:1883"
+  ProxyForwardAddress: "mqtt.defcon.run:1883"
+  InspectorListenAddress: "localhost:50051"
+  BlockFilenameTmpl: "./blocklist.{{.DTS}}.log"
+  ShouldLogBlocks: true
+  ShouldLogAllows: true
+  MaxMBLogSize: 0
+  CheckLogIntervalMins: 2
+  CheckLogIntervalSecs: 10
+  UseS3Bucket: true
+  S3BucketRegion: "us-east-1"
+  S3BucketName: "mestk-blocklist-20250101"
+  S3BucketPrefix: "meshtk/blocklist"
+  
+  # DynamoDB authentication settings
+  UseDynamoAuth: true
+  DynamoRegion: "us-east-1"
+  DynamoTableName: "meshtk-users"
+  DynamoAccessKey: "YOUR_ACCESS_KEY" # Replace with your AWS access key or use environment variables
+  DynamoSecretKey: "YOUR_SECRET_KEY" # Replace with your AWS secret key or use environment variables
+  DynamoEndpoint: "" # Optional: Set to use a custom endpoint for local DynamoDB testing
+  DynamoIndexName: "gsi2" # The GSI index name to use for lookups
+  DynamoGSI2PKPrefix: "$auth#mqtt_username_" # The prefix for GSI2PK field lookup
+
+# Other configuration sections omitted for brevity

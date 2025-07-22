@@ -41,6 +41,9 @@ type ServerCmd struct {
 	LogFileMutex         sync.RWMutex
 	InspectorLogger      *log.Logger
 	InspectorLogFilename string
+
+	// DynamoDB user authentication
+	UserLookup *network.DynamoUserLookup
 }
 
 func NewAESCipher(key []byte) cipher.Block {
@@ -57,6 +60,28 @@ func NewServer(c *config.Config) (n *ServerCmd) {
 	n.SetupTracker()
 	n.LoadCiphers(c)
 	n.LoadInspectorRules()
+	// Initialize DynamoDB user lookup if enabled
+	if c.Server.UseDynamoAuth {
+		n.UserLookup = network.NewDynamoUserLookup(
+			c.Server.DynamoRegion,
+			c.Server.DynamoTableName,
+			c.Server.DynamoAccessKey,
+			c.Server.DynamoSecretKey,
+			c.Server.DynamoEndpoint,
+		)
+
+		// Set the index name and GSI2PK prefix
+		n.UserLookup.IndexName = c.Server.DynamoIndexName
+		n.UserLookup.GSI2PKPrefix = c.Server.DynamoGSI2PKPrefix
+
+		if err := n.UserLookup.Initialize(c.Log); err != nil {
+			// c.Log.Warnf("Failed to initialize DynamoDB user lookup: %v", err)
+		} else {
+			// c.Log.Infof("DynamoDB user authentication initialized for table: %s using index %s",
+			// c.Server.DynamoTableName, c.Server.DynamoIndexName)
+		}
+	}
+
 	return n
 }
 

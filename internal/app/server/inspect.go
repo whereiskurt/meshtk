@@ -76,6 +76,28 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 		n.ConnTrack[ip.Track.SocketAddress] = connInfo
 		n.ConnMutex.Unlock()
 
+		// If DynamoDB lookup is enabled, use it to authenticate users
+		if n.UserLookup != nil && n.Config.Server.UseDynamoAuth {
+			// Lookup username in DynamoDB
+			cred, err := n.UserLookup.LookupUsername(p.Username)
+			if err != nil {
+				n.Config.Log.Debugf("DynamoDB lookup failed for user %s: %v", p.Username, err)
+				// Default to public access on failure
+				p.Username = "public"
+				p.Password = []byte("31337")
+			} else {
+				// Update with credentials from DynamoDB
+				n.Config.Log.Debugf("Using DynamoDB credentials for user type: %s", cred.AccessLevel)
+				// Use the credentials from DynamoDB - note that username might be different!
+				p.Username = cred.Username
+				p.Password = []byte(cred.Password)
+			}
+		} else {
+			// Use default hardcoded values
+			p.Username = "public"
+			p.Password = []byte("31337") // Set a default password for public access
+		}
+
 	case *packets.PublishPacket:
 		n.SetConnTrack(ip)
 		ip.MQTT.Type = "PUBLISH"

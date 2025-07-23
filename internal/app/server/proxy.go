@@ -68,6 +68,13 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			ip.inspectRawPacket(n)
 
+			switch p := (*ip.Raw.MQTT).(type) {
+			case *packets.ConnectPacket:
+				if p.Username == "" {
+					return
+				}
+			}
+
 			// TODO: Build this out as an actual ALLOW_LIST
 			shouldInspect := true
 			if strings.Contains(strings.ToLower(ip.Track.ClientID), "kphkphkph") {

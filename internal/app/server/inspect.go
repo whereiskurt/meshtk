@@ -76,6 +76,27 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 		n.ConnTrack[ip.Track.SocketAddress] = connInfo
 		n.ConnMutex.Unlock()
 
+		isHex := func(s string) bool {
+			for _, c := range s {
+				if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+					return false
+				}
+			}
+			return true
+		}
+
+		//This code block is our little easter egg.
+		if p.Username == "kph" || p.Username == "ax" || p.Username == "meshmap" {
+			//Passthrough ;-)
+		} else if !(len(p.Username) == 12 && len(p.Password) == 12 && isHex(p.Username) && isHex(string(p.Password))) {
+			//Clobber these values so we can hang-up outside the function.
+			p.Username = ""
+			p.Password = []byte("")
+		} else {
+			p.Username = "public"
+			p.Password = []byte("31337")
+		}
+
 	case *packets.PublishPacket:
 		n.SetConnTrack(ip)
 		ip.MQTT.Type = "PUBLISH"

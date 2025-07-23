@@ -23,7 +23,7 @@ func (c *MqttClient) PublishNodeInfo(from uint32, to uint32, topic string, longN
 		ShortName: shortName,
 		HwModel:   hwModel,
 		Role:      role,
-		PublicKey: c.pkiPublicKey,
+		//PublicKey: c.pkiPublicKey,
 	}
 
 	// Serialize the user data

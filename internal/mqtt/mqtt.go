@@ -164,8 +164,8 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 
 			// payload := data.GetPayload()
 			copy(nonce[8:11], encrypted[len(encrypted)-4:])
+			pkiDecrypted, pkiErr := c.decryptWithPKI(to, from, nonce, encrypted)
 
-			pkiDecrypted, pkiErr := c.decryptWithPKI(from, nonce, encrypted)
 			if pkiErr != nil {
 				c.log.Warnf("PKI(1) decrypt error failed for packet from %v on %v: %v", from, topic, pkiErr)
 				return
@@ -198,9 +198,9 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 
 // This is not working yet and totally wrong actually
 // Review the source: src/mesh/CryptoEngine.cpp in the meshtastic_firmware repo
-func (c *MqttClient) decryptWithPKI(from uint32, nonce []byte, encrypted []byte) ([]byte, error) {
+func (c *MqttClient) decryptWithPKI(to, from uint32, nonce []byte, encrypted []byte) ([]byte, error) {
 	//Do we have the senders public key?
-	node, exists := (*c.nodes)[from]
+	node, exists := (*c.nodes)[to]
 	if !exists {
 		return nil, fmt.Errorf("haven't see node with ID %v does not exist", from)
 	}
@@ -210,7 +210,12 @@ func (c *MqttClient) decryptWithPKI(from uint32, nonce []byte, encrypted []byte)
 		return nil, fmt.Errorf("failed to read public key: %v", err)
 	}
 
-	sharedSecret, err := GenerateSharedSecret(c.pkiPrivateKey, publicKeyBytes)
+	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(node.PrivKey, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key: %v", err)
+	}
+
+	sharedSecret, err := GenerateSharedSecret(privKeyBytes, publicKeyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate shared secret: %v", err)
 	}

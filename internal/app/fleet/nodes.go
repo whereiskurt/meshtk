@@ -119,7 +119,8 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 	}
 
 	// Map report data
-	fwVersion := fmt.Sprintf("2.%d.%d", r.Intn(10), r.Intn(100))
+	// fwVersion := fmt.Sprintf("2.%d.%d", r.Intn(10), r.Intn(100))
+	fwVersion := "2.7.2"
 	regions := []string{"US", "EU433", "EU868"}
 	region := regions[r.Intn(len(regions))]
 	modemPresets := []string{"DEFAULT", "LONG_FAST", "LONG_SLOW", "MEDIUM_FAST", "MEDIUM_SLOW", "SHORT_FAST", "SHORT_SLOW"}

@@ -13,9 +13,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func (c *MqttClient) PublishNodeInfo(from uint32, to uint32, topic string, longName, shortName string, hwModel meshtastic.HardwareModel, role meshtastic.Config_DeviceConfig_Role) error {
+func (c *MqttClient) PublishNodeInfo(from uint32, to uint32, topic string, longName, shortName string, pubKey []byte, hwModel meshtastic.HardwareModel, role meshtastic.Config_DeviceConfig_Role) error {
 	fromStr := fmt.Sprintf("!%08x", from)
-
 	user := &meshtastic.User{
 		// The Id field should be properly cast to match what the meshtastic proto expects
 		Id:        fromStr,
@@ -23,7 +22,7 @@ func (c *MqttClient) PublishNodeInfo(from uint32, to uint32, topic string, longN
 		ShortName: shortName,
 		HwModel:   hwModel,
 		Role:      role,
-		//PublicKey: c.pkiPublicKey,
+		PublicKey: pubKey,
 	}
 
 	// Serialize the user data

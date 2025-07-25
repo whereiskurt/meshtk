@@ -83,6 +83,7 @@ type Fleet struct {
 	Movement               []Movement `json:"Movement"`
 	ShortNameTmpl          string     `default:"M{fleetId}{nodeId}"`
 	LongNameTmpl           string     `default:"mtk-{{.fleetId}}{{.nodeId}}-{{shortseed}}"`
+	OtpUrl                 string     `default:""`
 }
 
 type Coordinate struct {

@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -52,7 +53,16 @@ func (f *FleetCmd) publishNodeInfo(idx int, node *mqtt.Node) {
 		f.Config.Log.Warnf("⚠️ Unknown hardware model: %s. Defaulting to 0.\n", node.HwModel)
 		hwModelNumber = 0
 	}
-	f.MqttClient[idx].PublishNodeInfo(node.From, ALL, whoamiTopic, node.LongName, node.ShortName, meshtastic.HardwareModel(hwModelNumber), meshtastic.Config_DeviceConfig_CLIENT)
+
+	pk, err := hex.DecodeString(strings.TrimPrefix(node.PubKey, "0x"))
+	if err != nil {
+		f.Config.Log.Warnf("⚠️ Failed to decode public key: %v. Defaulting to empty key.\n", err)
+		pk = []byte{}
+	} else {
+		f.Config.Log.Infof("Successfully decoded public key: %x\n", pk)
+	}
+
+	f.MqttClient[idx].PublishNodeInfo(node.From, ALL, whoamiTopic, node.LongName, node.ShortName, pk, meshtastic.HardwareModel(hwModelNumber), meshtastic.Config_DeviceConfig_CLIENT)
 }
 
 func (f *FleetCmd) publishPosition(idx int, node *mqtt.Node, gitter bool) {

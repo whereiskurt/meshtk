@@ -59,7 +59,7 @@ func (a *App) RegisterOsArgs() {
 	cmd.NewSubCmd(serverCmd, "protobuf", g.ProtobufServer)
 	cmd.NewSubCmd(serverCmd, "proxy", g.ProxyServer)
 
-	f := fleet.NewFleet(a.Config)
+	f := fleet.NewFleets(a.Config)
 	fleetCmd := cmd.NewCmd([]string{"fleet", "f"}, f.Help)
 	cmd.NewSubCmd(fleetCmd, "help", f.Help)
 	cmd.NewSubCmd(fleetCmd, "simulate", f.Simulate)

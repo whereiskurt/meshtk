@@ -1,8 +1,10 @@
 package nodeinfo
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -100,7 +102,13 @@ func (n *NodeInfoCmd) DoBroadcast() {
 
 	n.Config.Log.Tracef("Broadcasting to %s", whoamiTopic)
 	n.Config.Log.Tracef("Broadcasting from !%08x", from)
-	n.MqttClient.PublishNodeInfo(from, ALL, whoamiTopic, n.Config.NodeInfo.LongName, n.Config.NodeInfo.ShortName, meshtastic.HardwareModel(n.Config.NodeInfo.HWModelId), meshtastic.Config_DeviceConfig_CLIENT)
+
+	pk, err := hex.DecodeString(strings.TrimPrefix(n.Config.NodeInfo.PKI.PublicKey, "0x"))
+	if err != nil {
+		n.Config.Log.Warnf("⚠️ Failed to decode public key: %v. Defaulting to empty key.\n", err)
+		pk = []byte{}
+	}
+	n.MqttClient.PublishNodeInfo(from, ALL, whoamiTopic, n.Config.NodeInfo.LongName, n.Config.NodeInfo.ShortName, pk, meshtastic.HardwareModel(n.Config.NodeInfo.HWModelId), meshtastic.Config_DeviceConfig_CLIENT)
 	n.MqttClient.PublishPosition(from, ALL, whoamiTopic, lat, lng, alt, prec)
 
 	n.MqttClient.PublishMessageEncrypted(from, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte{'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'})

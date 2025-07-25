@@ -9,6 +9,7 @@ import (
 	"time"
 
 	internal "github.com/whereiskurt/meshtk/internal/mqtt"
+	"github.com/whereiskurt/meshtk/pkg/otp"
 
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 
@@ -26,19 +27,25 @@ type FleetCmd struct {
 	CmdOutput  struct {
 		WasSuccess bool
 	}
+	OTPHandler *otp.TOTPConfig
 }
 
 const BACKSTOP_GRACE_SEC = 30
 
-func NewFleet(c *config.Config) (f *FleetCmd) {
+func NewFleets(c *config.Config) (f *FleetCmd) {
 	f = new(FleetCmd)
+	f.Config = c
 
 	for i := 0; i < len(c.Fleet); i++ {
 		f.Nodes = append(f.Nodes, make(internal.NodeDB))
 		f.NodesMutex = append(f.NodesMutex, sync.Mutex{})
+
+		otpURL := f.Config.Fleet[i].OtpUrl
+		if otpURL != "" {
+			f.OTPHandler, _ = otp.NewOTPHandler(otpURL)
+		}
 	}
 
-	f.Config = c
 	return f
 }
 func (f *FleetCmd) Help(cmd *cobra.Command, argz []string) {
@@ -110,6 +117,25 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 	f.CmdOutput.WasSuccess = true
 }
 
+func (f *FleetCmd) FindNodes(to, from uint32) (int, *internal.Node, int, *internal.Node) {
+	var toNode, fromNode *internal.Node
+	var toFleetIdx, fromFleetIdx int
+
+	for fleetIdx := range f.Nodes {
+		if nodes := f.Nodes[fleetIdx]; nodes != nil {
+			if node, ok := nodes[to]; ok {
+				toNode = node
+				toFleetIdx = fleetIdx
+			}
+			if node, ok := nodes[from]; ok {
+				fromNode = node
+				fromFleetIdx = fleetIdx
+			}
+		}
+	}
+	return toFleetIdx, toNode, fromFleetIdx, fromNode
+}
+
 func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
 	done := make(chan struct{})
 	go func() {
@@ -122,17 +148,27 @@ func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
 }
 
 func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
+	lkpFrom, _, lkpTo, _ := n.FindNodes(to, from)
+
 	switch portNum {
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
-		// n.Config.Log.Tracef(`{from: '%v', topic: '%v', message: '%s'}`, from, topic, payload)
-		if n.Config.VerboseLevel == "debug" || n.Config.VerboseLevel == "trace" {
-			// fmt.Print(".")
-		}
-	default:
-		// n.Config.Log.Tracef(`{from: '%v', topic: '%v', portNum: '%s'}`, from, topic, portNum)
-		if n.Config.VerboseLevel == "debug" || n.Config.VerboseLevel == "trace" {
-			// fmt.Print(".")
+		// If we found matching nodes in our fleets, check for OTP URLs
+		totps, err := n.OTPHandler.CalculateTOTPWithAdjacentPeriods()
+		if err == nil {
+			n.Config.Log.Infof("TOTP for node[%d]: Current: %s (valid for %s more seconds)", lkpTo, totps["current"], totps["remainingSeconds"])
+			n.Config.Log.Infof("TOTP for node[%d]: Previous: %s, Next: %s", lkpTo, totps["previous"], totps["next"])
+			n.Config.Log.Infof("TOTP for node[%d]: Period: %s seconds, Current period started: %s", lkpTo, totps["period"], totps["currentPeriodStart"])
+		} else {
+			n.Config.Log.Errorf("Failed to calculate TOTP: %v", err)
 		}
 
+		if n.Config.VerboseLevel == "debug" || n.Config.VerboseLevel == "trace" {
+			n.Config.Log.Tracef("FleetNodeHandler: to=%v, from=%v, topic=%s, portNum=%s, lkpFrom=%v, lkpTo=%v", to, from, topic, portNum, lkpFrom, lkpTo)
+			n.Config.Log.Tracef(`{to: '%v', from: '%v', topic: '%v', message: '%s', lkpFrom: '%v', lkpTo: '%v'}`, to, from, topic, payload, lkpFrom, lkpTo)
+		}
+	default:
+		// if n.Config.VerboseLevel == "debug" || n.Config.VerboseLevel == "trace" {
+		// 	n.Config.Log.Tracef(`{to: '%v', from: '%v', topic: '%v', portNum: '%s', lkpFrom: '%v', lkpTo: '%v'}`, to, from, topic, portNum, lkpFrom, lkpTo)
+		// }
 	}
 }

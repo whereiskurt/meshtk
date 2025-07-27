@@ -85,6 +85,11 @@ github.com/pelletier/go-toml/v2/unstable
 # github.com/pires/go-proxyproto v0.8.0
 ## explicit; go 1.18
 github.com/pires/go-proxyproto
+# github.com/pschlump/AesCCM v0.0.0-20160925022350-c5df73b5834e
+## explicit
+github.com/pschlump/AesCCM
+# github.com/pschlump/godebug v1.0.7
+## explicit; go 1.22.0
 # github.com/rogpeppe/go-internal v1.12.0
 ## explicit; go 1.20
 # github.com/sagikazarmark/locafero v0.7.0

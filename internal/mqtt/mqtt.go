@@ -1,12 +1,10 @@
 package mqtt
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -21,7 +19,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/eclipse/paho.mqtt.golang/packets"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/whereiskurt/meshtk/pkg/config"
@@ -162,21 +159,19 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 		} else {
 			c.log.Tracef("MeshPacket from %v with PKI encryption on %v", from, topic)
 
-			// payload := data.GetPayload()
-			copy(nonce[8:11], encrypted[len(encrypted)-4:])
-			pkiDecrypted, pkiErr := c.decryptWithPKI(to, from, nonce, encrypted)
-
+			// PKI Decryption using firmware2-exact implementation
+			pkiDecrypted, pkiErr := c.decryptPKI(packet, encrypted)
 			if pkiErr != nil {
-				c.log.Warnf("PKI(1) decrypt error failed for packet from %v on %v: %v", from, topic, pkiErr)
+				c.log.Warnf("PKI decrypt failed for packet from %v on %v: %v", from, topic, pkiErr)
 				return
 			}
 			data = new(meshtastic.Data)
 			if err := proto.Unmarshal(pkiDecrypted, data); err != nil {
-				c.log.Errorf("PKI(2) unmarshal error decrypted data: %v", err)
+				c.log.Errorf("PKI unmarshal error for decrypted data: %v", err)
 				return
 			}
 
-			// c.log.Tracef("success PKI decrypted payload from %v on %v: %x", from, topic, pkiDecrypted)
+			c.log.Tracef("Successfully PKI decrypted payload from %v on %v", from, topic)
 		}
 	}
 
@@ -194,48 +189,6 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 
 	//c.log.Tracef(`{'from': %v, 'topic': '%v', 'portNum': %v, 'isEncrypted': %v, 'payload': '0x%x'}`, from, topic, portNum, isEncrypted, payload)
 	c.messageHandler(to, from, topic, portNum, payload)
-}
-
-// This is not working yet and totally wrong actually
-// Review the source: src/mesh/CryptoEngine.cpp in the meshtastic_firmware repo
-func (c *MqttClient) decryptWithPKI(to, from uint32, nonce []byte, encrypted []byte) ([]byte, error) {
-	//Do we have the senders public key?
-	node, exists := (*c.nodes)[to]
-	if !exists {
-		return nil, fmt.Errorf("haven't see node with ID %v does not exist", from)
-	}
-
-	publicKeyBytes, err := hex.DecodeString(strings.TrimPrefix(node.PubKey, "0x"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read public key: %v", err)
-	}
-
-	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(node.PrivKey, "0x"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read private key: %v", err)
-	}
-
-	sharedSecret, err := GenerateSharedSecret(privKeyBytes, publicKeyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate shared secret: %v", err)
-	}
-
-	// Ensure the shared secret is the correct length for AES
-	if len(sharedSecret) != 32 {
-		return nil, fmt.Errorf("unexpected shared secret length: %d", len(sharedSecret))
-	}
-
-	// Create AES cipher block
-	block, err := aes.NewCipher(sharedSecret)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AES cipher: %v", err)
-	}
-
-	// Decrypt the message using AES-CTR
-	decrypted := make([]byte, len(encrypted))
-	cipher.NewCTR(block, nonce).XORKeyStream(decrypted, encrypted)
-
-	return decrypted, nil
 }
 
 func (c *MqttClient) subscribeMultiple(topics []string) error {
@@ -345,60 +298,4 @@ func (c *MqttClient) GenerateKeyPair() {
 
 	// c.pkiPrivateKey = privateKey
 
-}
-
-func GenerateSharedSecret(privateKeyBytes, publicKeyBytes []byte) ([]byte, error) {
-	curve := ecdh.X25519()
-
-	// Create private key object
-	privateKey, err := curve.NewPrivateKey(privateKeyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid private key: %v", err)
-	}
-
-	// Create public key object
-	publicKey, err := curve.NewPublicKey(publicKeyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid public key: %v", err)
-	}
-
-	// Perform ECDH key exchange to generate the shared secret
-	sharedSecret, err := privateKey.ECDH(publicKey)
-	if err != nil {
-		return nil, fmt.Errorf("ECDH key exchange failed: %v", err)
-	}
-
-	hash := sha256.Sum256(sharedSecret)
-	return hash[:], nil
-}
-
-type DecodedMeshtastic struct {
-	Topic    string
-	Envelope *meshtastic.ServiceEnvelope
-}
-
-// Decode attempts to parse a raw MQTT packet and extract a Meshtastic ServiceEnvelope.
-func Decode(raw []byte) (*DecodedMeshtastic, error) {
-	buf := bytes.NewReader(raw)
-
-	// Read the MQTT control packet from the buffer
-	pkt, err := packets.ReadPacket(buf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode MQTT packet: %w", err)
-	}
-
-	publishPkt, ok := pkt.(*packets.PublishPacket)
-	if !ok {
-		return nil, fmt.Errorf("packet is not a PUBLISH type, got %T", pkt)
-	}
-
-	var env meshtastic.ServiceEnvelope
-	if err := proto.Unmarshal(publishPkt.Payload, &env); err != nil {
-		return nil, fmt.Errorf("failed to decode protobuf payload: %w", err)
-	}
-
-	return &DecodedMeshtastic{
-		Topic:    publishPkt.TopicName,
-		Envelope: &env,
-	}, nil
 }

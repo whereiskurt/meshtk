@@ -5,16 +5,15 @@ go 1.24.1
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.0
 	github.com/mitchellh/go-homedir v1.1.0
-	github.com/pschlump/AesCCM v0.0.0-20160925022350-c5df73b5834e
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.0
+	golang.org/x/crypto v0.36.0
 	google.golang.org/protobuf v1.36.5
 )
 
 require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
-	github.com/pschlump/godebug v1.0.7 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250115164207-1a7da9e5054f // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect

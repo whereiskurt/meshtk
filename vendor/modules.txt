@@ -85,11 +85,6 @@ github.com/pelletier/go-toml/v2/unstable
 # github.com/pires/go-proxyproto v0.8.0
 ## explicit; go 1.18
 github.com/pires/go-proxyproto
-# github.com/pschlump/AesCCM v0.0.0-20160925022350-c5df73b5834e
-## explicit
-github.com/pschlump/AesCCM
-# github.com/pschlump/godebug v1.0.7
-## explicit; go 1.22.0
 # github.com/rogpeppe/go-internal v1.12.0
 ## explicit; go 1.20
 # github.com/sagikazarmark/locafero v0.7.0
@@ -135,6 +130,9 @@ go.uber.org/atomic
 # go.uber.org/multierr v1.9.0
 ## explicit; go 1.19
 go.uber.org/multierr
+# golang.org/x/crypto v0.36.0
+## explicit; go 1.23.0
+golang.org/x/crypto/curve25519
 # golang.org/x/net v0.38.0
 ## explicit; go 1.23.0
 golang.org/x/net/http/httpguts

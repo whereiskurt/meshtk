@@ -1,7 +1,6 @@
 package mqtt
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
@@ -18,10 +17,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pschlump/aesccm"
 	"google.golang.org/protobuf/proto"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/eclipse/paho.mqtt.golang/packets"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/whereiskurt/meshtk/pkg/config"
@@ -146,11 +145,15 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 			c.log.Warnf("skipping MeshPacket from %v with no data on %v", from, topic)
 			return
 		}
-		nonce := make([]byte, 16)
-		binary.LittleEndian.PutUint32(nonce[0:], packet.GetId())
-		binary.LittleEndian.PutUint32(nonce[8:], from)
 
 		if !packet.GetPkiEncrypted() {
+			// Construct base nonce: [8-byte packetId][4-byte fromNode][4-byte extraNonce/counter]
+			nonce := make([]byte, 16)
+			binary.LittleEndian.PutUint64(nonce[0:8], uint64(packet.GetId()))
+			binary.LittleEndian.PutUint32(nonce[8:12], from)
+			binary.LittleEndian.PutUint32(nonce[12:16], 0) // extraNonce/counter
+
+			// Standard AES-CTR decryption for channel messages
 			decrypted := make([]byte, len(encrypted))
 			cipher.NewCTR(c.blockCipher, nonce).XORKeyStream(decrypted, encrypted)
 			data = new(meshtastic.Data)
@@ -162,21 +165,22 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 		} else {
 			c.log.Tracef("MeshPacket from %v with PKI encryption on %v", from, topic)
 
-			// payload := data.GetPayload()
-			copy(nonce[8:11], encrypted[len(encrypted)-4:])
-			pkiDecrypted, pkiErr := c.decryptWithPKI(to, from, nonce, encrypted)
-
+			// PKI Decryption using exact C# Meshtastic implementation
+			pkiDecrypted, pkiErr := c.decryptPKI(packet, encrypted)
 			if pkiErr != nil {
-				c.log.Warnf("PKI(1) decrypt error failed for packet from %v on %v: %v", from, topic, pkiErr)
+				c.log.Warnf("PKI decrypt failed for packet from %v on %v: %v", from, topic, pkiErr)
 				return
 			}
 			data = new(meshtastic.Data)
+			c.log.Tracef("PKI attempting to unmarshal decrypted data: %x", pkiDecrypted)
+			c.log.Tracef("PKI decrypted data as string: %q", string(pkiDecrypted))
 			if err := proto.Unmarshal(pkiDecrypted, data); err != nil {
-				c.log.Errorf("PKI(2) unmarshal error decrypted data: %v", err)
+				c.log.Errorf("PKI unmarshal error for decrypted data: %v", err)
+				c.log.Tracef("PKI trying to interpret as raw text: %s", string(pkiDecrypted))
 				return
 			}
 
-			// c.log.Tracef("success PKI decrypted payload from %v on %v: %x", from, topic, pkiDecrypted)
+			c.log.Tracef("Successfully PKI decrypted payload from %v on %v", from, topic)
 		}
 	}
 
@@ -194,48 +198,6 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 
 	//c.log.Tracef(`{'from': %v, 'topic': '%v', 'portNum': %v, 'isEncrypted': %v, 'payload': '0x%x'}`, from, topic, portNum, isEncrypted, payload)
 	c.messageHandler(to, from, topic, portNum, payload)
-}
-
-// This is not working yet and totally wrong actually
-// Review the source: src/mesh/CryptoEngine.cpp in the meshtastic_firmware repo
-func (c *MqttClient) decryptWithPKI(to, from uint32, nonce []byte, encrypted []byte) ([]byte, error) {
-	//Do we have the senders public key?
-	node, exists := (*c.nodes)[to]
-	if !exists {
-		return nil, fmt.Errorf("haven't see node with ID %v does not exist", from)
-	}
-
-	publicKeyBytes, err := hex.DecodeString(strings.TrimPrefix(node.PubKey, "0x"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read public key: %v", err)
-	}
-
-	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(node.PrivKey, "0x"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read private key: %v", err)
-	}
-
-	sharedSecret, err := GenerateSharedSecret(privKeyBytes, publicKeyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate shared secret: %v", err)
-	}
-
-	// Ensure the shared secret is the correct length for AES
-	if len(sharedSecret) != 32 {
-		return nil, fmt.Errorf("unexpected shared secret length: %d", len(sharedSecret))
-	}
-
-	// Create AES cipher block
-	block, err := aes.NewCipher(sharedSecret)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AES cipher: %v", err)
-	}
-
-	// Decrypt the message using AES-CTR
-	decrypted := make([]byte, len(encrypted))
-	cipher.NewCTR(block, nonce).XORKeyStream(decrypted, encrypted)
-
-	return decrypted, nil
 }
 
 func (c *MqttClient) subscribeMultiple(topics []string) error {
@@ -347,58 +309,222 @@ func (c *MqttClient) GenerateKeyPair() {
 
 }
 
-func GenerateSharedSecret(privateKeyBytes, publicKeyBytes []byte) ([]byte, error) {
+// decryptPKI implements PKI decryption exactly like the C# Meshtastic implementation
+func (c *MqttClient) decryptPKI(packet *meshtastic.MeshPacket, encryptedData []byte) ([]byte, error) {
+	c.log.Debugf("PKI decrypt: packet ID=%d, from=%d, to=%d", packet.GetId(), packet.GetFrom(), packet.GetTo())
+	c.log.Debugf("PKI encrypted data (%d bytes): %x", len(encryptedData), encryptedData)
+
+	// Get recipient's private key from nodeDB
+	recipientNode, exists := (*c.nodes)[packet.GetTo()]
+	if !exists {
+		return nil, fmt.Errorf("recipient node %d not found in nodeDB", packet.GetTo())
+	}
+
+	// Parse and validate recipient's private key
+
+	c.log.Debugf("KPHKPH: Recipient node: %+v", recipientNode.PrivKey)
+	recipientPrivateKeyBytes, err := c.parsePrivateKey(recipientNode.PrivKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse recipient private key: %v", err)
+	}
+
+	// Get sender's public key from packet
+	senderPublicKeyBytes := packet.GetPublicKey()
+	if len(senderPublicKeyBytes) != 32 {
+		return nil, fmt.Errorf("invalid sender public key length: %d", len(senderPublicKeyBytes))
+	}
+
+	c.log.Debugf("Recipient private key: %x", recipientPrivateKeyBytes)
+	c.log.Debugf("Sender public key: %x", senderPublicKeyBytes)
+
+	// Extract extraNonce from last 4 bytes (C# implementation)
+	if len(encryptedData) < 4 {
+		return nil, fmt.Errorf("encrypted data too short: %d bytes", len(encryptedData))
+	}
+
+	extraNonce := binary.LittleEndian.Uint32(encryptedData[len(encryptedData)-4:])
+	c.log.Debugf("Extra nonce: %d", extraNonce)
+
+	// Call the exact C# Decrypt method equivalent
+	return c.decrypt(recipientPrivateKeyBytes, senderPublicKeyBytes, encryptedData, uint32(packet.GetId()), uint32(packet.GetFrom()))
+}
+
+// parsePrivateKey parses and validates a private key, handling known corruption patterns
+func (c *MqttClient) parsePrivateKey(privKeyHex string) ([]byte, error) {
+	// Remove 0x prefix if present
+	privKeyHex = strings.TrimPrefix(privKeyHex, "0x")
+
+	c.log.Debugf("Raw private key from DB: %s", privKeyHex)
+
+	privKeyBytes, err := hex.DecodeString(privKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid hex: %v", err)
+	}
+
+	if len(privKeyBytes) != 32 {
+		return nil, fmt.Errorf("invalid key length: %d, expected 32", len(privKeyBytes))
+	}
+
+	return privKeyBytes, nil
+}
+
+// decrypt implements the exact C# Decrypt method
+func (c *MqttClient) decrypt(recipientPrivateKey, senderPublicKey, encryptedData []byte, packetId, senderNodeId uint32) ([]byte, error) {
+	// 1. Generate shared key (C# GenerateSharedKey)
+	sharedKey, err := c.generateSharedKey(recipientPrivateKey, senderPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate shared key: %v", err)
+	}
+
+	c.log.Debugf("Shared key: %x", sharedKey)
+
+	// 2. Extract extra nonce from last 4 bytes
+	extraNonce := binary.LittleEndian.Uint32(encryptedData[len(encryptedData)-4:])
+
+	// 3. Generate nonce (C# GenerateNonce)
+	nonce := c.generateNonce(packetId, senderNodeId, extraNonce)
+	c.log.Debugf("Generated nonce: %x", nonce)
+
+	// 4. Initialize AES-CCM cipher (C# CcmBlockCipher configuration)
+	block, err := aes.NewCipher(sharedKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %v", err)
+	}
+
+	// Create CCM cipher with 8-byte tag (64-bit) like C# AeadParameters
+	ccm, err := aesccm.NewCCM(block, 8, len(nonce))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CCM cipher: %v", err)
+	}
+
+	// 5. Prepare data for CCM decryption
+	// Firmware structure: [ciphertext][8-byte auth tag][4-byte extraNonce]
+	// CCM expects: [ciphertext + auth tag]
+	ciphertextLen := len(encryptedData) - 12  // exclude 8-byte auth + 4-byte extraNonce
+	authTagStart := ciphertextLen
+	authTagEnd := authTagStart + 8
+	
+	// Combine ciphertext + auth tag for CCM library
+	dataToDecrypt := make([]byte, ciphertextLen + 8)
+	copy(dataToDecrypt[:ciphertextLen], encryptedData[:ciphertextLen])           // ciphertext
+	copy(dataToDecrypt[ciphertextLen:], encryptedData[authTagStart:authTagEnd]) // auth tag
+	
+	c.log.Debugf("Ciphertext (%d bytes): %x", ciphertextLen, encryptedData[:ciphertextLen])
+	c.log.Debugf("Auth tag (8 bytes): %x", encryptedData[authTagStart:authTagEnd])
+	c.log.Debugf("Data to decrypt (%d bytes): %x", len(dataToDecrypt), dataToDecrypt)
+
+	// Self-test: verify CCM cipher works with known data
+	testPlain := []byte("test")
+	testSealed := ccm.Seal(nil, nonce, testPlain, nil)
+	c.log.Debugf("CCM self-test - sealed: %x", testSealed)
+	testOpened, testErr := ccm.Open(nil, nonce, testSealed, nil)
+	if testErr != nil {
+		c.log.Warnf("CCM self-test failed: %v", testErr)
+	} else {
+		c.log.Debugf("CCM self-test passed: %q", string(testOpened))
+	}
+
+	plaintext, err := ccm.Open(nil, nonce, dataToDecrypt, nil)
+	if err != nil {
+		c.log.Warnf("C# style CCM decryption failed: %v", err)
+		c.log.Debugf("Trying firmware2-style nonce construction as fallback")
+		
+		// Try firmware2-style nonce construction (matches initNonce in CryptoEngine.cpp)
+		firmwareNonce := c.generateFirmware2Nonce(packetId, senderNodeId, extraNonce)
+		c.log.Debugf("Firmware2-style nonce: %x", firmwareNonce)
+		
+		plaintext, err = ccm.Open(nil, firmwareNonce, dataToDecrypt, nil)
+		if err != nil {
+			c.log.Errorf("Both C# and firmware2 style CCM decryption failed: %v", err)
+			c.log.Errorf("Input details - C# nonce: %x, firmware2 nonce: %x, data: %x", nonce, firmwareNonce, dataToDecrypt)
+			return nil, fmt.Errorf("CCM decryption failed with both nonce styles: %v", err)
+		}
+		c.log.Infof("Firmware2-style nonce construction succeeded!")
+	}
+
+	c.log.Debugf("Decrypted plaintext (%d bytes): %x", len(plaintext), plaintext)
+	c.log.Debugf("Decrypted as string: %q", string(plaintext))
+
+	return plaintext, nil
+}
+
+// generateSharedKey implements the exact C# GenerateSharedKey method
+func (c *MqttClient) generateSharedKey(privateKeyBytes, publicKeyBytes []byte) ([]byte, error) {
+	// Use X25519 for key exchange
 	curve := ecdh.X25519()
 
-	// Create private key object
 	privateKey, err := curve.NewPrivateKey(privateKeyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key: %v", err)
 	}
 
-	// Create public key object
 	publicKey, err := curve.NewPublicKey(publicKeyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("invalid public key: %v", err)
 	}
 
-	// Perform ECDH key exchange to generate the shared secret
+	// Generate shared secret
 	sharedSecret, err := privateKey.ECDH(publicKey)
 	if err != nil {
-		return nil, fmt.Errorf("ECDH key exchange failed: %v", err)
+		return nil, fmt.Errorf("ECDH failed: %v", err)
 	}
 
-	hash := sha256.Sum256(sharedSecret)
-	return hash[:], nil
+	c.log.Debugf("Raw shared secret: %x", sharedSecret)
+
+	// Hash with SHA256 (firmware2 does this in-place: crypto->hash(shared_key, 32))
+	hashedSharedKey := sha256.Sum256(sharedSecret)
+	c.log.Debugf("Shared key after SHA256: %x", hashedSharedKey[:])
+	return hashedSharedKey[:], nil
 }
 
-type DecodedMeshtastic struct {
-	Topic    string
-	Envelope *meshtastic.ServiceEnvelope
+// generateNonce implements the exact C# GenerateNonce method
+func (c *MqttClient) generateNonce(packetId, senderNodeId, extraNonce uint32) []byte {
+	// C# implementation:
+	// [..BitConverter.GetBytes(packetId), ..BitConverter.GetBytes(extraNonce), ..BitConverter.GetBytes(senderNodeId), 0]
+	nonce := make([]byte, 13)
+
+	// packetId (4 bytes, little-endian)
+	binary.LittleEndian.PutUint32(nonce[0:4], packetId)
+
+	// extraNonce (4 bytes, little-endian)
+	binary.LittleEndian.PutUint32(nonce[4:8], extraNonce)
+
+	// senderNodeId (4 bytes, little-endian)
+	binary.LittleEndian.PutUint32(nonce[8:12], senderNodeId)
+
+	// trailing zero (1 byte)
+	nonce[12] = 0
+
+	c.log.Debugf("Nonce components: packetId=%d, extraNonce=%d, senderNodeId=%d", packetId, extraNonce, senderNodeId)
+
+	return nonce
 }
 
-// Decode attempts to parse a raw MQTT packet and extract a Meshtastic ServiceEnvelope.
-func Decode(raw []byte) (*DecodedMeshtastic, error) {
-	buf := bytes.NewReader(raw)
-
-	// Read the MQTT control packet from the buffer
-	pkt, err := packets.ReadPacket(buf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode MQTT packet: %w", err)
+// generateFirmware2Nonce implements the exact firmware2 initNonce method from CryptoEngine.cpp:259-268
+func (c *MqttClient) generateFirmware2Nonce(packetId, senderNodeId, extraNonce uint32) []byte {
+	// Firmware2 implementation from CryptoEngine.cpp initNonce():
+	// memset(nonce, 0, sizeof(nonce));  // 16-byte nonce, cleared
+	// memcpy(nonce, &packetId, sizeof(uint64_t));  // 8 bytes: packetId as uint64
+	// memcpy(nonce + sizeof(uint64_t), &fromNode, sizeof(uint32_t));  // 4 bytes: fromNode at position 8
+	// if (extraNonce)
+	//     memcpy(nonce + sizeof(uint32_t), &extraNonce, sizeof(uint32_t));  // overwrites bytes 4-7!
+	
+	nonce := make([]byte, 16) // firmware uses 16-byte nonce
+	
+	// packetId as 8-byte uint64 (little-endian) - note: upper 4 bytes will be zero initially
+	binary.LittleEndian.PutUint64(nonce[0:8], uint64(packetId))
+	
+	// senderNodeId (fromNode) at position 8 (4 bytes, little-endian)
+	binary.LittleEndian.PutUint32(nonce[8:12], senderNodeId)
+	
+	// extraNonce overwrites bytes 4-7 (the upper 4 bytes of packetId) if present
+	if extraNonce != 0 {
+		binary.LittleEndian.PutUint32(nonce[4:8], extraNonce)
 	}
-
-	publishPkt, ok := pkt.(*packets.PublishPacket)
-	if !ok {
-		return nil, fmt.Errorf("packet is not a PUBLISH type, got %T", pkt)
-	}
-
-	var env meshtastic.ServiceEnvelope
-	if err := proto.Unmarshal(publishPkt.Payload, &env); err != nil {
-		return nil, fmt.Errorf("failed to decode protobuf payload: %w", err)
-	}
-
-	return &DecodedMeshtastic{
-		Topic:    publishPkt.TopicName,
-		Envelope: &env,
-	}, nil
+	
+	c.log.Debugf("Firmware2 nonce components: packetId=%d (as uint64), senderNodeId=%d, extraNonce=%d", packetId, senderNodeId, extraNonce)
+	
+	// Return first 13 bytes for CCM (L=2 requires 15-L=13 byte nonce)
+	return nonce[:13]
 }
+

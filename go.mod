@@ -13,6 +13,7 @@ require (
 
 require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/pschlump/aesccm v0.0.0-20160925022350-c5df73b5834e // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250115164207-1a7da9e5054f // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect

@@ -3,7 +3,6 @@ package mqtt
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -160,7 +159,7 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 			c.log.Tracef("MeshPacket from %v with PKI encryption on %v", from, topic)
 
 			// PKI Decryption using firmware2-exact implementation
-			pkiDecrypted, pkiErr := c.decryptPKI(packet, encrypted)
+			pkiDecrypted, pkiErr := c.DecryptPKI(packet, encrypted)
 			if pkiErr != nil {
 				c.log.Warnf("PKI decrypt failed for packet from %v on %v: %v", from, topic, pkiErr)
 				return
@@ -282,20 +281,38 @@ func NewAESCipher(key []byte) cipher.Block {
 	return c
 }
 
-func (c *MqttClient) GenerateKeyPair() {
-	curve := ecdh.X25519()
+func (c *MqttClient) DecryptPKI(packet *meshtastic.MeshPacket, encryptedData []byte) ([]byte, error) {
 
-	privateKey, err := curve.GenerateKey(rand.Reader)
-	if err != nil {
-		return
+	toNode, exists := (*c.nodes)[packet.GetTo()]
+	if !exists {
+		return nil, fmt.Errorf("recipient node %d not found in nodeDB", packet.GetTo())
 	}
 
-	publicKeyBytes := privateKey.PublicKey().Bytes()
-	privateKeyBytes := privateKey.Bytes()
+	toPrivKey, err := c.parseHexKey(toNode.PrivKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse recipient private key: %v", err)
+	}
 
-	fmt.Printf("Public Key: %x\n", publicKeyBytes)
-	fmt.Printf("Private Key: %x\n", privateKeyBytes)
+	fromNode, exists := (*c.nodes)[packet.GetFrom()]
+	if !exists {
+		return nil, fmt.Errorf("sender node %d not found in nodeDB", packet.GetFrom())
+	}
 
-	// c.pkiPrivateKey = privateKey
+	fromPubKey, err := c.parseHexKey(fromNode.PubKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse sender public key: %v", err)
+	}
 
+	return c.decryptCurve25519(toPrivKey, fromPubKey, encryptedData, uint32(packet.GetId()), uint32(packet.GetFrom()))
+}
+
+func (c *MqttClient) parseHexKey(hexKey string) ([]byte, error) {
+	keyBytes, err := hex.DecodeString(strings.TrimPrefix(hexKey, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid hex: %v", err)
+	}
+	if len(keyBytes) != 32 {
+		return nil, fmt.Errorf("invalid key length: %d, expected 32", len(keyBytes))
+	}
+	return keyBytes, nil
 }

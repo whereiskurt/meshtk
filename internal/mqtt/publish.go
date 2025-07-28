@@ -10,6 +10,7 @@ import (
 	"time"
 
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"golang.org/x/crypto/curve25519"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -253,4 +254,98 @@ func GenerateChannelHash(name string, key string) int {
 	hKey := xorHash(keyBytes)
 	result := hName ^ hKey
 	return result
+}
+
+// PublishPKIMessage publishes an encrypted message using public key infrastructure
+// Takes the sender's private key and recipient's public key to establish secure communication
+func (c *MqttClient) PublishPKIMessage(from uint32, to uint32, topic string, portNum meshtastic.PortNum, payload []byte, senderPrivateKey []byte, recipientPublicKey []byte) error {
+	// Create Data protobuf
+	data := &meshtastic.Data{
+		Portnum: portNum,
+		Payload: payload,
+	}
+
+	// Serialize the data
+	dataBytes, err := proto.Marshal(data)
+	if err != nil {
+		c.log.Errorf("failed to serialize data: %v", err)
+		return err
+	}
+
+	// Create a random message ID
+	msgID := make([]byte, 4)
+	if _, err := rand.Read(msgID); err != nil {
+		c.log.Errorf("failed to generate message ID: %v", err)
+		return err
+	}
+	messageID := binary.LittleEndian.Uint32(msgID)
+
+	// Encrypt the data using PKI
+	encrypted, err := c.encryptCurve25519(senderPrivateKey, recipientPublicKey, dataBytes, messageID, from)
+	if err != nil {
+		c.log.Errorf("failed to encrypt with PKI: %v", err)
+		return err
+	}
+
+	// Get sender's public key from the private key
+	senderPublicKey := make([]byte, 32)
+	curve25519.ScalarBaseMult((*[32]byte)(senderPublicKey), (*[32]byte)(senderPrivateKey))
+
+	// Create MeshPacket with PKI encrypted data
+	packet := &meshtastic.MeshPacket{
+		From: from,
+		To:   to,
+		Id:   messageID,
+		PayloadVariant: &meshtastic.MeshPacket_Encrypted{
+			Encrypted: encrypted,
+		},
+		PublicKey:    senderPublicKey,
+		PkiEncrypted: true,
+		RxTime:       uint32(time.Now().Unix()),
+		RxRssi:       -2,
+		ViaMqtt:      true,
+		RxSnr:        2,
+		HopLimit:     3,
+	}
+
+	// Create ServiceEnvelope
+	envelope := &meshtastic.ServiceEnvelope{
+		Packet:    packet,
+		GatewayId: fmt.Sprintf("!%08x", from),
+		ChannelId: c.channel,
+	}
+
+	// Serialize the envelope
+	envelopeBytes, err := proto.Marshal(envelope)
+	if err != nil {
+		c.log.Errorf("failed to serialize envelope: %v", err)
+		return err
+	}
+
+	// Attempt to publish the message up to 3 times
+	var lastErr error
+	for range 3 {
+		token := c.client.Publish(topic, 0, false, envelopeBytes)
+
+		// Add timeout to avoid hanging indefinitely
+		select {
+		case <-token.Done():
+		case <-time.After(5 * time.Second):
+			c.log.Warnf("Publish operation timed out after 5 seconds...")
+			lastErr = fmt.Errorf("publish operation timed out")
+			c.Connect()
+			continue
+		}
+
+		if err := token.Error(); err != nil {
+			lastErr = err
+			c.Connect()
+			continue
+		}
+		return nil
+	}
+
+	// If all attempts fail, return the last error
+	c.log.Errorf("failed to publish PKI encrypted message after 3 attempts: %v", lastErr)
+	return lastErr
 }

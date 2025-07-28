@@ -58,8 +58,6 @@ func (f *FleetCmd) publishNodeInfo(idx int, node *mqtt.Node) {
 	if err != nil {
 		f.Config.Log.Warnf("⚠️ Failed to decode public key: %v. Defaulting to empty key.\n", err)
 		pk = []byte{}
-	} else {
-		f.Config.Log.Infof("Successfully decoded public key: %x\n", pk)
 	}
 
 	f.MqttClient[idx].PublishNodeInfo(node.From, ALL, whoamiTopic, node.LongName, node.ShortName, pk, meshtastic.HardwareModel(hwModelNumber), meshtastic.Config_DeviceConfig_CLIENT)

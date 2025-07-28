@@ -3,11 +3,16 @@ package mqtt
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 	"golang.org/x/crypto/curve25519"
@@ -20,17 +25,31 @@ func (c *MqttClient) decryptPKI(packet *meshtastic.MeshPacket, encryptedData []b
 		return nil, fmt.Errorf("recipient node %d not found in nodeDB", packet.GetTo())
 	}
 
-	recipientPrivateKeyBytes, err := c.parseHexKey(recipientNode.PrivKey)
+	// Check if recipient private key is available
+	if recipientNode.PrivKey == "" {
+		return nil, fmt.Errorf("recipient node %d has no private key in nodeDB (node not fully initialized)", packet.GetTo())
+	}
+
+	// Debug: Check key length and format
+	c.log.Debugf("Raw recipient private key string: '%s' (length: %d)", recipientNode.PrivKey, len(recipientNode.PrivKey))
+
+	recipientPrivateKeyBytes, err := c.ParseHexKey(recipientNode.PrivKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse recipient private key: %v", err)
 	}
 
-	senderNode, exists := (*c.nodes)[packet.GetFrom()]
-	if !exists {
-		return nil, fmt.Errorf("sender node %d not found in nodeDB", packet.GetFrom())
+	// Validate key length
+	if len(recipientPrivateKeyBytes) != 32 {
+		return nil, fmt.Errorf("recipient private key has invalid length: %d bytes (expected 32)", len(recipientPrivateKeyBytes))
 	}
 
-	senderPublicKeyBytes, err := c.parseHexKey(senderNode.PubKey)
+	// Fetch sender public key from DEFCON API instead of local nodeDB
+	senderPubKeyHex, err := c.FetchPublicKeyFromDefcon(packet.GetFrom())
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch sender public key from DEFCON API: %v", err)
+	}
+
+	senderPublicKeyBytes, err := c.ParseHexKey(senderPubKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse sender public key: %v", err)
 	}
@@ -49,15 +68,75 @@ func (c *MqttClient) decryptPKI(packet *meshtastic.MeshPacket, encryptedData []b
 	return c.decryptCurve25519(recipientPrivateKeyBytes, senderPublicKeyBytes, encryptedData, uint32(packet.GetId()), uint32(packet.GetFrom()))
 }
 
-func (c *MqttClient) parseHexKey(hexKey string) ([]byte, error) {
-	keyBytes, err := hex.DecodeString(strings.TrimPrefix(hexKey, "0x"))
+func (c *MqttClient) ParseHexKey(hexKey string) ([]byte, error) {
+	// Handle both "0x..." and plain hex formats
+	cleanHex := strings.TrimPrefix(hexKey, "0x")
+
+	// Debug: Log what we're parsing
+	c.log.Debugf("parseHexKey: input='%s' (len=%d), cleaned='%s' (len=%d)", hexKey, len(hexKey), cleanHex, len(cleanHex))
+
+	keyBytes, err := hex.DecodeString(cleanHex)
 	if err != nil {
 		return nil, fmt.Errorf("invalid hex: %v", err)
 	}
 	if len(keyBytes) != 32 {
-		return nil, fmt.Errorf("invalid key length: %d, expected 32", len(keyBytes))
+		return nil, fmt.Errorf("invalid key length: %d, expected 32 (hex string length was %d)", len(keyBytes), len(cleanHex))
 	}
 	return keyBytes, nil
+}
+
+// FetchPublicKeyFromDefcon fetches the public key for a given nodeID from the DEFCON nodes API
+func (c *MqttClient) FetchPublicKeyFromDefcon(nodeID uint32) (string, error) {
+	url := "https://mqtt.defcon.run/map/nodes.json"
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch nodes from DEFCON API: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("DEFCON API returned status %d", resp.StatusCode)
+	}
+
+	var nodes map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
+		return "", fmt.Errorf("failed to decode JSON response: %v", err)
+	}
+
+	// Convert nodeID to string for map lookup
+	nodeIDStr := strconv.FormatUint(uint64(nodeID), 10)
+
+	nodeData, exists := nodes[nodeIDStr]
+	if !exists {
+		return "", fmt.Errorf("node %d not found in DEFCON nodes API", nodeID)
+	}
+
+	nodeMap, ok := nodeData.(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("invalid node data format for node %d", nodeID)
+	}
+
+	pubKey, exists := nodeMap["publicKey"]
+	if !exists {
+		return "", fmt.Errorf("PubKey not found for node %d", nodeID)
+	}
+
+	pubKeyStr, ok := pubKey.(string)
+	if !ok {
+		return "", fmt.Errorf("PubKey is not a string for node %d", nodeID)
+	}
+
+	if pubKeyStr == "" {
+		return "", fmt.Errorf("PubKey is empty for node %d", nodeID)
+	}
+
+	c.log.Debugf("Fetched PubKey from DEFCON API for node %d: %s", nodeID, pubKeyStr)
+	return pubKeyStr, nil
 }
 
 // decryptCurve25519 exactly implements CryptoEngine::decryptCurve25519 from the firmware
@@ -72,7 +151,8 @@ func (c *MqttClient) decryptCurve25519(recipientPrivateKey, senderPublicKey, enc
 	// Extract auth and extraNonce from the last 12 bytes
 	// Firmware: const uint8_t *auth = bytes + numBytes - 12;
 	authStart := numBytes - 12
-	auth := encryptedBytes[authStart : authStart+8] // First 8 bytes of last 12
+	auth := make([]byte, 8)
+	copy(auth, encryptedBytes[authStart:authStart+8]) // Copy to avoid shared memory
 
 	// Firmware: memcpy(&extraNonce, auth + 8, sizeof(uint32_t));
 	extraNonce := binary.LittleEndian.Uint32(encryptedBytes[authStart+8:])
@@ -98,7 +178,8 @@ func (c *MqttClient) decryptCurve25519(recipientPrivateKey, senderPublicKey, enc
 	c.log.Debugf("Generated nonce: %x", nonce)
 
 	// Extract ciphertext (everything except the last 12 bytes)
-	ciphertext := encryptedBytes[:numBytes-12]
+	ciphertext := make([]byte, numBytes-12)
+	copy(ciphertext, encryptedBytes[:numBytes-12]) // Copy to avoid shared memory
 	c.log.Debugf("Ciphertext (%d bytes): %x", len(ciphertext), ciphertext)
 	c.log.Debugf("Auth tag (8 bytes): %x", auth)
 
@@ -138,11 +219,11 @@ func (c *MqttClient) aesCCMAD(key, nonce, ciphertext, authTag []byte) ([]byte, e
 	const L = 2
 	const M = 8
 
-	c.log.Debugf("=== Firmware aes_ccm_ad ===")
-	c.log.Debugf("Key: %x", key)
-	c.log.Debugf("Nonce: %x", nonce)
-	c.log.Debugf("Ciphertext: %x", ciphertext)
-	c.log.Debugf("Auth tag: %x", authTag)
+	//c.log.Debugf("=== Firmware aes_ccm_ad ===")
+	//c.log.Debugf("Key: %x", key)
+	//c.log.Debugf("Nonce: %x", nonce)
+	//c.log.Debugf("Ciphertext: %x", ciphertext)
+	//c.log.Debugf("Auth tag: %x", authTag)
 
 	// Step 1: Decrypt auth tag with S_0 (firmware: aes_ccm_decr_auth)
 	decryptedAuthTag, err := c.decryptAuthTag(block, nonce, authTag)
@@ -162,8 +243,8 @@ func (c *MqttClient) aesCCMAD(key, nonce, ciphertext, authTag []byte) ([]byte, e
 		return nil, fmt.Errorf("authentication failed: %v", err)
 	}
 
-	c.log.Debugf("=== PKI Decryption SUCCESS ===")
-	c.log.Debugf("Plaintext: %x", plaintext)
+	//c.log.Debugf("=== PKI Decryption SUCCESS ===")
+	//c.log.Debugf("Plaintext: %x", plaintext)
 
 	return plaintext, nil
 }
@@ -186,8 +267,8 @@ func (c *MqttClient) decryptAuthTag(block cipher.Block, nonce, encryptedAuthTag 
 		decryptedAuthTag[i] = encryptedAuthTag[i] ^ s0[i]
 	}
 
-	c.log.Debugf("S_0 keystream: %x", s0)
-	c.log.Debugf("Decrypted auth tag: %x", decryptedAuthTag)
+	//c.log.Debugf("S_0 keystream: %x", s0)
+	//c.log.Debugf("Decrypted auth tag: %x", decryptedAuthTag)
 
 	return decryptedAuthTag, nil
 }
@@ -223,7 +304,7 @@ func (c *MqttClient) decryptCiphertext(block cipher.Block, nonce, ciphertext []b
 		counter++
 	}
 
-	c.log.Debugf("Decrypted plaintext: %x", plaintext)
+	//c.log.Debugf("Decrypted plaintext: %x", plaintext)
 	return plaintext, nil
 }
 
@@ -238,13 +319,13 @@ func (c *MqttClient) verifyAuthentication(block cipher.Block, nonce, plaintext, 
 	// CRITICAL: Use ciphertext length for decryption (firmware line 173)
 	binary.BigEndian.PutUint16(b0[14:16], uint16(ciphertextLen))
 
-	c.log.Debugf("B_0 block: %x", b0)
+	//c.log.Debugf("B_0 block: %x", b0)
 
 	// X_1 = E(K, B_0)
 	x := make([]byte, 16)
 	block.Encrypt(x, b0)
 
-	c.log.Debugf("X after B_0: %x", x)
+	//c.log.Debugf("X after B_0: %x", x)
 
 	// Process plaintext blocks (firmware: aes_ccm_auth)
 	// CRITICAL: Firmware line 174: aes_ccm_auth(plain, crypt_len, x)
@@ -273,11 +354,12 @@ func (c *MqttClient) verifyAuthentication(block cipher.Block, nonce, plaintext, 
 	}
 
 	// Extract computed auth tag (first 8 bytes)
-	computedAuthTag := x[:8]
+	computedAuthTag := make([]byte, 8)
+	copy(computedAuthTag, x[:8]) // Copy to avoid shared memory
 
-	c.log.Debugf("Final MAC block: %x", x)
-	c.log.Debugf("Computed auth tag: %x", computedAuthTag)
-	c.log.Debugf("Expected auth tag: %x", expectedAuthTag)
+	//c.log.Debugf("Final MAC block: %x", x)
+	//c.log.Debugf("Computed auth tag: %x", computedAuthTag)
+	//c.log.Debugf("Expected auth tag: %x", expectedAuthTag)
 
 	// Constant-time comparison (firmware: constant_time_compare)
 	if !constantTimeCompare(computedAuthTag, expectedAuthTag) {
@@ -299,4 +381,185 @@ func constantTimeCompare(a, b []byte) bool {
 	}
 
 	return result == 0
+}
+
+// encryptCurve25519 implements PKI encryption using X25519 and AES-CCM
+func (c *MqttClient) encryptCurve25519(senderPrivateKey, recipientPublicKey, plaintext []byte, packetId, fromNode uint32) ([]byte, error) {
+	// Calculate shared secret using X25519
+	sharedSecret, err := curve25519.X25519(senderPrivateKey, recipientPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("X25519 failed: %v", err)
+	}
+
+	// Hash the shared secret with SHA256
+	sharedKey := sha256.Sum256(sharedSecret)
+
+	////c.log.Debugf("Raw shared secret: %x", sharedSecret)
+	////c.log.Debugf("Shared key: %x", sharedKey[:])
+
+	// Generate random extraNonce
+	extraNonceBuf := make([]byte, 4)
+	if _, err := rand.Read(extraNonceBuf); err != nil {
+		return nil, fmt.Errorf("failed to generate extraNonce: %v", err)
+	}
+	extraNonce := binary.LittleEndian.Uint32(extraNonceBuf)
+
+	// Initialize nonce
+	nonce := c.initNonce(fromNode, uint64(packetId), extraNonce)
+	//c.log.Debugf("Generated nonce: %x", nonce)
+
+	// Encrypt using AES-CCM
+	ciphertext, authTag, err := c.aesCCMEncrypt(sharedKey[:], nonce, plaintext)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build encrypted packet: ciphertext + authTag + extraNonce
+	encryptedData := make([]byte, len(ciphertext)+8+4) // ciphertext + 8-byte auth + 4-byte extraNonce
+	copy(encryptedData, ciphertext)
+	copy(encryptedData[len(ciphertext):], authTag)
+	binary.LittleEndian.PutUint32(encryptedData[len(ciphertext)+8:], extraNonce)
+
+	//c.log.Debugf("Encrypted data (%d bytes): %x", len(encryptedData), encryptedData)
+
+	return encryptedData, nil
+}
+
+// aesCCMEncrypt implements AES-CCM encryption
+func (c *MqttClient) aesCCMEncrypt(key, nonce, plaintext []byte) ([]byte, []byte, error) {
+	// Create AES cipher
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("AES cipher creation failed: %v", err)
+	}
+
+	// Constants matching firmware: L=2, M=8
+	const L = 2
+	const M = 8
+
+	//c.log.Debugf("=== AES-CCM Encrypt ===")
+	//c.log.Debugf("Key: %x", key)
+	//c.log.Debugf("Nonce: %x", nonce)
+	//c.log.Debugf("Plaintext: %x", plaintext)
+
+	// Step 1: Generate authentication tag
+	authTag, err := c.generateAuthTag(block, nonce, plaintext)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Step 2: Encrypt plaintext using CTR mode
+	ciphertext, err := c.encryptCTR(block, nonce, plaintext)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Step 3: Encrypt auth tag with S_0
+	encryptedAuthTag, err := c.encryptAuthTag(block, nonce, authTag)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	//c.log.Debugf("Ciphertext: %x", ciphertext)
+	//c.log.Debugf("Encrypted auth tag: %x", encryptedAuthTag)
+
+	return ciphertext, encryptedAuthTag, nil
+}
+
+// generateAuthTag generates the authentication tag for AES-CCM
+func (c *MqttClient) generateAuthTag(block cipher.Block, nonce, plaintext []byte) ([]byte, error) {
+	// Build B_0 block
+	b0 := make([]byte, 16)
+	// Flags = (aad_len ? 0x40 : 0) | (((M-2)/2) << 3) | (L-1)
+	// aad_len=0, M=8, L=2 → Flags = 0 | (3 << 3) | 1 = 25 = 0x19
+	b0[0] = 0x19
+	copy(b0[1:], nonce) // 13-byte nonce
+	binary.BigEndian.PutUint16(b0[14:16], uint16(len(plaintext)))
+
+	// X_1 = E(K, B_0)
+	x := make([]byte, 16)
+	block.Encrypt(x, b0)
+
+	//c.log.Debugf("B_0 block: %x", b0)
+	//c.log.Debugf("X after B_0: %x", x)
+
+	// Process plaintext blocks
+	for i := 0; i < len(plaintext); i += 16 {
+		// Create block with padding
+		tempBlock := make([]byte, 16)
+		end := i + 16
+		if end > len(plaintext) {
+			end = len(plaintext)
+		}
+		copy(tempBlock, plaintext[i:end])
+		// Remaining bytes are already zero (proper padding)
+
+		// XOR with X
+		for j := 0; j < 16; j++ {
+			x[j] ^= tempBlock[j]
+		}
+
+		// Encrypt X
+		block.Encrypt(x, x)
+	}
+
+	// Return first 8 bytes as auth tag
+	return x[:8], nil
+}
+
+// encryptCTR encrypts plaintext using CTR mode
+func (c *MqttClient) encryptCTR(block cipher.Block, nonce, plaintext []byte) ([]byte, error) {
+	ciphertext := make([]byte, len(plaintext))
+
+	// CTR mode with counter starting at 1
+	a := make([]byte, 16)
+	a[0] = 1           // L-1 = 2-1 = 1
+	copy(a[1:], nonce) // 13-byte nonce
+
+	counter := 1
+	for i := 0; i < len(plaintext); i += 16 {
+		// Set counter
+		binary.BigEndian.PutUint16(a[14:16], uint16(counter))
+
+		// Generate keystream S_i
+		s := make([]byte, 16)
+		block.Encrypt(s, a)
+
+		// XOR with plaintext to get ciphertext
+		end := i + 16
+		if end > len(plaintext) {
+			end = len(plaintext)
+		}
+
+		for j := i; j < end; j++ {
+			ciphertext[j] = plaintext[j] ^ s[j-i]
+		}
+
+		counter++
+	}
+
+	return ciphertext, nil
+}
+
+// encryptAuthTag encrypts the auth tag with S_0
+func (c *MqttClient) encryptAuthTag(block cipher.Block, nonce, authTag []byte) ([]byte, error) {
+	// Build A_0 for S_0 generation
+	a0 := make([]byte, 16)
+	a0[0] = 1                                // L-1 = 2-1 = 1
+	copy(a0[1:], nonce)                      // 13-byte nonce
+	binary.BigEndian.PutUint16(a0[14:16], 0) // counter = 0
+
+	// S_0 = E(K, A_0)
+	s0 := make([]byte, 16)
+	block.Encrypt(s0, a0)
+
+	// Encrypt: encrypted_auth = auth XOR S_0
+	encryptedAuthTag := make([]byte, 8)
+	for i := 0; i < 8; i++ {
+		encryptedAuthTag[i] = authTag[i] ^ s0[i]
+	}
+
+	//c.log.Debugf("S_0 keystream: %x", s0)
+
+	return encryptedAuthTag, nil
 }

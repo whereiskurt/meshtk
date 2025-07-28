@@ -123,17 +123,9 @@ func (f *FleetCmd) FindNodes(to, from uint32) (int, *internal.Node, int, *intern
 	var toNode, fromNode *internal.Node
 	var toFleetIdx, fromFleetIdx int = -1, -1 // Initialize with -1 to indicate "not found"
 
-	f.Config.Log.Tracef("Find nodes for to=%d, from=%d", to, from)
-
-	f.Config.Log.Tracef("Total Fleets: %d", len(f.Nodes))
-
 	for fleetIdx := range f.Nodes {
 		fleetNodes := f.Nodes[fleetIdx]
-		f.Config.Log.Tracef("Total Fleet Nodes: %d", len(fleetNodes))
 		for nodeID, node := range fleetNodes {
-			f.Config.Log.Tracef("Fleet[%d] NodeID: %d, Node: %+v", fleetIdx, nodeID, node)
-			f.Config.Log.Tracef("to[%d][%d]", to, nodeID)
-			f.Config.Log.Tracef("from[%d][%d]", from, nodeID)
 			if nodeID == to {
 				toNode = node
 				toFleetIdx = fleetIdx
@@ -159,6 +151,61 @@ func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
 	return done
 }
 
+func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, reply string) {
+	// Get the nodes to access their keys
+	_, toNode, _, _ := n.FindNodes(to, from)
+
+	if toNode == nil {
+		n.Config.Log.Errorf("Failed to find nodes: to=%d, from=%d", to, from)
+		return
+	}
+
+	// The 'to' node (receiver of original message) is now the sender of the reply
+	senderPrivKey := toNode.PrivKey
+
+	senderPubKeyHex, err := n.MqttClient[toFleetIdx].FetchPublicKeyFromDefcon(from)
+	if err != nil {
+		n.Config.Log.Errorf("failed to fetch sender public key from DEFCON API: %v", err)
+		return
+	}
+
+	// The 'from' node (sender of original message) is now the receiver of the reply
+	recipientPubKeyBytes, err := n.MqttClient[toFleetIdx].ParseHexKey(senderPubKeyHex)
+	if err != nil {
+		n.Config.Log.Errorf("Failed to parse recipient public key: %v", err)
+		return
+	}
+
+	// n.Config.Log.Tracef("Sending PKI reply from node %d to node %d", to, from)
+	// n.Config.Log.Tracef("Sender private key: %s", senderPrivKey)
+	// n.Config.Log.Tracef("Recipient public key: %s", recipientPubKey)
+
+	// Parse the hex keys
+	senderPrivKeyBytes, err := n.MqttClient[toFleetIdx].ParseHexKey(senderPrivKey)
+	if err != nil {
+		n.Config.Log.Errorf("Failed to parse sender private key: %v", err)
+		return
+	}
+
+	// Send the PKI encrypted reply
+	// Note: from and to are swapped for the reply
+	err = n.MqttClient[toFleetIdx].PublishPKIMessage(
+		to,   // sender of reply (was receiver of original message)
+		from, // receiver of reply (was sender of original message)
+		topic,
+		meshtastic.PortNum_TEXT_MESSAGE_APP,
+		[]byte(reply),
+		senderPrivKeyBytes,
+		recipientPubKeyBytes,
+	)
+
+	if err != nil {
+		n.Config.Log.Errorf("Failed to send PKI reply: %v", err)
+	} else {
+		n.Config.Log.Infof("Successfully sent PKI reply from %d to %d: %s", to, from, reply)
+	}
+}
+
 func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
 	// Skip broadcast message
 	if to == 4294967295 {
@@ -166,13 +213,23 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 	}
 
 	toFleetIdx, _, _, _ := n.FindNodes(to, from)
-
+	if toFleetIdx == -1 {
+		n.Config.Log.Errorf("Failed to find fleet index for node %d", to)
+		return
+	}
 	// toNode := n.Nodes[toFleetIdx][to]
 	fleetConfig := n.Config.Fleet[toFleetIdx]
 
 	switch portNum {
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
 		var hasOTP = false
+
+		// Check if OTP handler exists for this fleet
+		if n.OTPHandler[toFleetIdx] == nil {
+			n.Config.Log.Warnf("No OTP handler configured for fleet %d", toFleetIdx)
+			return
+		}
+
 		totps, err := n.OTPHandler[toFleetIdx].CalculateTOTPWithAdjacentPeriods()
 		if err != nil {
 			n.Config.Log.Errorf("Failed to calculate TOTP: %v", err)
@@ -191,12 +248,14 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 		if hasOTP {
 			if chatBot, ok := chatBotMap["otp_success"]; ok {
 				reply := chatBot.Message[0]
-				n.Config.Log.Infof("BEGIN PKI Reply logic here: %+v - %s", chatBot.Type, reply)
+				n.Config.Log.Infof("PKI Reply for OTP success: %+v - %s", chatBot.Type, reply)
+				n.sendPKIReply(toFleetIdx, to, from, topic, reply)
 			}
 		} else {
 			if chatBot, ok := chatBotMap["otp_failure"]; ok {
 				reply := chatBot.Message[0]
-				n.Config.Log.Infof("BEGIN PKI Reply logic here: %+v - %s", chatBot.Type, reply)
+				n.Config.Log.Infof("PKI Reply for OTP failure: %+v - %s", chatBot.Type, reply)
+				n.sendPKIReply(toFleetIdx, to, from, topic, reply)
 			}
 		}
 

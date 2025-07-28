@@ -253,7 +253,16 @@ func (node *Node) UpdateUser(from uint32, longName, shortName, hwModel, role str
 		node.PubKey = fmt.Sprintf("0x%x", pubkey)
 	}
 	if len(privkey) > 0 {
+		oldKey := node.PrivKey
 		node.PrivKey = fmt.Sprintf("0x%x", privkey)
+		// Debug: Track when private keys are set
+		fmt.Printf("DEBUG: UpdateUser setting PrivKey for node %d:\n", from)
+		fmt.Printf("  OLD: '%s'\n", oldKey)
+		fmt.Printf("  INPUT bytes (%d): %x\n", len(privkey), privkey)
+		fmt.Printf("  NEW: '%s'\n", node.PrivKey)
+		if oldKey != "" && oldKey != node.PrivKey {
+			fmt.Printf("  *** KEY CHANGED! ***\n")
+		}
 	}
 }
 

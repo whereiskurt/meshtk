@@ -106,9 +106,10 @@ type Movement struct {
 }
 
 type ChatBot struct {
-	Type        string   `json:"Type" default:"greeting"`
-	Message     []string `json:"Message" default:"[]"`
-	RequiresOTP bool     `json:"RequiresOTP" default:"false"`
+	Type            string   `json:"Type" default:"greeting"`
+	Message         []string `json:"Message" default:"[]"`
+	RequiresOTP     bool     `json:"RequiresOTP" default:"false"`
+	UnlocksChatMode bool     `json:"UnlocksChatMode" default:"false"`
 }
 
 type Mqtt struct {

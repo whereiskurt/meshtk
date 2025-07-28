@@ -167,33 +167,38 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 
 	toFleetIdx, _, _, _ := n.FindNodes(to, from)
 
-	toNode := n.Nodes[toFleetIdx][to]
+	// toNode := n.Nodes[toFleetIdx][to]
 	fleetConfig := n.Config.Fleet[toFleetIdx]
 
 	switch portNum {
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
-
-		totps, _ := n.OTPHandler[toFleetIdx].CalculateTOTPWithAdjacentPeriods()
+		var hasOTP = false
+		totps, err := n.OTPHandler[toFleetIdx].CalculateTOTPWithAdjacentPeriods()
+		if err != nil {
+			n.Config.Log.Errorf("Failed to calculate TOTP: %v", err)
+			return
+		}
 		message := string(payload)
 		if strings.Contains(message, totps["current"]) || strings.Contains(message, totps["previous"]) || strings.Contains(message, totps["next"]) {
-			n.Config.Log.Infof("TOTP found in message for node[%s]: %s", toNode.LongName, message)
-			n.Config.Log.Infof("BEGIN PKI Reply logic here: %+v", fleetConfig)
-
-		} else {
-			n.Config.Log.Infof("TOTP NOT found in message for node[%s]: %s", toNode.LongName, message)
+			hasOTP = true
 		}
-		// if err == nil {
-		// 	n.Config.Log.Infof("TOTP for node[%d]: Current: %s (valid for %s more seconds)", fromFleetIdx, totps["current"], totps["remainingSeconds"])
-		// 	n.Config.Log.Infof("TOTP for node[%d]: Previous: %s, Next: %s", fromFleetIdx, totps["previous"], totps["next"])
-		// 	n.Config.Log.Infof("TOTP for node[%d]: Period: %s seconds, Current period started: %s", fromFleetIdx, totps["period"], totps["currentPeriodStart"])
-		// } else {
-		// 	n.Config.Log.Errorf("Failed to calculate TOTP: %v", err)
-		// }
 
-		// if n.Config.VerboseLevel == "debug" || n.Config.VerboseLevel == "trace" {
-		// 	n.Config.Log.Tracef("FleetNodeHandler: to=%v, from=%v, topic=%s, portNum=%s, lkpFrom=%v, lkpTo=%v", to, from, topic, portNum, toFleetIdx, fromFleetIdx)
-		// 	n.Config.Log.Tracef(`{to: '%v', from: '%v', topic: '%v', message: '%s', lkpFrom: '%v', lkpTo: '%v'}`, to, from, topic, payload, toFleetIdx, fromFleetIdx)
-		// }
+		chatBotMap := make(map[string]config.ChatBot)
+		for _, cb := range fleetConfig.ChatBot {
+			chatBotMap[cb.Type] = cb
+		}
+
+		if hasOTP {
+			if chatBot, ok := chatBotMap["otp_success"]; ok {
+				reply := chatBot.Message[0]
+				n.Config.Log.Infof("BEGIN PKI Reply logic here: %+v - %s", chatBot.Type, reply)
+			}
+		} else {
+			if chatBot, ok := chatBotMap["otp_failure"]; ok {
+				reply := chatBot.Message[0]
+				n.Config.Log.Infof("BEGIN PKI Reply logic here: %+v - %s", chatBot.Type, reply)
+			}
+		}
 
 	default:
 		// if n.Config.VerboseLevel == "debug" || n.Config.VerboseLevel == "trace" {

@@ -81,6 +81,7 @@ type Fleet struct {
 	RampSteadySecs         int        `default:"60"`
 	RampDownSecs           int        `default:"120"`
 	Movement               []Movement `json:"Movement"`
+	ChatBot                []ChatBot  `json:"ChatBot"`
 	ShortNameTmpl          string     `default:"M{fleetId}{nodeId}"`
 	LongNameTmpl           string     `default:"mtk-{{.fleetId}}{{.nodeId}}-{{shortseed}}"`
 	OtpUrl                 string     `default:""`
@@ -102,6 +103,12 @@ type Movement struct {
 	GPXFile   string       `default:"./gpx/route.gpx"`
 	GPXCoords []Coordinate `default:"[]"`
 	Travel    string       `default:"point-to-point"`
+}
+
+type ChatBot struct {
+	Type        string   `json:"Type" default:"greeting"`
+	Message     []string `json:"Message" default:"[]"`
+	RequiresOTP bool     `json:"RequiresOTP" default:"false"`
 }
 
 type Mqtt struct {

@@ -438,18 +438,57 @@ func (n *FleetCmd) callOpenAIGPT(message string, apiKey string, systemPrompt str
 }
 
 // splitIntoChunks splits a string into chunks of specified size
+// It attempts to break at whitespace boundaries to avoid splitting words
 func (n *FleetCmd) splitIntoChunks(text string, chunkSize int) []string {
 	if len(text) == 0 {
 		return []string{}
 	}
 
 	var chunks []string
-	for i := 0; i < len(text); i += chunkSize {
-		end := i + chunkSize
-		if end > len(text) {
-			end = len(text)
+	remaining := text
+	
+	for len(remaining) > 0 {
+		// If the remaining text fits in one chunk, add it and we're done
+		if len(remaining) <= chunkSize {
+			chunks = append(chunks, remaining)
+			break
 		}
-		chunks = append(chunks, text[i:end])
+		
+		// Find the last whitespace within the chunk size limit
+		chunkEnd := chunkSize
+		for i := chunkSize - 1; i >= 0; i-- {
+			if remaining[i] == ' ' || remaining[i] == '\n' || remaining[i] == '\t' {
+				chunkEnd = i
+				break
+			}
+		}
+		
+		// If no whitespace found, fall back to the original behavior
+		// This handles cases where a single word is longer than chunkSize
+		if chunkEnd == chunkSize {
+			// Check if we're at the start and there's no whitespace at all
+			// in the first chunkSize characters
+			foundSpace := false
+			for i := 0; i < chunkSize && i < len(remaining); i++ {
+				if remaining[i] == ' ' || remaining[i] == '\n' || remaining[i] == '\t' {
+					foundSpace = true
+					break
+				}
+			}
+			if !foundSpace {
+				// No whitespace found, just break at chunk size
+				chunks = append(chunks, remaining[:chunkSize])
+				remaining = remaining[chunkSize:]
+				continue
+			}
+		}
+		
+		// Extract the chunk and trim any trailing whitespace
+		chunk := strings.TrimRight(remaining[:chunkEnd], " \n\t")
+		chunks = append(chunks, chunk)
+		
+		// Move past the chunk and any leading whitespace
+		remaining = strings.TrimLeft(remaining[chunkEnd:], " \n\t")
 	}
 
 	return chunks

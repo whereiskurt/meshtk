@@ -25,10 +25,11 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 	h.Write([]byte(fmt.Sprintf("-%d", num))) // Add node index to make each node's seed unique
 	nodeID := uint32(h.Sum64())              // Deterministic node ID
 
-	// Create a separate seed for key generation using the node ID
+	// Generate keys directly from fleet.Seed + nodeIndex (NOT nodeID)
+	// This ensures 100% deterministic keys based only on fleet.Seed + node position
 	keyH := fnv.New64a()
 	keyH.Write([]byte(fleet.Seed))
-	keyH.Write([]byte(fmt.Sprintf("-keys-%d", nodeID))) // Seed keys based on node ID
+	keyH.Write([]byte(fmt.Sprintf("-node-%d", num))) // Use original node index, not derived nodeID
 	keySeedValue := int64(keyH.Sum64())
 
 	keyRand := rand.New(rand.NewSource(keySeedValue))
@@ -40,7 +41,8 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 	propRand := rand.New(rand.NewSource(keySeedValue + 1000)) // Different seed for properties
 	
 	// Debug: Check the raw key bytes from ECDH
-	fmt.Printf("DEBUG: Generated keys for node %d:\n", nodeID)
+	fmt.Printf("DEBUG: Generated keys for nodeIndex=%d, nodeID=%d:\n", num, nodeID)
+	fmt.Printf("  Seed: %s-node-%d\n", fleet.Seed, num)
 	fmt.Printf("  PublicKeyBytes (%d): %x\n", len(publicKeyBytes), publicKeyBytes)
 	fmt.Printf("  PrivateKeyBytes (%d): %x\n", len(privateKeyBytes), privateKeyBytes)
 

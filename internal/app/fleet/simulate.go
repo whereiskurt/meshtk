@@ -33,11 +33,15 @@ func (f *FleetCmd) simulate(idx int) {
 		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Creating Fleet[%d] with %d nodes...\n", idx, totalNodes)))
 		f.makeFleet(idx, nodeIDs, randIndices)
 	} else {
-		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Reusing Fleet[%d] with %d nodes...\n", idx, len(f.Nodes[idx]))))
-		for i := range totalNodes {
-			node := f.makeNode(i, totalNodes, fleet, idx)
-			f.Nodes[idx][node.From] = node
-			nodeIDs[randIndices[i]] = node.From
+		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Reusing Fleet[%d] with %d existing nodes...\n", idx, len(f.Nodes[idx]))))
+		// Actually reuse existing nodes instead of creating new ones
+		i := 0
+		for nodeID := range f.Nodes[idx] {
+			if i >= totalNodes {
+				break
+			}
+			nodeIDs[randIndices[i]] = nodeID
+			i++
 		}
 	}
 	f.rampUp(idx, nodeIDs, randIndices)

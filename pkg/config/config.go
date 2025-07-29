@@ -85,6 +85,8 @@ type Fleet struct {
 	ShortNameTmpl          string     `default:"M{fleetId}{nodeId}"`
 	LongNameTmpl           string     `default:"mtk-{{.fleetId}}{{.nodeId}}-{{shortseed}}"`
 	OtpUrl                 string     `default:""`
+	OpenAIKey              string     `default:""`
+	OpenAISystemPrompt     string     `default:""`
 }
 
 type Coordinate struct {

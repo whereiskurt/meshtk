@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed *.gpx dc33/*.gpx
+//go:embed dc33/*.gpx ghosts/*.gpx
 var EmbeddedGPXFiles embed.FS
 
 // GetEmbeddedGPXContent returns the content of an embedded GPX file by name

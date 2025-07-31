@@ -39,12 +39,6 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 	
 	// Create another random generator for other node properties
 	propRand := rand.New(rand.NewSource(keySeedValue + 1000)) // Different seed for properties
-	
-	// Debug: Check the raw key bytes from ECDH
-	fmt.Printf("DEBUG: Generated keys for nodeIndex=%d, nodeID=%d:\n", num, nodeID)
-	fmt.Printf("  Seed: %s-node-%d\n", fleet.Seed, num)
-	fmt.Printf("  PublicKeyBytes (%d): %x\n", len(publicKeyBytes), publicKeyBytes)
-	fmt.Printf("  PrivateKeyBytes (%d): %x\n", len(privateKeyBytes), privateKeyBytes)
 
 	shortSeed := strings.ToLower(fleet.Seed)
 	if len(shortSeed) > 5 {

@@ -322,11 +322,9 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 	}
 }
 
-// handleGPTChat calls the OpenAI GPT API and sends chunked responses back
 func (n *FleetCmd) handleGPTChat(toFleetIdx int, to, from uint32, topic string, userMessage string, apiKey string, systemPrompt string) {
 	n.Config.Log.Infof("Calling GPT-4 with message: %s", userMessage)
 
-	// Call OpenAI API
 	gptResponse, err := n.callOpenAIGPT(userMessage, apiKey, systemPrompt)
 	if err != nil {
 		n.Config.Log.Errorf("Failed to call GPT: %v", err)
@@ -334,28 +332,21 @@ func (n *FleetCmd) handleGPTChat(toFleetIdx int, to, from uint32, topic string, 
 		return
 	}
 
-	// Split response into 60-character chunks
 	chunks := n.splitIntoChunks(gptResponse, 60)
 
-	// Send each chunk as a separate PKI reply
 	for i, chunk := range chunks {
-		// Add a small delay between chunks to avoid overwhelming the mesh
-		if i > 0 {
+		if i == 0 {
 			time.Sleep(500 * time.Millisecond)
 		}
-		n.Config.Log.Infof("Sending GPT chunk %d/%d: %s", i+1, len(chunks), chunk)
 		n.sendPKIReply(toFleetIdx, to, from, topic, chunk)
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
-// callOpenAIGPT makes the actual API call to OpenAI
 func (n *FleetCmd) callOpenAIGPT(message string, apiKey string, systemPrompt string) (string, error) {
-	// Use default system prompt if none provided
 	if systemPrompt == "" {
 		systemPrompt = "You are a helpful assistant communicating over a mesh network. Keep responses concise and under 240 characters total."
 	}
-
-	n.Config.Log.Debugf("Using system prompt: %s", systemPrompt)
 
 	// Build messages array with system prompt
 	messages := []map[string]string{
@@ -369,7 +360,6 @@ func (n *FleetCmd) callOpenAIGPT(message string, apiKey string, systemPrompt str
 		},
 	}
 
-	// Use GPT-4o-mini for cost efficiency
 	requestBody := map[string]interface{}{
 		"model":       "gpt-4o-mini",
 		"messages":    messages,
@@ -382,7 +372,6 @@ func (n *FleetCmd) callOpenAIGPT(message string, apiKey string, systemPrompt str
 		return "", fmt.Errorf("failed to marshal request: %v", err)
 	}
 
-	// Create HTTP request to OpenAI API endpoint
 	apiEndpoint := "https://api.openai.com/v1/chat/completions"
 	req, err := http.NewRequest("POST", apiEndpoint, bytes.NewBuffer(jsonBody))
 	if err != nil {
@@ -392,7 +381,6 @@ func (n *FleetCmd) callOpenAIGPT(message string, apiKey string, systemPrompt str
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
 
-	// Make the request
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -400,7 +388,6 @@ func (n *FleetCmd) callOpenAIGPT(message string, apiKey string, systemPrompt str
 	}
 	defer resp.Body.Close()
 
-	// Read response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %v", err)
@@ -410,7 +397,6 @@ func (n *FleetCmd) callOpenAIGPT(message string, apiKey string, systemPrompt str
 		return "", fmt.Errorf("GPT API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response
 	var response struct {
 		Choices []struct {
 			Message struct {
@@ -446,14 +432,14 @@ func (n *FleetCmd) splitIntoChunks(text string, chunkSize int) []string {
 
 	var chunks []string
 	remaining := text
-	
+
 	for len(remaining) > 0 {
 		// If the remaining text fits in one chunk, add it and we're done
 		if len(remaining) <= chunkSize {
 			chunks = append(chunks, remaining)
 			break
 		}
-		
+
 		// Find the last whitespace within the chunk size limit
 		chunkEnd := chunkSize
 		for i := chunkSize - 1; i >= 0; i-- {
@@ -462,7 +448,7 @@ func (n *FleetCmd) splitIntoChunks(text string, chunkSize int) []string {
 				break
 			}
 		}
-		
+
 		// If no whitespace found, fall back to the original behavior
 		// This handles cases where a single word is longer than chunkSize
 		if chunkEnd == chunkSize {
@@ -482,11 +468,11 @@ func (n *FleetCmd) splitIntoChunks(text string, chunkSize int) []string {
 				continue
 			}
 		}
-		
+
 		// Extract the chunk and trim any trailing whitespace
 		chunk := strings.TrimRight(remaining[:chunkEnd], " \n\t")
 		chunks = append(chunks, chunk)
-		
+
 		// Move past the chunk and any leading whitespace
 		remaining = strings.TrimLeft(remaining[chunkEnd:], " \n\t")
 	}

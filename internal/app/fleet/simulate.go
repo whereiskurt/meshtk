@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"hash/fnv"
 	"math/rand"
 	"time"
 )
@@ -29,19 +30,41 @@ func (f *FleetCmd) simulate(idx int) {
 	}
 
 	// Initialize or reuse fleet nodes
-	if len(f.Nodes[idx]) < totalNodes {
+	if len(f.Nodes[idx]) == 0 {
+		// No nodes exist, create them
 		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Creating Fleet[%d] with %d nodes...\n", idx, totalNodes)))
 		f.makeFleet(idx, nodeIDs, randIndices)
 	} else {
+		// Nodes already exist from database, reuse them
 		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Reusing Fleet[%d] with %d existing nodes...\n", idx, len(f.Nodes[idx]))))
-		// Actually reuse existing nodes instead of creating new ones
-		i := 0
-		for nodeID := range f.Nodes[idx] {
-			if i >= totalNodes {
+		// Check if we have the exact nodes we need based on deterministic IDs
+		needsCreation := false
+		for i := 0; i < totalNodes; i++ {
+			// Calculate expected node ID
+			h := fnv.New64a()
+			h.Write([]byte(fleet.Seed))
+			h.Write([]byte(fmt.Sprintf("-%d", i)))
+			expectedNodeID := uint32(h.Sum64())
+			
+			if _, exists := f.Nodes[idx][expectedNodeID]; !exists {
+				needsCreation = true
 				break
 			}
-			nodeIDs[randIndices[i]] = nodeID
-			i++
+		}
+		
+		if needsCreation {
+			// Some nodes are missing, recreate the fleet
+			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Some nodes missing, recreating Fleet[%d]...\n", idx)))
+			f.makeFleet(idx, nodeIDs, randIndices)
+		} else {
+			// All nodes exist, populate nodeIDs array
+			for i := 0; i < totalNodes; i++ {
+				h := fnv.New64a()
+				h.Write([]byte(fleet.Seed))
+				h.Write([]byte(fmt.Sprintf("-%d", i)))
+				nodeID := uint32(h.Sum64())
+				nodeIDs[randIndices[i]] = nodeID
+			}
 		}
 	}
 	f.rampUp(idx, nodeIDs, randIndices)

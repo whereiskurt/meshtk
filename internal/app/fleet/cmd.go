@@ -2,12 +2,14 @@ package fleet
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -37,9 +39,11 @@ type FleetCmd struct {
 	CmdOutput  struct {
 		WasSuccess bool
 	}
-	OTPHandler   []*otp.TOTPConfig
-	OTPUnlocks   []map[uint32]*OTPUnlock // Map from radio ID to unlock info, per fleet
-	OTPUnlockMux []sync.RWMutex          // Mutex to protect the OTPUnlocks map, per fleet
+	OTPHandler      []*otp.TOTPConfig
+	OTPUnlocks      []map[uint32]*OTPUnlock // Map from radio ID to unlock info, per fleet
+	OTPUnlockMux    []sync.RWMutex          // Mutex to protect the OTPUnlocks map, per fleet
+	LyricsResponded []map[uint32]int        // Track which 'to' addresses have received lyrics responses, per fleet
+	LyricsRespMux   []sync.RWMutex          // Mutex to protect the LyricsResponded map, per fleet
 }
 
 const BACKSTOP_GRACE_SEC = 30
@@ -53,6 +57,8 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		f.NodesMutex = append(f.NodesMutex, sync.Mutex{})
 		f.OTPUnlocks = append(f.OTPUnlocks, make(map[uint32]*OTPUnlock))
 		f.OTPUnlockMux = append(f.OTPUnlockMux, sync.RWMutex{})
+		f.LyricsResponded = append(f.LyricsResponded, make(map[uint32]int))
+		f.LyricsRespMux = append(f.LyricsRespMux, sync.RWMutex{})
 
 		otpURL := f.Config.Fleet[i].OtpUrl
 		if otpURL != "" {
@@ -95,10 +101,10 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 			fleetdone := make(chan bool)
 			go func(idx int) {
 				// Kick of the fleet simulation!
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: MQTT connect ...\n", idx)))
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Starting simulation ...\n", idx)))
+				//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: MQTT connect ...\n", idx)))
+				//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Starting simulation ...\n", idx)))
 				f.simulate(idx)
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Simulation completed.\n", idx)))
+				//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Simulation completed.\n", idx)))
 				fleetdone <- true
 				alldone <- idx
 			}(idx)
@@ -109,9 +115,9 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 			backstop := time.After(time.Duration(t) * time.Second)
 			select {
 			case <-fleetdone:
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Done! Simulation completed successfully.\n", idx)))
+				//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Done! Simulation completed successfully.\n", idx)))
 			case <-backstop:
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Backstopped! Simulation timeout expired after %d seconds.\n", idx, t)))
+				//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Backstopped! Simulation timeout expired after %d seconds.\n", idx, t)))
 				alldone <- idx
 			}
 		}(i)
@@ -303,16 +309,32 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 						UnlockMessage:   message,
 					}
 					n.OTPUnlockMux[toFleetIdx].Unlock()
-					n.Config.Log.Infof("Radio %d has been unlocked and stored in unlock map", from)
 				}
 			}
 		} else {
 			if chatBot, ok := chatBotMap["otp_failure"]; ok {
-				for _, reply := range chatBot.Message {
-					n.Config.Log.Infof("PKI Reply for OTP failure: %+v - %s", chatBot.Type, reply)
-					n.sendPKIReply(toFleetIdx, to, from, topic, reply)
+				if chatBot.UnlocksChatMode {
+					// Store the unlock information
+					n.OTPUnlockMux[toFleetIdx].Lock()
+					n.OTPUnlocks[toFleetIdx][from] = &OTPUnlock{
+						UnlockTimestamp: time.Now(),
+						UnlockMessage:   message,
+					}
+					n.OTPUnlockMux[toFleetIdx].Unlock()
+
+					if chatBot, ok := chatBotMap["chatmode_lyrics"]; ok {
+						lyrics := chatBot.Message[0]
+						n.Config.Log.Infof("Lyrics set to: %s", lyrics)
+						n.handleLyricsChat(toFleetIdx, to, from, topic, lyrics)
+					}
+				} else {
+					for _, reply := range chatBot.Message {
+						n.Config.Log.Infof("PKI Reply for OTP failure: %+v - %s", chatBot.Type, reply)
+						n.sendPKIReply(toFleetIdx, to, from, topic, reply)
+					}
 				}
 			}
+
 		}
 
 	default:
@@ -320,6 +342,121 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 		// 	n.Config.Log.Tracef(`{to: '%v', from: '%v', topic: '%v', portNum: '%s', lkpFrom: '%v', lkpTo: '%v'}`, to, from, topic, portNum, lkpFrom, lkpTo)
 		// }
 	}
+}
+
+func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic string, lyricsB64 string) {
+	// Check if we've already responded to this 'to' address
+	n.LyricsRespMux[toFleetIdx].RLock()
+	count, exists := n.LyricsResponded[toFleetIdx][to]
+	n.LyricsRespMux[toFleetIdx].RUnlock()
+	
+	if exists && count > 0 {
+		n.Config.Log.Infof("Already responded to lyrics request for 'to' address %d (count: %d), skipping", to, count)
+		return
+	}
+	
+	// Mark this 'to' address as having received a response
+	n.LyricsRespMux[toFleetIdx].Lock()
+	n.LyricsResponded[toFleetIdx][to]++
+	n.LyricsRespMux[toFleetIdx].Unlock()
+	
+	// Decode base64 lyrics
+	lyricsBytes, err := base64.StdEncoding.DecodeString(lyricsB64)
+	if err != nil {
+		n.Config.Log.Errorf("Failed to decode base64 lyrics: %v", err)
+		n.sendPKIReply(toFleetIdx, to, from, topic, "I'm feeling shy.")
+		return
+	}
+
+	lyrics := string(lyricsBytes)
+	lines := strings.Split(lyrics, "\n")
+
+	// Parse song length from first line [length: MM:SS]
+	var songDuration time.Duration
+	var lyricEntries []struct {
+		timestamp time.Duration
+		text      string
+	}
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Parse length header
+		if strings.HasPrefix(line, "[length:") {
+			lengthStr := strings.TrimSuffix(strings.TrimPrefix(line, "[length: "), "]")
+			parts := strings.Split(lengthStr, ":")
+			if len(parts) == 2 {
+				minutes, _ := strconv.Atoi(parts[0])
+				seconds, _ := strconv.Atoi(parts[1])
+				songDuration = time.Duration(minutes)*time.Minute + time.Duration(seconds)*time.Second
+			}
+			continue
+		}
+
+		// Parse lyric lines [MM:SS.MS]text
+		if strings.HasPrefix(line, "[") {
+			endIdx := strings.Index(line, "]")
+			if endIdx > 0 {
+				timeStr := line[1:endIdx]
+				text := line[endIdx+1:]
+
+				// Parse timestamp MM:SS.MS
+				parts := strings.Split(timeStr, ":")
+				if len(parts) == 2 {
+					minutes, _ := strconv.ParseFloat(parts[0], 64)
+					seconds, _ := strconv.ParseFloat(parts[1], 64)
+					timestamp := time.Duration(minutes*60+seconds) * time.Second
+
+					lyricEntries = append(lyricEntries, struct {
+						timestamp time.Duration
+						text      string
+					}{timestamp, text})
+				}
+			}
+		}
+	}
+
+	if len(lyricEntries) == 0 {
+		n.Config.Log.Errorf("No valid lyric entries found")
+		n.sendPKIReply(toFleetIdx, to, from, topic, "It's a short one.")
+		return
+	}
+
+	// Start goroutine to send lyrics at scheduled times
+	go func() {
+		startTime := time.Now()
+		defer func() {
+			n.Config.Log.Infof("Lyrics playback completed for conversation from %d to %d", from, to)
+		}()
+
+		// Create a timer for self-termination
+		var terminationTimer *time.Timer
+		if songDuration > 0 {
+			terminationTimer = time.NewTimer(songDuration)
+			defer terminationTimer.Stop()
+		} else {
+			// Fallback: use last lyric timestamp + 10 seconds
+			lastTimestamp := lyricEntries[len(lyricEntries)-1].timestamp
+			terminationTimer = time.NewTimer(lastTimestamp + 10*time.Second)
+			defer terminationTimer.Stop()
+		}
+
+		for _, entry := range lyricEntries {
+			select {
+			case <-terminationTimer.C:
+				n.Config.Log.Infof("Lyrics playback terminated after song duration")
+				return
+			case <-time.After(entry.timestamp - time.Since(startTime)):
+				n.sendPKIReply(toFleetIdx, to, from, topic, entry.text)
+				n.Config.Log.Debugf("Sent lyric at %v: %s", entry.timestamp, entry.text)
+			}
+		}
+	}()
+
+	n.Config.Log.Infof("Started lyrics playback for %d entries over %v", len(lyricEntries), songDuration)
 }
 
 func (n *FleetCmd) handleGPTChat(toFleetIdx int, to, from uint32, topic string, userMessage string, apiKey string, systemPrompt string) {

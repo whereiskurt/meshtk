@@ -98,7 +98,7 @@ func (f *FleetCmd) publishNextGPXMovement(idx int, node *mqtt.Node, gitter bool)
 
 	for _, m := range fleet.Movement {
 		if len(m.GPXCoords) > 0 {
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] moving...\n", idx, node.From)))
+			// //f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Node[%d] moving...\n", idx, node.From)))
 
 			node.ExtendedNode.GPSCoordinateOffset++
 

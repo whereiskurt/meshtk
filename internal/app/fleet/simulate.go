@@ -21,22 +21,22 @@ func (f *FleetCmd) simulate(idx int) {
 	// Load GPX coordinates for any nodes that might need access to them
 	for m := range fleet.Movement {
 		if fleet.Movement[m].Type == "gpx" && fleet.Movement[m].GPXFile != "" {
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Loading GPX Fleet[%d] with %d nodes...\n", idx, totalNodes)))
+			//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Loading GPX Fleet[%d] with %d nodes...\n", idx, totalNodes)))
 			gpxFile := fleet.Movement[m].GPXFile
 			coordinates := f.GPXCoords(gpxFile)
 			fleet.Movement[m].GPXCoords = coordinates
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Done! Loaded GPX Fleet[%d] with %d nodes.\n", idx, len(coordinates))))
+			//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Done! Loaded GPX Fleet[%d] with %d nodes.\n", idx, len(coordinates))))
 		}
 	}
 
 	// Initialize or reuse fleet nodes
 	if len(f.Nodes[idx]) == 0 {
 		// No nodes exist, create them
-		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Creating Fleet[%d] with %d nodes...\n", idx, totalNodes)))
+		//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Creating Fleet[%d] with %d nodes...\n", idx, totalNodes)))
 		f.makeFleet(idx, nodeIDs, randIndices)
 	} else {
 		// Nodes already exist from database, reuse them
-		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Reusing Fleet[%d] with %d existing nodes...\n", idx, len(f.Nodes[idx]))))
+		//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Reusing Fleet[%d] with %d existing nodes...\n", idx, len(f.Nodes[idx]))))
 		// Check if we have the exact nodes we need based on deterministic IDs
 		needsCreation := false
 		for i := 0; i < totalNodes; i++ {
@@ -45,16 +45,16 @@ func (f *FleetCmd) simulate(idx int) {
 			h.Write([]byte(fleet.Seed))
 			h.Write([]byte(fmt.Sprintf("-%d", i)))
 			expectedNodeID := uint32(h.Sum64())
-			
+
 			if _, exists := f.Nodes[idx][expectedNodeID]; !exists {
 				needsCreation = true
 				break
 			}
 		}
-		
+
 		if needsCreation {
 			// Some nodes are missing, recreate the fleet
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Some nodes missing, recreating Fleet[%d]...\n", idx)))
+			//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Some nodes missing, recreating Fleet[%d]...\n", idx)))
 			f.makeFleet(idx, nodeIDs, randIndices)
 		} else {
 			// All nodes exist, populate nodeIDs array
@@ -82,13 +82,13 @@ func (f *FleetCmd) rampUp(idx int, nodeIDs []uint32, randIndices []int) {
 	totalNodes := 0
 
 	if f.Config.Fleet[idx].Distribution == "uniform" {
-		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Uniformly adding %d nodes over %d seconds\n", idx, len(nodeIDs), fleet.RampUpSecs)))
+		//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Uniformly adding %d nodes over %d seconds\n", idx, len(nodeIDs), fleet.RampUpSecs)))
 
 		for r := range rampLen {
 			newNodes := ramp[r]
 			nodeEveryMs := rampIntervalMs / newNodes
 			if newNodes > 0 {
-				f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Ramp[%d][%d]: Adding %d nodes in %d ms (node every %d ms)\n", idx, r, newNodes, rampIntervalMs, nodeEveryMs)))
+				//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Ramp[%d][%d]: Adding %d nodes in %d ms (node every %d ms)\n", idx, r, newNodes, rampIntervalMs, nodeEveryMs)))
 				for i := range newNodes {
 					nodeIndex := totalNodes + i
 					node := f.Nodes[idx][nodeIDs[randIndices[nodeIndex%len(randIndices)]]]
@@ -99,7 +99,7 @@ func (f *FleetCmd) rampUp(idx int, nodeIDs []uint32, randIndices []int) {
 				totalNodes += newNodes
 			}
 		}
-		f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Ramp-up complete. Successfully added %d nodes.\n", idx, totalNodes)))
+		//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Ramp-up complete. Successfully added %d nodes.\n", idx, totalNodes)))
 
 	}
 }
@@ -108,7 +108,7 @@ func (f *FleetCmd) rampSteady(idx int, nodeIDs []uint32, randIndices []int) {
 
 	fleet := f.Config.Fleet[idx]
 	totalSteadyStateSecs := fleet.RampSteadySecs
-	maxTics := totalSteadyStateSecs / fleet.BehaviourSecs
+	// maxTics := totalSteadyStateSecs / fleet.BehaviourSecs
 	timer := time.NewTimer(time.Duration(totalSteadyStateSecs) * time.Second)
 	defer timer.Stop()
 	tic := 0
@@ -122,21 +122,21 @@ TIMER:
 			break TIMER
 		default:
 			totalNodes := fleet.NodesPerSteadyInterval[tic%len(fleet.NodesPerSteadyInterval)]
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Running steady state: tic %d/%d\n", idx, tic+1, maxTics)))
+			// f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Running steady state: tic %d/%d\n", idx, tic+1, maxTics)))
 			for range totalNodes {
 				nodeID := nodeIDs[randIndices[nodeOffset%len(randIndices)]]
 				f.behaviours(idx, f.Nodes[idx][nodeID], tic)
 				nodeOffset++
 			}
-			f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Sleeping for %d seconds...\n", idx, fleet.BehaviourSecs)))
+			// f.Config.Stdout.Write([]byte(fmt.Sprintf("⏱️  Fleet[%d]: Sleeping for %d seconds...\n", idx, fleet.BehaviourSecs)))
 			time.Sleep(time.Duration(fleet.BehaviourSecs) * time.Second) // Adjust sleep duration as needed
 			tic++
 		}
 	}
 
-	f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Steady state complete.\n", idx)))
+	//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Steady state complete.\n", idx)))
 }
 
 func (f *FleetCmd) rampDown(idx int, nodeIDs []uint32, randIndices []int) {
-	f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Ramp down initiated.\n", idx)))
+	//f.Config.Stdout.Write([]byte(fmt.Sprintf("🚀 Fleet[%d]: Ramp down initiated.\n", idx)))
 }

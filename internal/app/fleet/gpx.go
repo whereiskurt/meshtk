@@ -12,8 +12,10 @@ import (
 )
 
 type GPX struct {
-	XMLName xml.Name `xml:"gpx"`
-	Trk     []Track  `xml:"trk"`
+	XMLName xml.Name   `xml:"gpx"`
+	Trk     []Track    `xml:"trk"`
+	Rte     []GPXRoute `xml:"rte"`
+	Wpt     []Waypoint `xml:"wpt"`
 }
 
 type Track struct {
@@ -30,6 +32,27 @@ type TrackPoint struct {
 	Lon  float64 `xml:"lon,attr"`
 	Ele  float64 `xml:"ele"`
 	Time string  `xml:"time"`
+}
+
+type GPXRoute struct {
+	Name   string       `xml:"name"`
+	Points []RoutePoint `xml:"rtept"`
+}
+
+type RoutePoint struct {
+	Lat  float64 `xml:"lat,attr"`
+	Lon  float64 `xml:"lon,attr"`
+	Ele  float64 `xml:"ele"`
+	Time string  `xml:"time"`
+}
+
+type Waypoint struct {
+	Lat  float64 `xml:"lat,attr"`
+	Lon  float64 `xml:"lon,attr"`
+	Ele  float64 `xml:"ele"`
+	Name string  `xml:"name"`
+	Cmt  string  `xml:"cmt"`
+	Desc string  `xml:"desc"`
 }
 
 // embeddedGPXMap caches the map of embedded GPX files
@@ -96,6 +119,42 @@ func (f *FleetCmd) GPXCoords(gpxFilePath string) []config.Coordinate {
 					Precision: 32,
 				})
 			}
+		}
+	}
+
+	// If no tracks found, try routes
+	if len(coordinates) == 0 {
+		for _, route := range gpx.Rte {
+			for _, point := range route.Points {
+				// Convert to int32 format used by the application (multiplied by 10^7)
+				lat := int32(point.Lat * 10000000)
+				lon := int32(point.Lon * 10000000)
+				alt := int32(point.Ele)
+
+				coordinates = append(coordinates, config.Coordinate{
+					Latitude:  lat,
+					Longitude: lon,
+					Altitude:  alt,
+					Precision: 32,
+				})
+			}
+		}
+	}
+
+	// If no tracks or routes found, try waypoints
+	if len(coordinates) == 0 {
+		for _, waypoint := range gpx.Wpt {
+			// Convert to int32 format used by the application (multiplied by 10^7)
+			lat := int32(waypoint.Lat * 10000000)
+			lon := int32(waypoint.Lon * 10000000)
+			alt := int32(waypoint.Ele)
+
+			coordinates = append(coordinates, config.Coordinate{
+				Latitude:  lat,
+				Longitude: lon,
+				Altitude:  alt,
+				Precision: 32,
+			})
 		}
 	}
 

@@ -116,7 +116,7 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 	topic := msg.Topic()
 
 	if topic == "/will" {
-		c.log.Debugf("skippng parse ServiceEnvelope on %v: %+v", topic, msg.Payload())
+		// c.log.Debugf("skippng parse ServiceEnvelope on %v: %+v", topic, msg.Payload())
 		return
 	}
 

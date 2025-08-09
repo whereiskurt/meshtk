@@ -3,6 +3,8 @@ A toolkit for virtual meshtastic nodes (ie. no radio/serial) using mqtt+protobuf
 
 > "Release early, release often." 🐇  
 
+TODO: Update this now that we're live at DEFCON 33!
+
 To 'just run it': `go run cmd/meshtk.go nodeinfo announce --verbose trace` (but you'll like want to tweak the config 😉) 
 
 You'll start to get a tonne of MQTT message tracing like this, from the public meshtastic mqtt server on a `#` subscription:
@@ -27,9 +29,9 @@ Some details of the on meshtastic features in progress:
 1. ✅ Creates golang meshtastic protobufs from meshtastic source repo
 1. ✅ Maintains a node database with pubkey
 1. ✅ Trace logging with '--verbose trace' inside of `client.log` and `message_ledger.log`
-1. ⚠️ TODO: Private chat messages supporting PKI 
-1. ⚠️ TODO: Interactive user responses/tracking in public channel
-1. ⚠️ TODO: One-time-password protections for bot commands
+1. ✅ Private chat messages supporting PKI 
+1. ✅ Interactive user responses/tracking in public channel
+1. ✅ One-time-password protections for bot commands
 
 I personally like `golang` for command line interace tools - compiling a single static-linked executable is easy. Obviously I'll get ChatGPT to rewrite this in rust later. 🧌 🤡
 

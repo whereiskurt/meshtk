@@ -1,9 +1,9 @@
+# TODO: Update this now that we're live at DEFCON 33!
+
 # meshtk - A Meshtatic virtual node Toolkit
 A toolkit for virtual meshtastic nodes (ie. no radio/serial) using mqtt+protobufs. A work in progress (WIP) that's been useful for some upcoming projects (defcon.run!)
 
 > "Release early, release often." 🐇  
-
-TODO: Update this now that we're live at DEFCON 33!
 
 To 'just run it': `go run cmd/meshtk.go nodeinfo announce --verbose trace` (but you'll like want to tweak the config 😉) 
 

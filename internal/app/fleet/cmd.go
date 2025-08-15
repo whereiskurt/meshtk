@@ -86,7 +86,18 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 
 	for idx := range f.Config.Fleet {
 		f.initNodeDb(idx)
-		f.MqttClient = append(f.MqttClient, internal.NewMqttClient(f.Config, &f.Nodes[idx], f.FleetNodeHandler))
+		mqttClient := internal.NewMqttClient(f.Config, &f.Nodes[idx], f.FleetNodeHandler)
+		
+		// Set up ACK handler for this fleet member
+		fleetIdx := idx // Capture idx for closure
+		mqttClient.SetAckHandler(func(to, from uint32, requestId uint32) {
+			// Find the node in the fleet  
+			if node, exists := f.Nodes[fleetIdx][to]; exists {
+				f.publishACK(fleetIdx, node, from, requestId)
+			}
+		})
+		
+		f.MqttClient = append(f.MqttClient, mqttClient)
 	}
 
 	terminate := make(chan os.Signal, 1)

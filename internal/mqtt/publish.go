@@ -189,6 +189,94 @@ func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic strin
 	c.log.Errorf("failed to publish encrypted message after 3 attempts: %v", lastErr)
 	return lastErr
 }
+func (c *MqttClient) PublishACK(from uint32, to uint32, topic string, requestId uint32, routingBytes []byte) error {
+	// Create Data protobuf for ROUTING_APP
+	data := &meshtastic.Data{
+		Portnum:   meshtastic.PortNum_ROUTING_APP,
+		Payload:   routingBytes,
+		RequestId: requestId,
+	}
+
+	// Serialize the data
+	dataBytes, err := proto.Marshal(data)
+	if err != nil {
+		c.log.Errorf("failed to serialize ACK data: %v", err)
+		return err
+	}
+
+	// Create a random message ID
+	msgID := make([]byte, 4)
+	if _, err := rand.Read(msgID); err != nil {
+		c.log.Errorf("failed to generate message ID: %v", err)
+		return err
+	}
+	messageID := binary.LittleEndian.Uint32(msgID)
+
+	// Encrypt the data with AES-256
+	nonce := make([]byte, 16)
+	binary.LittleEndian.PutUint32(nonce[0:], messageID)
+	binary.LittleEndian.PutUint32(nonce[8:], from)
+	encrypted := make([]byte, len(dataBytes))
+	cipher.NewCTR(c.blockCipher, nonce).XORKeyStream(encrypted, dataBytes)
+
+	packet := &meshtastic.MeshPacket{
+		From: from,
+		To:   to,
+		Id:   messageID,
+		PayloadVariant: &meshtastic.MeshPacket_Encrypted{
+			Encrypted: encrypted,
+		},
+		Channel:  uint32(GenerateChannelHash(c.channel, c.key)),
+		RxTime:   uint32(time.Now().Unix()),
+		RxRssi:   -2,
+		ViaMqtt:  true,
+		RxSnr:    2,
+		HopLimit: 3,
+		Priority: meshtastic.MeshPacket_ACK,
+	}
+
+	// Create ServiceEnvelope
+	envelope := &meshtastic.ServiceEnvelope{
+		Packet:    packet,
+		GatewayId: fmt.Sprintf("!%08x", from),
+		ChannelId: c.channel,
+	}
+
+	// Serialize the envelope
+	envelopeBytes, err := proto.Marshal(envelope)
+	if err != nil {
+		c.log.Errorf("failed to serialize ACK envelope: %v", err)
+		return err
+	}
+
+	// Attempt to publish the ACK message up to 3 times
+	var lastErr error
+	for range 3 {
+		token := c.client.Publish(topic, 0, false, envelopeBytes)
+
+		// Add timeout to avoid hanging indefinitely
+		select {
+		case <-token.Done():
+		case <-time.After(5 * time.Second):
+			c.log.Warnf("ACK publish operation timed out after 5 seconds...")
+			lastErr = fmt.Errorf("ACK publish operation timed out")
+			c.Connect()
+			continue
+		}
+
+		if err := token.Error(); err != nil {
+			lastErr = err
+			c.Connect()
+			continue
+		}
+		return nil
+	}
+
+	// If all attempts fail, return the last error
+	c.log.Errorf("failed to publish ACK message after 3 attempts: %v", lastErr)
+	return lastErr
+}
+
 func (c *MqttClient) PublishPosition(from uint32, to uint32, topic string, latitudeI, longitudeI, altitude int32, precision uint32) error {
 	// Create Position protobuf
 	position := &meshtastic.Position{

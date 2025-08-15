@@ -10,6 +10,7 @@ import (
 
 	"github.com/whereiskurt/meshtk/internal/mqtt"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
@@ -131,6 +132,20 @@ func (f *FleetCmd) publishNextGPXMovement(idx int, node *mqtt.Node, gitter bool)
 	}
 }
 
+func (f *FleetCmd) publishACK(idx int, node *mqtt.Node, toNode uint32, requestId uint32) {
+	whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
+	
+	routing := &meshtastic.Routing{}
+	
+	routingBytes, err := proto.Marshal(routing)
+	if err != nil {
+		f.Config.Log.Errorf("Failed to marshal ACK routing message: %v", err)
+		return
+	}
+	
+	f.MqttClient[idx].PublishACK(node.From, toNode, whoamiTopic, requestId, routingBytes)
+}
+
 func ZigzagIndex(i, total int) int {
 	if total == 1 {
 		return 0
@@ -145,3 +160,4 @@ func ZigzagIndex(i, total int) int {
 	// left to right
 	return total - 1 - col
 }
+

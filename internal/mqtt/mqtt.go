@@ -29,6 +29,7 @@ type MqttClient struct {
 	log            *log.Logger
 	blockCipher    cipher.Block
 	messageHandler func(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte)
+	ackHandler     func(to, from uint32, requestId uint32) // Handler for sending ACKs
 	client         mqtt.Client
 	topics         []string
 	channel        string //Needed for meshtastic publish packet construction
@@ -122,13 +123,13 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 
 	var envelope meshtastic.ServiceEnvelope
 	if err := proto.Unmarshal(msg.Payload(), &envelope); err != nil {
-		c.log.Warnf("could not parse ServiceEnvelope on %v: %v: %+v", topic, err, msg.Payload())
+		//c.log.Debugf("could not parse ServiceEnvelope on %v: %v: %+v", topic, err, msg.Payload())
 		return
 	}
 
 	packet := envelope.GetPacket()
 	if packet == nil {
-		c.log.Warnf("skipping ServiceEnvelope with no MeshPacket on %v", topic)
+		// c.log.Debugf("skipping ServiceEnvelope with no MeshPacket on %v", topic)
 		return
 	}
 
@@ -152,7 +153,7 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 			cipher.NewCTR(c.blockCipher, nonce).XORKeyStream(decrypted, encrypted)
 			data = new(meshtastic.Data)
 			if err := proto.Unmarshal(decrypted, data); err != nil {
-				c.log.Errorf("failed to unmarshal decrypted data: %v", err)
+				//c.log.Errorf("failed to unmarshal decrypted data: %v", err)
 				return
 			}
 			// isEncrypted = true
@@ -172,6 +173,12 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 			}
 
 			c.log.Tracef("Successfully PKI decrypted payload from %v on %v", from, topic)
+
+			// if packet.GetWantAck() && c.ackHandler != nil {
+			if c.ackHandler != nil {
+				c.log.Debugf("Sending ACK for PKI message from %v to %v (request_id: %v)", from, to, packet.GetId())
+				c.ackHandler(to, from, packet.GetId())
+			}
 		}
 	}
 
@@ -210,6 +217,10 @@ func (c *MqttClient) subscribeMultiple(topics []string) error {
 		return fmt.Errorf("mqtt subscribe failed: %v", err)
 	}
 	return nil
+}
+
+func (c *MqttClient) SetAckHandler(handler func(to, from uint32, requestId uint32)) {
+	c.ackHandler = handler
 }
 
 func (c *MqttClient) Connect() error {

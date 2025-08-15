@@ -138,7 +138,7 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 	case *packets.PingrespPacket:
 		n.SetConnTrack(ip)
 		ip.MQTT.Type = "PINGRESP"
-
+		
 	default:
 		n.SetConnTrack(ip)
 		ip.MQTT.Type = fmt.Sprintf("%T", *ip.Raw.MQTT)
@@ -225,6 +225,12 @@ func (ip *InspectorPacket) inspectMeshtastic(n *ServerCmd) {
 	case meshtastic.PortNum_NEIGHBORINFO_APP:
 		var neighborInfo meshtastic.NeighborInfo
 		if err := proto.Unmarshal(ip.Meshtastic.Payload, &neighborInfo); err == nil {
+			ip.Meshtastic.WasUnmarshalled = true
+		}
+
+	case meshtastic.PortNum_ROUTING_APP:
+		var router meshtastic.RouteDiscovery
+		if err := proto.Unmarshal(ip.Meshtastic.Payload, &router); err == nil {
 			ip.Meshtastic.WasUnmarshalled = true
 		}
 

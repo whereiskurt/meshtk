@@ -216,8 +216,8 @@ func (c *MqttClient) aesCCMAD(key, nonce, ciphertext, authTag []byte) ([]byte, e
 	}
 
 	// Firmware constants: L=2, M=8
-	const L = 2
-	const M = 8
+	// const L = 2
+	// const M = 8
 
 	//c.log.Debugf("=== Firmware aes_ccm_ad ===")
 	//c.log.Debugf("Key: %x", key)
@@ -434,8 +434,8 @@ func (c *MqttClient) aesCCMEncrypt(key, nonce, plaintext []byte) ([]byte, []byte
 	}
 
 	// Constants matching firmware: L=2, M=8
-	const L = 2
-	const M = 8
+	// const L = 2
+	// const M = 8
 
 	//c.log.Debugf("=== AES-CCM Encrypt ===")
 	//c.log.Debugf("Key: %x", key)

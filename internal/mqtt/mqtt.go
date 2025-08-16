@@ -30,6 +30,7 @@ type MqttClient struct {
 	blockCipher    cipher.Block
 	messageHandler func(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte)
 	ackHandler     func(to, from uint32, requestId uint32) // Handler for sending ACKs
+	nackHandler    func(to, from uint32, requestId uint32) // Handler for routing NACK to tell sender to initiate nodeinfo
 	client         mqtt.Client
 	topics         []string
 	channel        string //Needed for meshtastic publish packet construction
@@ -164,6 +165,11 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 			pkiDecrypted, pkiErr := c.decryptPKI(packet, encrypted)
 			if pkiErr != nil {
 				c.log.Warnf("PKI decrypt failed for packet from %v on %v: %v", from, topic, pkiErr)
+				// Send NACK to tell sender to initiate nodeinfo message
+				if c.nackHandler != nil {
+					c.log.Debugf("Sending NACK for PKI message from %v to %v (request_id: %v)", from, to, packet.GetId())
+					c.nackHandler(to, from, packet.GetId())
+				}
 				return
 			}
 			data = new(meshtastic.Data)
@@ -221,6 +227,10 @@ func (c *MqttClient) subscribeMultiple(topics []string) error {
 
 func (c *MqttClient) SetAckHandler(handler func(to, from uint32, requestId uint32)) {
 	c.ackHandler = handler
+}
+
+func (c *MqttClient) SetNackHandler(handler func(to, from uint32, requestId uint32)) {
+	c.nackHandler = handler
 }
 
 func (c *MqttClient) Connect() error {

@@ -97,6 +97,14 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 			}
 		})
 		
+		// Set up NACK handler to trigger nodeinfo request
+		mqttClient.SetNackHandler(func(to, from uint32, requestId uint32) {
+			// Find the node in the fleet and request nodeinfo
+			if node, exists := f.Nodes[fleetIdx][to]; exists {
+				f.publishNodeInfoRequest(fleetIdx, node, from)
+			}
+		})
+		
 		f.MqttClient = append(f.MqttClient, mqttClient)
 	}
 

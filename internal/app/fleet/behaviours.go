@@ -146,6 +146,25 @@ func (f *FleetCmd) publishACK(idx int, node *mqtt.Node, toNode uint32, requestId
 	f.MqttClient[idx].PublishACK(node.From, toNode, whoamiTopic, requestId, routingBytes)
 }
 
+func (f *FleetCmd) publishNodeInfoRequest(idx int, node *mqtt.Node, toNode uint32) {
+	// Request nodeinfo from the target node
+	whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
+	
+	// Send an empty user message which triggers nodeinfo response
+	user := &meshtastic.User{
+		Id: fmt.Sprintf("!%08x", toNode), // Request info for this node
+	}
+	
+	userBytes, err := proto.Marshal(user)
+	if err != nil {
+		f.Config.Log.Errorf("Failed to marshal nodeinfo request: %v", err)
+		return
+	}
+	
+	f.Config.Log.Debugf("Requesting nodeinfo from node %08x via node %08x", toNode, node.From)
+	f.MqttClient[idx].PublishMessageEncrypted(node.From, toNode, whoamiTopic, meshtastic.PortNum_NODEINFO_APP, userBytes)
+}
+
 func ZigzagIndex(i, total int) int {
 	if total == 1 {
 		return 0

@@ -53,7 +53,6 @@ func (c *MqttClient) decryptPKI(packet *meshtastic.MeshPacket, encryptedData []b
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse sender public key: %v", err)
 	}
-	// senderPublicKeyBytes := packet.GetPublicKey()
 
 	if len(senderPublicKeyBytes) != 32 {
 		return nil, fmt.Errorf("invalid sender public key length: %d", len(senderPublicKeyBytes))

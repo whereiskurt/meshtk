@@ -138,7 +138,7 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 	case *packets.PingrespPacket:
 		n.SetConnTrack(ip)
 		ip.MQTT.Type = "PINGRESP"
-		
+
 	default:
 		n.SetConnTrack(ip)
 		ip.MQTT.Type = fmt.Sprintf("%T", *ip.Raw.MQTT)
@@ -238,6 +238,25 @@ func (ip *InspectorPacket) inspectMeshtastic(n *ServerCmd) {
 		ip.Log.Infof("Message with PortNum %s from %d on topic %s", ip.Meshtastic.PortNum.String(), ip.Meshtastic.From, topic)
 	}
 
+}
+
+func (n *ServerCmd) DecryptMeshtastic(id, from uint32, payload []byte) (decoded *meshtastic.Data, hexkey string, c *cipher.Block, err error) {
+	nonce := make([]byte, 16)
+	binary.LittleEndian.PutUint32(nonce[0:], id)
+	binary.LittleEndian.PutUint32(nonce[8:], from)
+	decrypted := make([]byte, len(payload))
+
+	for k, cipherInstance := range n.Ciphers {
+		hexKey := n.Config.Meshtastic.Channels[k].EncryptKey
+
+		cipher.NewCTR(cipherInstance, nonce).XORKeyStream(decrypted, payload)
+		decoded = new(meshtastic.Data)
+		if err := proto.Unmarshal(decrypted, decoded); err == nil {
+			return decoded, hexKey, &cipherInstance, nil
+		}
+
+	}
+	return nil, "", nil, fmt.Errorf("failed to decrypt data with any cipher")
 }
 
 func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
@@ -355,9 +374,9 @@ func (n *ServerCmd) SetupTracker() {
 			now := time.Now().Unix()
 			n.ConnMutex.Lock()
 			for socketAddr, connInfo := range n.ConnTrack {
-				n.Config.Log.Tracef("ConnTrack: %s: %d: %d: diff: %d", socketAddr, connInfo.ConnectTime, now, now-connInfo.ConnectTime)
+				// n.Config.Log.Tracef("ConnTrack: %s: %d: %d: diff: %d", socketAddr, connInfo.ConnectTime, now, now-connInfo.ConnectTime)
 				if now-connInfo.ConnectTime > 180 {
-					n.Config.Log.Tracef("ConnTrack: purging connection %d: %s", i, socketAddr)
+					// n.Config.Log.Tracef("ConnTrack: purging connection %d: %s", i, socketAddr)
 					delete(n.ConnTrack, socketAddr)
 					i++
 				}

@@ -56,7 +56,7 @@ type Server struct {
 	MaxMBLogSize           int    `default:"100"`
 	UseS3Bucket            bool   `default:"true"`
 	S3BucketRegion         string `default:"us-east-1"`
-	S3BucketName           string `default:"mestk-blocklist-20250101"`
+	S3BucketName           string `default:"meshtk-blocklist-20250101"`
 	S3BucketPrefix         string `default:"meshtk/blocklist"`
 	CheckLogIntervalMins   int    `default:"15"`
 	CheckLogIntervalSecs   int    `default:"10"`

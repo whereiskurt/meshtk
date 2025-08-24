@@ -67,7 +67,7 @@ Server:
   CheckLogIntervalSecs: 10
   UseS3Bucket: true
   S3BucketRegion: "us-east-1"
-  S3BucketName: "mestk-blocklist-20250101"
+  S3BucketName: "meshtk-blocklist-20250101"
   S3BucketPrefix: "meshtk/blocklist"
 
 Fleet:

@@ -5,7 +5,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -22,8 +21,6 @@ import (
 	"github.com/whereiskurt/meshtk/internal/app/help"
 	"github.com/whereiskurt/meshtk/pkg/config"
 	"github.com/whereiskurt/meshtk/pkg/network"
-	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
-	"google.golang.org/protobuf/proto"
 )
 
 type ServerCmd struct {
@@ -73,25 +70,6 @@ func (n *ServerCmd) LoadCiphers(c *config.Config) {
 		}
 		n.Ciphers = append(n.Ciphers, NewAESCipher(keyBytes))
 	}
-}
-
-func (n *ServerCmd) DecryptMeshtastic(id, from uint32, payload []byte) (decoded *meshtastic.Data, hexkey string, c *cipher.Block, err error) {
-	nonce := make([]byte, 16)
-	binary.LittleEndian.PutUint32(nonce[0:], id)
-	binary.LittleEndian.PutUint32(nonce[8:], from)
-	decrypted := make([]byte, len(payload))
-
-	for k, cipherInstance := range n.Ciphers {
-		hexKey := n.Config.Meshtastic.Channels[k].EncryptKey
-
-		cipher.NewCTR(cipherInstance, nonce).XORKeyStream(decrypted, payload)
-		decoded = new(meshtastic.Data)
-		if err := proto.Unmarshal(decrypted, decoded); err == nil {
-			return decoded, hexKey, &cipherInstance, nil
-		}
-
-	}
-	return nil, "", nil, fmt.Errorf("failed to decrypt data with any cipher")
 }
 
 func (n *ServerCmd) Help(cmd *cobra.Command, argz []string) {
@@ -200,6 +178,12 @@ func (n *ServerCmd) StartProxyServer() error {
 func (n *ServerCmd) InitInspectorLogger() {
 	go func() {
 		n.SetupInspectorLogger()
+		
+		// Test S3 connectivity on startup if S3 is enabled
+		if n.Config.Server.UseS3Bucket {
+			n.TestS3Connectivity()
+		}
+		
 		ticker := time.NewTicker((time.Duration(n.Config.Server.CheckLogIntervalMins) * time.Minute) + (time.Duration(n.Config.Server.CheckLogIntervalSecs) * time.Second))
 		defer ticker.Stop()
 
@@ -225,6 +209,38 @@ func (n *ServerCmd) InitInspectorLogger() {
 	}()
 }
 
+func (n *ServerCmd) TestS3Connectivity() {
+	n.Config.Log.Info("Testing S3 connectivity on startup...")
+	
+	s3BucketRegion := n.Config.Server.S3BucketRegion
+	s3BucketName := n.Config.Server.S3BucketName
+	s3BucketPrefix := n.Config.Server.S3BucketPrefix
+	
+	awsRegion := os.Getenv("AWS_REGION")
+	if awsRegion == "" {
+		awsRegion = "us-east-1"
+	}
+	
+	scopy, err := network.NewS3Mover(
+		awsRegion,
+		s3BucketRegion,
+		s3BucketName,
+	)
+	if err != nil {
+		n.Config.Log.Errorf("S3 startup test failed - could not create S3 mover: %v", err)
+		return
+	}
+	
+	// Write startup test file
+	err = scopy.WriteStartupTest(s3BucketPrefix)
+	if err != nil {
+		n.Config.Log.Errorf("S3 startup test failed: %v", err)
+		n.Config.Log.Error("WARNING: S3 uploads may not work. Please check AWS credentials and bucket permissions.")
+	} else {
+		n.Config.Log.Info("S3 startup test passed - connectivity verified")
+	}
+}
+
 func (n *ServerCmd) MoveToBucket(filename string) {
 
 	if !n.Config.Server.UseS3Bucket {
@@ -239,19 +255,24 @@ func (n *ServerCmd) MoveToBucket(filename string) {
 		awsRegion = "us-east-1"
 	}
 
+	n.Config.Log.Debugf("Initializing S3Mover: awsRegion=%s, bucketRegion=%s, bucketName=%s", awsRegion, s3BucketRegion, s3BucketName)
+	
 	scopy, err := network.NewS3Mover(
 		awsRegion,
 		s3BucketRegion,
 		s3BucketName,
 	)
 	if err != nil {
-		n.Config.Log.Warnf("failed to create S3 mover: %v", err)
+		n.Config.Log.Errorf("failed to create S3 mover: %v", err)
 		return
 	}
 
+	n.Config.Log.Debugf("Moving file %s to S3 with prefix %s", filename, s3BucketPrefix)
 	res, err2 := scopy.Move(filename, s3BucketPrefix)
 	if err2 != nil {
-		n.Config.Log.Errorf("failed to move log file to S3: %s:%s:  %v", s3BucketName, s3BucketRegion, res.ErrorMessage)
+		n.Config.Log.Errorf("failed to move log file to S3: %v", res.ErrorMessage)
+	} else {
+		n.Config.Log.Infof("Successfully uploaded file to S3: %s", res.URL)
 	}
 }
 

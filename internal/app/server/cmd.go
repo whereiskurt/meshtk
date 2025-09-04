@@ -198,12 +198,13 @@ func (n *ServerCmd) InitInspectorLogger() {
 			fileSizeMB = float64(fileInfo.Size()) / (1024 * 1024)
 
 			if fileSizeMB >= float64(n.Config.Server.MaxMBLogSize) {
-				n.Config.Log.Debugf("logfile %s size: %.2f MB larger than %.2f, moving to bucket", n.InspectorLogFilename, fileSizeMB, float64(n.Config.Server.MaxMBLogSize))
+				n.Config.Log.Infof("Log rotation triggered: %s is %.2f MB (limit: %d MB). Uploading to S3...", n.InspectorLogFilename, fileSizeMB, n.Config.Server.MaxMBLogSize)
 				n.MoveToBucket(filename)
 				//This rolls the log file over by creating a new one
 				n.SetupInspectorLogger()
+				n.Config.Log.Infof("Log rotation complete. New log file created.")
 			} else {
-				n.Config.Log.Tracef("logfile %s size: %.2f MB smaller than %.2f", n.InspectorLogFilename, fileSizeMB, float64(n.Config.Server.MaxMBLogSize))
+				n.Config.Log.Tracef("Log file %s size: %.2f MB (limit: %d MB)", n.InspectorLogFilename, fileSizeMB, n.Config.Server.MaxMBLogSize)
 			}
 		}
 	}()

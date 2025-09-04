@@ -53,7 +53,7 @@ type Server struct {
 	ProxyListenAddress     string `default:"0.0.0.0:1883"`
 	ProxyForwardAddress    string `default:"localhost:1884"`
 	BlockFilenameTmpl      string `default:"blocklist.{{.DTS}}.log"`
-	MaxMBLogSize           int    `default:"100"`
+	MaxMBLogSize           int    `default:"2"`
 	UseS3Bucket            bool   `default:"true"`
 	S3BucketRegion         string `default:"us-east-1"`
 	S3BucketName           string `default:"meshtk-blocklist-20250101"`

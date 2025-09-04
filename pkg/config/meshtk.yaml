@@ -62,7 +62,7 @@ Server:
   BlockFilenameTmpl: "./blocklist.{{.DTS}}.log"
   ShouldLogBlocks: true
   ShouldLogAllows: true
-  MaxMBLogSize: 0
+  MaxMBLogSize: 2
   CheckLogIntervalMins: 2
   CheckLogIntervalSecs: 10
   UseS3Bucket: true

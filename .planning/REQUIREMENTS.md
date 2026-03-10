@@ -67,33 +67,33 @@ Deferred to future release. Tracked but not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CRED-01 | — | Pending |
-| CRED-02 | — | Pending |
-| CRED-03 | — | Pending |
-| CRED-04 | — | Pending |
-| CRED-05 | — | Pending |
-| AUTH-01 | — | Pending |
-| AUTH-02 | — | Pending |
-| AUTH-03 | — | Pending |
-| AUTH-04 | — | Pending |
-| AUTH-05 | — | Pending |
-| ADMIN-01 | — | Pending |
-| ADMIN-02 | — | Pending |
-| ADMIN-03 | — | Pending |
-| ADMIN-04 | — | Pending |
-| ADMIN-05 | — | Pending |
-| ADMIN-06 | — | Pending |
-| ADMIN-07 | — | Pending |
-| CONF-01 | — | Pending |
-| CONF-02 | — | Pending |
-| CONF-03 | — | Pending |
-| CONF-04 | — | Pending |
+| CRED-01 | Phase 2 | Pending |
+| CRED-02 | Phase 1 | Pending |
+| CRED-03 | Phase 1 | Pending |
+| CRED-04 | Phase 2 | Pending |
+| CRED-05 | Phase 2 | Pending |
+| AUTH-01 | Phase 2 | Pending |
+| AUTH-02 | Phase 1 | Pending |
+| AUTH-03 | Phase 2 | Pending |
+| AUTH-04 | Phase 2 | Pending |
+| AUTH-05 | Phase 1 | Pending |
+| ADMIN-01 | Phase 3 | Pending |
+| ADMIN-02 | Phase 3 | Pending |
+| ADMIN-03 | Phase 3 | Pending |
+| ADMIN-04 | Phase 4 | Pending |
+| ADMIN-05 | Phase 4 | Pending |
+| ADMIN-06 | Phase 4 | Pending |
+| ADMIN-07 | Phase 3 | Pending |
+| CONF-01 | Phase 1 | Pending |
+| CONF-02 | Phase 1 | Pending |
+| CONF-03 | Phase 1 | Pending |
+| CONF-04 | Phase 1 | Pending |
 
 **Coverage:**
 - v1 requirements: 21 total
-- Mapped to phases: 0
-- Unmapped: 21
+- Mapped to phases: 21
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-10*
-*Last updated: 2026-03-10 after initial definition*
+*Last updated: 2026-03-10 — traceability mapped after roadmap creation*

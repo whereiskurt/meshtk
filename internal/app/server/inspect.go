@@ -2,12 +2,9 @@ package server
 
 import (
 	"crypto/cipher"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
@@ -61,14 +58,6 @@ func (i *InspectorPacket) String() string {
 		i.Track.ClientID, i.Track.Username, i.Track.SocketAddress, i.MQTT.Type, i.Meshtastic.PortNum)
 }
 
-// createHash('sha256').update(mqttuser + creationSeed).digest('hex').slice(0, 12).toLowerCase()
-func generateMQTTPassword(mqttuser, creationSeed string) string {
-	h := sha256.New()
-	h.Write([]byte(mqttuser + creationSeed))
-	fullHash := hex.EncodeToString(h.Sum(nil))
-	return strings.ToLower(fullHash[:12])
-}
-
 // TODO: Refactor the inspcet* functions to work on InspectorPacket instead of ServerCmd
 func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 
@@ -87,31 +76,13 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 		n.ConnTrack[ip.Track.SocketAddress] = connInfo
 		n.ConnMutex.Unlock()
 
-		isHex := func(s string) bool {
-			for _, c := range s {
-				if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-					return false
-				}
-			}
-			return true
-		}
-
+		// TODO(phase2): Replace with credential cache lookup
 		if p.Username == "ghosts" || p.Username == "kph" || p.Username == "ax" || p.Username == "meshmap" {
-			//Passthrough ;-)
-		} else if !(len(p.Username) == 12 && len(p.Password) == 12 && isHex(p.Username) && isHex(string(p.Password))) {
-			//Clobber these values so we can hang-up outside the function.
+			// Passthrough — these usernames bypass credential validation
+		} else {
+			// Clobber credentials as safe default — Phase 2 will replace with cache-backed auth
 			p.Username = ""
 			p.Password = []byte("")
-		} else {
-			expectedPassword := generateMQTTPassword(p.Username, os.Getenv("USER_CREATION_SEED"))
-			// fmt.Printf("5. KPH Check if %s==%s \n", p.Password, expectedPassword)
-			if string(p.Password) == expectedPassword {
-				p.Username = "public"
-				p.Password = []byte("31337")
-			} else {
-				p.Username = ""
-				p.Password = []byte("")
-			}
 		}
 
 	case *packets.PublishPacket:

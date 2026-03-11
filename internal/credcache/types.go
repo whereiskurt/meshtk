@@ -13,6 +13,7 @@ type Credential struct {
 	Username string `dynamodbav:"mqttUsername"`
 	Password string `dynamodbav:"mqttPassword"`
 	Usertype string `dynamodbav:"mqttUsertype"`
+	Negative bool   // Not stored in DynamoDB — marks negative cache entries.
 }
 
 // CredentialStore defines the interface for fetching credentials from a backend.

@@ -1,6 +1,7 @@
 package credcache
 
 import (
+	"sort"
 	"time"
 
 	"github.com/maypok86/otter/v2"
@@ -75,6 +76,55 @@ func (c *Cache) Stats() CacheStats {
 // Size returns the approximate number of entries in the cache.
 func (c *Cache) Size() int {
 	return c.inner.EstimatedSize()
+}
+
+// CacheEntry represents a single cache entry for admin listing.
+type CacheEntry struct {
+	Username     string `json:"username"`
+	TTLRemaining int    `json:"ttl_remaining"`
+	Negative     bool   `json:"negative"`
+}
+
+// SetWithTTL stores a credential with a custom TTL duration.
+func (c *Cache) SetWithTTL(username string, cred *Credential, ttl time.Duration) {
+	c.inner.Set(username, cred)
+	c.inner.SetExpiresAfter(username, ttl)
+}
+
+// DeleteAll invalidates all cache entries, returning the approximate count evicted.
+func (c *Cache) DeleteAll() int {
+	count := c.inner.EstimatedSize()
+	c.inner.InvalidateAll()
+	return count
+}
+
+// Entries returns all cache entries sorted by TTL remaining (ascending).
+// Returns an empty slice (not nil) when the cache is empty.
+func (c *Cache) Entries() []CacheEntry {
+	entries := make([]CacheEntry, 0)
+
+	for username := range c.inner.All() {
+		entry, ok := c.inner.GetEntryQuietly(username)
+		if !ok {
+			continue
+		}
+		expiresAt := time.Unix(0, entry.ExpiresAtNano)
+		ttl := int(time.Until(expiresAt).Seconds())
+		if ttl < 0 {
+			ttl = 0
+		}
+		entries = append(entries, CacheEntry{
+			Username:     username,
+			TTLRemaining: ttl,
+			Negative:     entry.Value.Negative,
+		})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].TTLRemaining < entries[j].TTLRemaining
+	})
+
+	return entries
 }
 
 // Close stops all cache goroutines and releases resources.

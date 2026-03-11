@@ -56,6 +56,7 @@ type CredCacheConfig struct {
 	DynamoDBEndpoint string   `default:""`
 	Passthrough      []string
 	TimeoutSecs      int `default:"5"`
+	NegativeTTLSecs  int `default:"60"`
 }
 
 type Server struct {

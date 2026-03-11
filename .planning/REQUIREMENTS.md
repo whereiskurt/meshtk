@@ -17,10 +17,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Authentication Flow
 
-- [ ] **AUTH-01**: On valid credentials, proxy swaps username/password with generic Mosquitto creds before forwarding
+- [x] **AUTH-01**: On valid credentials, proxy swaps username/password with generic Mosquitto creds before forwarding
 - [x] **AUTH-02**: Generic Mosquitto credentials are sourced from YAML config or env vars (not hardcoded)
-- [ ] **AUTH-03**: On invalid or missing credentials, proxy sends CONNACK with return code 0x05 (not authorized)
-- [ ] **AUTH-04**: Configured passthrough usernames bypass credential validation entirely
+- [x] **AUTH-03**: On invalid or missing credentials, proxy sends CONNACK with return code 0x05 (not authorized)
+- [x] **AUTH-04**: Configured passthrough usernames bypass credential validation entirely
 - [x] **AUTH-05**: Passthrough allowlist is sourced from YAML config (not hardcoded)
 
 ### Admin API
@@ -72,10 +72,10 @@ Deferred to future release. Tracked but not in current roadmap.
 | CRED-03 | Phase 1 | Complete |
 | CRED-04 | Phase 2 | Complete |
 | CRED-05 | Phase 2 | Complete |
-| AUTH-01 | Phase 2 | Pending |
+| AUTH-01 | Phase 2 | Complete |
 | AUTH-02 | Phase 1 | Complete |
-| AUTH-03 | Phase 2 | Pending |
-| AUTH-04 | Phase 2 | Pending |
+| AUTH-03 | Phase 2 | Complete |
+| AUTH-04 | Phase 2 | Complete |
 | AUTH-05 | Phase 1 | Complete |
 | ADMIN-01 | Phase 3 | Pending |
 | ADMIN-02 | Phase 3 | Pending |

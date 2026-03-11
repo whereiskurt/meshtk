@@ -31,7 +31,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **ADMIN-04**: `GET /cache/credentials` lists cached usernames with TTL remaining (no passwords)
 - [ ] **ADMIN-05**: `DELETE /cache/credentials` flushes entire cache
 - [ ] **ADMIN-06**: `GET /health` returns 200 with DynamoDB connectivity status
-- [ ] **ADMIN-07**: Admin HTTP server binds to configurable address (default localhost)
+- [x] **ADMIN-07**: Admin HTTP server binds to configurable address (default localhost)
 
 ### Configuration
 
@@ -83,7 +83,7 @@ Deferred to future release. Tracked but not in current roadmap.
 | ADMIN-04 | Phase 4 | Pending |
 | ADMIN-05 | Phase 4 | Pending |
 | ADMIN-06 | Phase 4 | Pending |
-| ADMIN-07 | Phase 3 | Pending |
+| ADMIN-07 | Phase 3 | Complete |
 | CONF-01 | Phase 1 | Complete |
 | CONF-02 | Phase 1 | Complete |
 | CONF-03 | Phase 1 | Complete |

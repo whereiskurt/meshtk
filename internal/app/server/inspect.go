@@ -77,7 +77,14 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 		n.ConnMutex.Unlock()
 
 		// TODO(phase2): Replace with credential cache lookup
-		if p.Username == "ghosts" || p.Username == "kph" || p.Username == "ax" || p.Username == "meshmap" {
+		passthrough := false
+		for _, pt := range n.Config.Server.CredCache.Passthrough {
+			if p.Username == pt {
+				passthrough = true
+				break
+			}
+		}
+		if passthrough {
 			// Passthrough — these usernames bypass credential validation
 		} else {
 			// Clobber credentials as safe default — Phase 2 will replace with cache-backed auth

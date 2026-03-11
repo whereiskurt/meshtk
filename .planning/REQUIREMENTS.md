@@ -10,8 +10,8 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Credential Store
 
 - [ ] **CRED-01**: Proxy looks up MQTT username/password in DynamoDB using defcon.run schema
-- [ ] **CRED-02**: Credential lookups are cached in-memory using Otter v2 (or equivalent) with configurable max memory size
-- [ ] **CRED-03**: Cached entries expire automatically after configurable TTL (per-entry variable TTL supported)
+- [x] **CRED-02**: Credential lookups are cached in-memory using Otter v2 (or equivalent) with configurable max memory size
+- [x] **CRED-03**: Cached entries expire automatically after configurable TTL (per-entry variable TTL supported)
 - [ ] **CRED-04**: Cache miss triggers transparent DynamoDB fetch and cache population
 - [ ] **CRED-05**: Proxy continues serving cached entries when DynamoDB is unreachable
 
@@ -68,8 +68,8 @@ Deferred to future release. Tracked but not in current roadmap.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | CRED-01 | Phase 2 | Pending |
-| CRED-02 | Phase 1 | Pending |
-| CRED-03 | Phase 1 | Pending |
+| CRED-02 | Phase 1 | Complete |
+| CRED-03 | Phase 1 | Complete |
 | CRED-04 | Phase 2 | Pending |
 | CRED-05 | Phase 2 | Pending |
 | AUTH-01 | Phase 2 | Pending |

@@ -28,7 +28,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. The in-memory cache stores a credential, returns it on lookup, expires it after TTL, and reports accurate hit/miss counters — verified by unit tests
   3. The DynamoDB adapter fetches a credential from the live defcon.run table using the correct schema and returns it as a typed Go struct
   4. No existing proxy behavior changes — the binary starts, connects, and operates identically to before this phase
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 01-01-PLAN.md — Config schema extension with CredCache, ProxyUsername/Password, AdminListenAddress + remove legacy generateMQTTPassword
+- [ ] 01-02-PLAN.md — Credential cache package: types, Otter v2 cache wrapper, DynamoDB store adapter with unit tests
 
 ### Phase 2: Authenticator and Proxy Integration
 **Goal**: Every MQTT CONNECT is validated against cached credentials — valid clients are transparently forwarded with generic Mosquitto creds, invalid clients receive a proper CONNACK 0x05 rejection, and passthrough usernames bypass validation entirely.
@@ -71,7 +74,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 0/2 | Planning complete | - |
 | 2. Authenticator and Proxy Integration | 0/TBD | Not started | - |
 | 3. Admin API | 0/TBD | Not started | - |
 | 4. Operational Hardening | 0/TBD | Not started | - |

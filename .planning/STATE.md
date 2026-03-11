@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 4 context gathered
-last_updated: "2026-03-11T13:00:42.837Z"
-last_activity: 2026-03-11 — Completed 03-02 Admin server wiring into proxy startup
+last_updated: "2026-03-11T13:19:33.956Z"
+last_activity: 2026-03-11 — Completed 04-01 Credential cache extensions
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_plans: 8
+  completed_plans: 7
+  percent: 88
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-10)
 
 **Core value:** Every MQTT CONNECT is validated against cached credentials with minimal latency — invalid clients are rejected before reaching the broker, valid clients are transparently forwarded with generic creds.
-**Current focus:** Phase 3 — Admin API
+**Current focus:** Phase 4 — Operational Hardening
 
 ## Current Position
 
-Phase: 3 of 4 (Admin API) -- COMPLETE
-Plan: 2 of 2 in current phase
+Phase: 4 of 4 (Operational Hardening)
+Plan: 1 of 2 in current phase -- COMPLETE
 Status: Executing
-Last activity: 2026-03-11 — Completed 03-02 Admin server wiring into proxy startup
+Last activity: 2026-03-11 — Completed 04-01 Credential cache extensions
 
-Progress: [██████████] 100%
+Progress: [█████████░] 88%
 
 ## Performance Metrics
 
@@ -55,6 +55,7 @@ Progress: [██████████] 100%
 | Phase 02 P02 | 5min | 2 tasks | 5 files |
 | Phase 03 P01 | 3min | 2 tasks | 6 files |
 | Phase 03 P02 | 2min | 1 tasks | 1 files |
+| Phase 04 P01 | 3min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -77,6 +78,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Used stdlib log.Logger in admin package -- consistent with credcache convention
 - [Phase 03]: Refresh endpoint bypasses circuit breaker via direct store.Fetch -- admin override by design
 - [Phase 03]: Passed nil logger to admin.NewServer (logrus/stdlib type mismatch) -- admin uses default stdlib logger
+- [Phase 04]: Used Otter v2 ExpiresAtNano (int64) for TTL calc -- ExpiresAt() method does not exist in v2
+- [Phase 04]: Negative entries stored inside singleflight callback for concurrent request deduplication
+- [Phase 04]: GetEntryQuietly used in Entries() to avoid inflating cache hit stats
 
 ### Pending Todos
 
@@ -89,6 +93,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-11T13:00:42.831Z
-Stopped at: Phase 4 context gathered
-Resume file: .planning/phases/04-operational-hardening/04-CONTEXT.md
+Last session: 2026-03-11T13:18:48Z
+Stopped at: Completed 04-01-PLAN.md
+Resume file: .planning/phases/04-operational-hardening/04-01-SUMMARY.md

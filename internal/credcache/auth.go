@@ -25,6 +25,9 @@ type CacheAuthenticator struct {
 	lastFailure         atomic.Int64 // unix nanoseconds
 	failureThreshold    int64
 	cooldownDuration    time.Duration
+
+	// Negative caching TTL for unknown users.
+	negativeTTL time.Duration
 }
 
 // AuthOption configures a CacheAuthenticator.
@@ -46,14 +49,22 @@ func WithCooldownDuration(d time.Duration) AuthOption {
 	}
 }
 
+// WithNegativeTTL sets the TTL for negative cache entries (unknown users).
+func WithNegativeTTL(d time.Duration) AuthOption {
+	return func(a *CacheAuthenticator) {
+		a.negativeTTL = d
+	}
+}
+
 // NewCacheAuthenticator creates a CacheAuthenticator with the given cache and store.
-// Defaults: failureThreshold=3, cooldownDuration=10s.
+// Defaults: failureThreshold=3, cooldownDuration=10s, negativeTTL=60s.
 func NewCacheAuthenticator(cache *Cache, store CredentialStore, opts ...AuthOption) *CacheAuthenticator {
 	a := &CacheAuthenticator{
 		cache:            cache,
 		store:            store,
 		failureThreshold: 3,
 		cooldownDuration: 10 * time.Second,
+		negativeTTL:      60 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -73,6 +84,10 @@ func (a *CacheAuthenticator) Verify(ctx context.Context, username string, passwo
 	// Try cache first.
 	cred, ok := a.cache.Get(username)
 	if ok {
+		// Negative cache entry: reject without password comparison.
+		if cred.Negative {
+			return false, nil
+		}
 		return comparePassword(cred.Password, password), nil
 	}
 
@@ -91,7 +106,7 @@ func (a *CacheAuthenticator) Verify(ctx context.Context, username string, passwo
 // fetchWithSingleflight wraps store.Fetch with singleflight deduplication
 // and circuit breaker logic.
 func (a *CacheAuthenticator) fetchWithSingleflight(ctx context.Context, username string) (*Credential, error) {
-	if a.isDegraded() {
+	if a.IsDegraded() {
 		return nil, fmt.Errorf("dynamodb circuit breaker open")
 	}
 
@@ -99,7 +114,9 @@ func (a *CacheAuthenticator) fetchWithSingleflight(ctx context.Context, username
 		cred, err := a.store.Fetch(ctx, username)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				// Not found is not a failure — don't record.
+				// Not found: store negative entry to avoid repeated lookups.
+				negCred := &Credential{Username: username, Negative: true}
+				a.cache.SetWithTTL(username, negCred, a.negativeTTL)
 				return nil, nil
 			}
 			a.recordFailure()
@@ -135,8 +152,8 @@ func (a *CacheAuthenticator) ResetCircuitBreaker() {
 	}
 }
 
-// isDegraded returns true when the circuit breaker is open.
-func (a *CacheAuthenticator) isDegraded() bool {
+// IsDegraded returns true when the circuit breaker is open.
+func (a *CacheAuthenticator) IsDegraded() bool {
 	failures := a.consecutiveFailures.Load()
 	if failures < a.failureThreshold {
 		return false

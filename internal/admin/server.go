@@ -34,9 +34,12 @@ func NewServer(cache *credcache.Cache, store credcache.CredentialStore, auth *cr
 // Handler returns an http.Handler with all admin routes registered.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /cache/credentials", s.handleListCredentials)
+	mux.HandleFunc("DELETE /cache/credentials", s.handleFlushCredentials)
 	mux.HandleFunc("DELETE /cache/credentials/{username}", s.handleEvict)
 	mux.HandleFunc("POST /cache/credentials/{username}/refresh", s.handleRefresh)
 	mux.HandleFunc("GET /cache/stats", s.handleStats)
+	mux.HandleFunc("GET /health", s.handleHealth)
 	return s.withLogging(mux)
 }
 
@@ -76,6 +79,42 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"username":  username,
 		"refreshed": true,
+	})
+}
+
+// handleListCredentials returns all cached entries with username, TTL, and negative flag.
+// Passwords are never included in the response.
+func (s *Server) handleListCredentials(w http.ResponseWriter, r *http.Request) {
+	entries := s.cache.Entries()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"count":   len(entries),
+		"entries": entries,
+	})
+}
+
+// handleFlushCredentials removes all entries from the cache.
+// Stats counters are preserved (cumulative lifetime counters).
+func (s *Server) handleFlushCredentials(w http.ResponseWriter, r *http.Request) {
+	count := s.cache.DeleteAll()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"evicted_count": count,
+		"stats_reset":   false,
+	})
+}
+
+// handleHealth returns service health status. Always returns HTTP 200 so ECS
+// health checks won't kill the task during DynamoDB outages.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	status := "healthy"
+	dynamo := "reachable"
+	if s.auth.IsDegraded() {
+		status = "degraded"
+		dynamo = "unreachable"
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":        status,
+		"dynamodb":      dynamo,
+		"cache_entries": s.cache.Size(),
 	})
 }
 

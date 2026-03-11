@@ -43,7 +43,10 @@ Plans:
   3. A client whose username is in the passthrough allowlist connects without credential validation, using its own credentials forwarded as-is
   4. On DynamoDB unavailability, clients with credentials already in cache connect successfully; clients not in cache receive a CONNACK rejection
   5. Concurrent CONNECT attempts for the same uncached username result in exactly one DynamoDB fetch (singleflight — no stampede)
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 02-01-PLAN.md — CacheAuthenticator implementation with singleflight, circuit breaker, constant-time password comparison, and unit tests
+- [ ] 02-02-PLAN.md — Proxy integration: Authenticator interface, inspect.go/proxy.go/cmd.go wiring, CONNACK 0x05 rejection, credential swap
 
 ### Phase 3: Admin API
 **Goal**: An operator can evict specific cached credentials immediately, force a cache refresh, and inspect current cache stats — all via HTTP on a configurable local address.
@@ -75,6 +78,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 0/2 | Planning complete | - |
-| 2. Authenticator and Proxy Integration | 0/TBD | Not started | - |
+| 2. Authenticator and Proxy Integration | 0/2 | Planning complete | - |
 | 3. Admin API | 0/TBD | Not started | - |
 | 4. Operational Hardening | 0/TBD | Not started | - |

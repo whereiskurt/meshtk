@@ -25,9 +25,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Admin API
 
-- [ ] **ADMIN-01**: `DELETE /cache/credentials/{username}` evicts a specific cached entry
-- [ ] **ADMIN-02**: `POST /cache/credentials/{username}/refresh` force re-fetches from DynamoDB
-- [ ] **ADMIN-03**: `GET /cache/stats` returns entry count, hit/miss counters, hit rate
+- [x] **ADMIN-01**: `DELETE /cache/credentials/{username}` evicts a specific cached entry
+- [x] **ADMIN-02**: `POST /cache/credentials/{username}/refresh` force re-fetches from DynamoDB
+- [x] **ADMIN-03**: `GET /cache/stats` returns entry count, hit/miss counters, hit rate
 - [ ] **ADMIN-04**: `GET /cache/credentials` lists cached usernames with TTL remaining (no passwords)
 - [ ] **ADMIN-05**: `DELETE /cache/credentials` flushes entire cache
 - [ ] **ADMIN-06**: `GET /health` returns 200 with DynamoDB connectivity status
@@ -77,9 +77,9 @@ Deferred to future release. Tracked but not in current roadmap.
 | AUTH-03 | Phase 2 | Complete |
 | AUTH-04 | Phase 2 | Complete |
 | AUTH-05 | Phase 1 | Complete |
-| ADMIN-01 | Phase 3 | Pending |
-| ADMIN-02 | Phase 3 | Pending |
-| ADMIN-03 | Phase 3 | Pending |
+| ADMIN-01 | Phase 3 | Complete |
+| ADMIN-02 | Phase 3 | Complete |
+| ADMIN-03 | Phase 3 | Complete |
 | ADMIN-04 | Phase 4 | Pending |
 | ADMIN-05 | Phase 4 | Pending |
 | ADMIN-06 | Phase 4 | Pending |

@@ -126,6 +126,15 @@ func comparePassword(stored string, raw []byte) bool {
 	return subtle.ConstantTimeCompare([]byte(hexPassword), []byte(stored)) == 1
 }
 
+// ResetCircuitBreaker resets the consecutive failure counter to zero.
+// Used by admin API to manually recover from degraded state.
+func (a *CacheAuthenticator) ResetCircuitBreaker() {
+	prev := a.consecutiveFailures.Swap(0)
+	if prev > 0 {
+		log.Printf("[INFO] Circuit breaker reset by admin (was at %d consecutive failures)", prev)
+	}
+}
+
 // isDegraded returns true when the circuit breaker is open.
 func (a *CacheAuthenticator) isDegraded() bool {
 	failures := a.consecutiveFailures.Load()

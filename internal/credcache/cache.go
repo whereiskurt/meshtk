@@ -72,6 +72,11 @@ func (c *Cache) Stats() CacheStats {
 	}
 }
 
+// Size returns the approximate number of entries in the cache.
+func (c *Cache) Size() int {
+	return c.inner.EstimatedSize()
+}
+
 // Close stops all cache goroutines and releases resources.
 func (c *Cache) Close() {
 	c.inner.StopAllGoroutines()

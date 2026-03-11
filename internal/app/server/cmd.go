@@ -84,7 +84,9 @@ func NewServer(c *config.Config) (n *ServerCmd) {
 
 	n.cache = cache
 	n.store = store
-	n.authenticator = credcache.NewCacheAuthenticator(cache, store)
+	n.authenticator = credcache.NewCacheAuthenticator(cache, store,
+		credcache.WithNegativeTTL(time.Duration(c.Server.CredCache.NegativeTTLSecs)*time.Second),
+	)
 	n.Authenticator = n.authenticator
 
 	return n

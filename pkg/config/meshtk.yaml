@@ -79,6 +79,7 @@ Server:
     TableRegion: "us-east-1"
     DynamoDBEndpoint: ""
     TimeoutSecs: 5
+    NegativeTTLSecs: 60
     Passthrough:
       - "ghosts"
       - "kph"

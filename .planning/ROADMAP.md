@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 1: Foundation** - Config schema, in-memory cache data structure, and DynamoDB adapter with zero proxy behavior changes
 - [ ] **Phase 2: Authenticator and Proxy Integration** - Wire credential validation into the proxy CONNECT path with proper CONNACK rejection and credential swap
 - [ ] **Phase 3: Admin API** - HTTP server for cache eviction, refresh, and stats (security control + operational visibility)
-- [ ] **Phase 4: Operational Hardening** - Negative caching, cache inspection, bulk eviction, and health check endpoint
+- [x] **Phase 4: Operational Hardening** - Negative caching, cache inspection, bulk eviction, and health check endpoint (completed 2026-03-11)
 
 ## Phase Details
 
@@ -71,7 +71,7 @@ Plans:
   2. `DELETE /cache/credentials` (no username) flushes the entire cache; subsequent CONNECTs for all users trigger fresh DynamoDB lookups
   3. `GET /health` returns HTTP 200 with a JSON body indicating DynamoDB connectivity status (reachable / unreachable)
   4. Repeated CONNECT attempts with unknown usernames do not cause unbounded DynamoDB calls — negative results are cached with a short TTL and a bounded entry cap
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 04-01-PLAN.md — Credcache layer: negative caching, SetWithTTL/DeleteAll/Entries methods, IsDegraded export, NegativeTTLSecs config
 - [ ] 04-02-PLAN.md — Admin endpoints: GET /cache/credentials listing, DELETE /cache/credentials flush, GET /health check
@@ -86,4 +86,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. Foundation | 0/2 | Planning complete | - |
 | 2. Authenticator and Proxy Integration | 0/2 | Planning complete | - |
 | 3. Admin API | 0/2 | Planning complete | - |
-| 4. Operational Hardening | 1/2 | In Progress|  |
+| 4. Operational Hardening | 2/2 | Complete   | 2026-03-11 |

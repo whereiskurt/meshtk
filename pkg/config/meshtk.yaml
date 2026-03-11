@@ -69,6 +69,22 @@ Server:
   S3BucketRegion: "us-east-1"
   S3BucketName: "meshtk-blocklist-20250101"
   S3BucketPrefix: "meshtk/blocklist"
+  ProxyUsername: "public"
+  ProxyPassword: "31337"
+  AdminListenAddress: "localhost:9090"
+  CredCache:
+    TTLSecs: 900
+    MaxSizeMB: 64
+    TableName: "run-human-electro"
+    TableRegion: "us-east-1"
+    DynamoDBEndpoint: ""
+    TimeoutSecs: 5
+    NegativeTTLSecs: 60
+    Passthrough:
+      - "ghosts"
+      - "kph"
+      - "ax"
+      - "meshmap"
 
 Fleet:
   - Id: "rebar-fleet"

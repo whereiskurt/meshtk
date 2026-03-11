@@ -1,13 +1,11 @@
 package server
 
 import (
+	"context"
 	"crypto/cipher"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
@@ -19,9 +17,10 @@ import (
 )
 
 type InspectorPacket struct {
-	Track *ConnectionInfo
-	Log   *log.Logger
-	Raw   *RawPacket
+	Track        *ConnectionInfo
+	Log          *log.Logger
+	Raw          *RawPacket
+	AuthRejected bool
 
 	MQTT struct {
 		Type   string
@@ -61,16 +60,8 @@ func (i *InspectorPacket) String() string {
 		i.Track.ClientID, i.Track.Username, i.Track.SocketAddress, i.MQTT.Type, i.Meshtastic.PortNum)
 }
 
-// createHash('sha256').update(mqttuser + creationSeed).digest('hex').slice(0, 12).toLowerCase()
-func generateMQTTPassword(mqttuser, creationSeed string) string {
-	h := sha256.New()
-	h.Write([]byte(mqttuser + creationSeed))
-	fullHash := hex.EncodeToString(h.Sum(nil))
-	return strings.ToLower(fullHash[:12])
-}
-
 // TODO: Refactor the inspcet* functions to work on InspectorPacket instead of ServerCmd
-func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
+func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd, clientConn net.Conn) {
 
 	switch p := (*ip.Raw.MQTT).(type) {
 	case *packets.ConnectPacket:
@@ -87,30 +78,42 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 		n.ConnTrack[ip.Track.SocketAddress] = connInfo
 		n.ConnMutex.Unlock()
 
-		isHex := func(s string) bool {
-			for _, c := range s {
-				if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-					return false
-				}
+		// Passthrough check
+		passthrough := false
+		for _, pt := range n.Config.Server.CredCache.Passthrough {
+			if p.Username == pt {
+				passthrough = true
+				break
 			}
-			return true
 		}
 
-		if p.Username == "ghosts" || p.Username == "kph" || p.Username == "ax" || p.Username == "meshmap" {
-			//Passthrough ;-)
-		} else if !(len(p.Username) == 12 && len(p.Password) == 12 && isHex(p.Username) && isHex(string(p.Password))) {
-			//Clobber these values so we can hang-up outside the function.
-			p.Username = ""
-			p.Password = []byte("")
+		if passthrough {
+			// Passthrough -- forward as-is with original credentials
+		} else if p.Username == "" {
+			// Empty username -- reject (fail closed)
+			writeConnackRejection(clientConn)
+			ip.AuthRejected = true
 		} else {
-			expectedPassword := generateMQTTPassword(p.Username, os.Getenv("USER_CREATION_SEED"))
-			// fmt.Printf("5. KPH Check if %s==%s \n", p.Password, expectedPassword)
-			if string(p.Password) == expectedPassword {
-				p.Username = "public"
-				p.Password = []byte("31337")
+			// Credential validation
+			ctx, cancel := context.WithTimeout(context.Background(),
+				time.Duration(n.Config.Server.CredCache.TimeoutSecs)*time.Second)
+			defer cancel()
+
+			valid, err := n.Authenticator.Verify(ctx, p.Username, p.Password)
+			if err != nil {
+				n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=error, err=%v",
+					ip.Track.SocketAddress, p.Username, err)
+				writeConnackRejection(clientConn)
+				ip.AuthRejected = true
+			} else if !valid {
+				n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=invalid",
+					ip.Track.SocketAddress, p.Username)
+				writeConnackRejection(clientConn)
+				ip.AuthRejected = true
 			} else {
-				p.Username = ""
-				p.Password = []byte("")
+				// Valid -- swap to generic Mosquitto credentials
+				p.Username = n.Config.Server.ProxyUsername
+				p.Password = []byte(n.Config.Server.ProxyPassword)
 			}
 		}
 

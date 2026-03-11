@@ -48,6 +48,17 @@ type Config struct {
 	WasSuccess bool
 }
 
+type CredCacheConfig struct {
+	TTLSecs          int      `default:"900"`
+	MaxSizeMB        int      `default:"64"`
+	TableName        string   `default:"run-human-electro"`
+	TableRegion      string   `default:"us-east-1"`
+	DynamoDBEndpoint string   `default:""`
+	Passthrough      []string
+	TimeoutSecs      int `default:"5"`
+	NegativeTTLSecs  int `default:"60"`
+}
+
 type Server struct {
 	InspectorListenAddress string `default:"localhost:50051"`
 	ProxyListenAddress     string `default:"0.0.0.0:1883"`
@@ -62,6 +73,10 @@ type Server struct {
 	CheckLogIntervalSecs   int    `default:"10"`
 	ShouldLogBlocks        bool   `default:"true"`
 	ShouldLogAllows        bool   `default:"true"`
+	CredCache              CredCacheConfig `json:"CredCache"`
+	ProxyUsername          string          `default:"public"`
+	ProxyPassword          string          `default:"31337"`
+	AdminListenAddress     string          `default:"localhost:9090"`
 }
 
 type Fleet struct {

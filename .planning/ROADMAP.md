@@ -57,7 +57,10 @@ Plans:
   2. `POST /cache/credentials/{username}/refresh` fetches the credential from DynamoDB and updates the cache entry immediately
   3. `GET /cache/stats` returns current entry count, hit counter, miss counter, and hit rate as JSON
   4. The admin HTTP server binds only to the configured address (default localhost) and starts alongside the proxy without affecting MQTT throughput
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 03-01-PLAN.md — Admin package: Cache.Size(), ResetCircuitBreaker(), evict/refresh/stats handlers with httptest tests
+- [ ] 03-02-PLAN.md — Wire admin server into StartProxyServer with ServerCmd refactor for concrete type access
 
 ### Phase 4: Operational Hardening
 **Goal**: The proxy handles brute-force attempts without DynamoDB cost spikes, operators can inspect and bulk-clear the cache during incidents, and the ECS health check has a real endpoint to target.
@@ -79,5 +82,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Foundation | 0/2 | Planning complete | - |
 | 2. Authenticator and Proxy Integration | 0/2 | Planning complete | - |
-| 3. Admin API | 0/TBD | Not started | - |
+| 3. Admin API | 0/2 | Planning complete | - |
 | 4. Operational Hardening | 0/TBD | Not started | - |

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	proxyproto "github.com/pires/go-proxyproto"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"github.com/whereiskurt/meshtk/internal/admin"
 	"github.com/whereiskurt/meshtk/internal/app/help"
 	"github.com/whereiskurt/meshtk/internal/credcache"
 	"github.com/whereiskurt/meshtk/pkg/config"
@@ -40,6 +42,11 @@ type ServerCmd struct {
 	LogFileMutex         sync.RWMutex
 	InspectorLogger      *log.Logger
 	InspectorLogFilename string
+
+	// Concrete types for admin API wiring (lowercase = unexported)
+	cache         *credcache.Cache
+	store         *credcache.DynamoDBStore
+	authenticator *credcache.CacheAuthenticator
 }
 
 func NewAESCipher(key []byte) cipher.Block {
@@ -74,7 +81,11 @@ func NewServer(c *config.Config) (n *ServerCmd) {
 	if err != nil {
 		c.Log.Fatalf("Failed to create DynamoDB store: %v", err)
 	}
-	n.Authenticator = credcache.NewCacheAuthenticator(cache, store)
+
+	n.cache = cache
+	n.store = store
+	n.authenticator = credcache.NewCacheAuthenticator(cache, store)
+	n.Authenticator = n.authenticator
 
 	return n
 }
@@ -171,6 +182,18 @@ func (n *ServerCmd) StartProxyServer() error {
 
 	n.ConnMutex = sync.RWMutex{}
 	n.ConnTrack = make(map[string]*ConnectionInfo)
+
+	// Launch admin HTTP server if configured
+	adminAddr := n.Config.Server.AdminListenAddress
+	if adminAddr != "" {
+		adminSrv := admin.NewServer(n.cache, n.store, n.authenticator, nil)
+		go func() {
+			n.Config.Log.Infof("Admin API listening on %s", adminAddr)
+			if err := http.ListenAndServe(adminAddr, adminSrv.Handler()); err != nil {
+				n.Config.Log.Errorf("Admin server error: %v", err)
+			}
+		}()
+	}
 
 	go func() {
 		for {

@@ -1,0 +1,153 @@
+package credcache
+
+import (
+	"context"
+	"crypto/subtle"
+	"errors"
+	"fmt"
+	"log"
+	"sync/atomic"
+	"time"
+
+	"golang.org/x/sync/singleflight"
+)
+
+// CacheAuthenticator orchestrates credential verification using a cache,
+// a credential store (DynamoDB), singleflight for deduplication, and a
+// circuit breaker for store degradation.
+type CacheAuthenticator struct {
+	cache *Cache
+	store CredentialStore
+	sf    singleflight.Group
+
+	// Circuit breaker state (all accessed atomically).
+	consecutiveFailures atomic.Int64
+	lastFailure         atomic.Int64 // unix nanoseconds
+	failureThreshold    int64
+	cooldownDuration    time.Duration
+}
+
+// AuthOption configures a CacheAuthenticator.
+type AuthOption func(*CacheAuthenticator)
+
+// WithFailureThreshold sets the number of consecutive store failures before
+// the circuit breaker trips.
+func WithFailureThreshold(n int64) AuthOption {
+	return func(a *CacheAuthenticator) {
+		a.failureThreshold = n
+	}
+}
+
+// WithCooldownDuration sets the duration after which the circuit breaker
+// allows a retry after tripping.
+func WithCooldownDuration(d time.Duration) AuthOption {
+	return func(a *CacheAuthenticator) {
+		a.cooldownDuration = d
+	}
+}
+
+// NewCacheAuthenticator creates a CacheAuthenticator with the given cache and store.
+// Defaults: failureThreshold=3, cooldownDuration=10s.
+func NewCacheAuthenticator(cache *Cache, store CredentialStore, opts ...AuthOption) *CacheAuthenticator {
+	a := &CacheAuthenticator{
+		cache:            cache,
+		store:            store,
+		failureThreshold: 3,
+		cooldownDuration: 10 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
+}
+
+// Verify checks the given username and password against cached or fetched credentials.
+// Password is hex-encoded before constant-time comparison with the stored value.
+// Returns (true, nil) on match, (false, nil) on mismatch or unknown user,
+// (false, error) on store/circuit-breaker errors.
+func (a *CacheAuthenticator) Verify(ctx context.Context, username string, password []byte) (bool, error) {
+	if username == "" {
+		return false, nil
+	}
+
+	// Try cache first.
+	cred, ok := a.cache.Get(username)
+	if ok {
+		return comparePassword(cred.Password, password), nil
+	}
+
+	// Cache miss: fetch via singleflight.
+	cred, err := a.fetchWithSingleflight(ctx, username)
+	if err != nil {
+		return false, err
+	}
+	if cred == nil {
+		return false, nil
+	}
+
+	return comparePassword(cred.Password, password), nil
+}
+
+// fetchWithSingleflight wraps store.Fetch with singleflight deduplication
+// and circuit breaker logic.
+func (a *CacheAuthenticator) fetchWithSingleflight(ctx context.Context, username string) (*Credential, error) {
+	if a.isDegraded() {
+		return nil, fmt.Errorf("dynamodb circuit breaker open")
+	}
+
+	v, err, _ := a.sf.Do(username, func() (interface{}, error) {
+		cred, err := a.store.Fetch(ctx, username)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				// Not found is not a failure — don't record.
+				return nil, nil
+			}
+			a.recordFailure()
+			return nil, err
+		}
+		a.recordSuccess()
+		a.cache.Set(username, cred)
+		return cred, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return nil, nil
+	}
+	return v.(*Credential), nil
+}
+
+// comparePassword hex-encodes the raw password bytes and performs a
+// constant-time comparison against the stored hex string.
+func comparePassword(stored string, raw []byte) bool {
+	hexPassword := fmt.Sprintf("%x", raw)
+	return subtle.ConstantTimeCompare([]byte(hexPassword), []byte(stored)) == 1
+}
+
+// isDegraded returns true when the circuit breaker is open.
+func (a *CacheAuthenticator) isDegraded() bool {
+	failures := a.consecutiveFailures.Load()
+	if failures < a.failureThreshold {
+		return false
+	}
+	lastFail := time.Unix(0, a.lastFailure.Load())
+	return time.Since(lastFail) < a.cooldownDuration
+}
+
+// recordFailure increments the consecutive failure counter and records the
+// failure timestamp.
+func (a *CacheAuthenticator) recordFailure() {
+	a.consecutiveFailures.Add(1)
+	a.lastFailure.Store(time.Now().UnixNano())
+}
+
+// recordSuccess resets the failure counter. Logs restoration if recovering
+// from failures.
+func (a *CacheAuthenticator) recordSuccess() {
+	prev := a.consecutiveFailures.Swap(0)
+	if prev > 0 {
+		log.Printf("[INFO] DynamoDB connectivity restored (was at %d consecutive failures)", prev)
+	}
+}

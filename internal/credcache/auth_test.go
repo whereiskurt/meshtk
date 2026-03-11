@@ -461,6 +461,116 @@ func TestCacheAuthenticator_ResetCircuitBreaker_NoOp(t *testing.T) {
 	auth.ResetCircuitBreaker()
 }
 
+func TestVerify_NegativeCache_RejectsWithoutDynamoCall(t *testing.T) {
+	cache := newTestCache(t)
+	store := newMockStore()
+
+	// Pre-populate cache with a negative entry
+	cache.Set("baduser", &Credential{Username: "baduser", Negative: true})
+
+	auth := NewCacheAuthenticator(cache, store)
+
+	ok, err := auth.Verify(context.Background(), "baduser", []byte("anything"))
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if ok {
+		t.Fatal("Verify() = true, want false for negative cache entry")
+	}
+	if store.calls() != 0 {
+		t.Errorf("store.Fetch called %d times, want 0 (negative cache hit)", store.calls())
+	}
+}
+
+func TestNegativeCache_StoredOnErrNotFound(t *testing.T) {
+	cache := newTestCache(t)
+	store := newMockStore() // no creds — returns ErrNotFound
+
+	auth := NewCacheAuthenticator(cache, store)
+
+	// First call: triggers store.Fetch which returns ErrNotFound
+	ok, err := auth.Verify(context.Background(), "unknown", []byte("pass"))
+	if err != nil {
+		t.Fatalf("Verify() first call error = %v", err)
+	}
+	if ok {
+		t.Fatal("Verify() first call = true, want false")
+	}
+	if store.calls() != 1 {
+		t.Fatalf("store.Fetch called %d times on first call, want 1", store.calls())
+	}
+
+	// Second call: should hit negative cache, no store call
+	ok, err = auth.Verify(context.Background(), "unknown", []byte("pass"))
+	if err != nil {
+		t.Fatalf("Verify() second call error = %v", err)
+	}
+	if ok {
+		t.Fatal("Verify() second call = true, want false")
+	}
+	if store.calls() != 1 {
+		t.Errorf("store.Fetch called %d times after negative cache, want still 1", store.calls())
+	}
+}
+
+func TestNegativeCache_DoesNotAffectValidEntries(t *testing.T) {
+	cache := newTestCache(t)
+	store := newMockStore()
+	store.setCred("valid", &Credential{
+		Username: "valid",
+		Password: "68656c6c6f", // hex("hello")
+		Usertype: "device",
+	})
+
+	auth := NewCacheAuthenticator(cache, store)
+
+	// Verify valid user works
+	ok, err := auth.Verify(context.Background(), "valid", []byte("hello"))
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Verify() = false, want true for valid credential")
+	}
+
+	// Trigger negative cache for unknown user
+	auth.Verify(context.Background(), "unknown", []byte("pass"))
+
+	// Valid user from cache should still work
+	ok, err = auth.Verify(context.Background(), "valid", []byte("hello"))
+	if err != nil {
+		t.Fatalf("Verify() after negative cache: error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Verify() after negative cache = false, want true for valid credential")
+	}
+}
+
+func TestIsDegraded_ExportedMethod(t *testing.T) {
+	cache := newTestCache(t)
+	store := newMockStore()
+	store.setError(errors.New("dynamodb timeout"))
+
+	auth := NewCacheAuthenticator(cache, store,
+		WithFailureThreshold(2),
+		WithCooldownDuration(5*time.Second),
+	)
+
+	// Healthy state
+	if auth.IsDegraded() {
+		t.Fatal("IsDegraded() = true on healthy authenticator, want false")
+	}
+
+	// Trip circuit breaker
+	for i := 0; i < 2; i++ {
+		auth.Verify(context.Background(), fmt.Sprintf("fail%d", i), []byte("pass"))
+	}
+
+	if !auth.IsDegraded() {
+		t.Fatal("IsDegraded() = false after tripping breaker, want true")
+	}
+}
+
 func TestCircuitBreaker_CacheHitsDuringDegradedMode(t *testing.T) {
 	cache := newTestCache(t)
 	store := newMockStore()

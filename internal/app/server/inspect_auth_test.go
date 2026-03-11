@@ -45,47 +45,27 @@ func newTestServerCmd(auth *mockAuthenticator) *ServerCmd {
 	return n
 }
 
-// newTestInspectorPacket creates an InspectorPacket wrapping a ConnectPacket
-// with the given username/password. Returns the packet and the client end of
-// the net.Pipe (where CONNACK responses can be read).
-func newTestInspectorPacket(username, password string) (*InspectorPacket, net.Conn) {
-	clientConn, serverConn := net.Pipe()
+func TestInspectAuth_ValidCredentials_SwapsToGeneric(t *testing.T) {
+	mock := &mockAuthenticator{valid: true}
+	n := newTestServerCmd(mock)
 
 	connectPacket := &packets.ConnectPacket{
-		FixedHeader: packets.FixedHeader{MessageType: packets.Connect},
-		Username:    username,
-		Password:    []byte(password),
+		FixedHeader:      packets.FixedHeader{MessageType: packets.Connect},
+		Username:         "validuser",
+		Password:         []byte("validpass"),
 		ClientIdentifier: "test-client",
 	}
 	var cp packets.ControlPacket = connectPacket
+
+	clientConn, readConn := net.Pipe()
+	defer readConn.Close()
+	defer clientConn.Close()
 
 	ip := &InspectorPacket{
 		Log:   log.New(),
 		Track: &ConnectionInfo{SocketAddress: "127.0.0.1:12345"},
 		Raw:   &RawPacket{MQTT: &cp},
 	}
-
-	// We return serverConn for reading CONNACK; clientConn is passed to inspectRawPacket
-	// Actually the pipe: serverConn is the "client side" we read from, clientConn is passed to inspect
-	return ip, serverConn
-}
-
-func TestInspectAuth_ValidCredentials_SwapsToGeneric(t *testing.T) {
-	mock := &mockAuthenticator{valid: true}
-	n := newTestServerCmd(mock)
-
-	ip, clientSide := newTestInspectorPacket("validuser", "validpass")
-	defer clientSide.Close()
-
-	// Get the server side of the pipe to pass to inspectRawPacket
-	_, serverSide := net.Pipe()
-	defer serverSide.Close()
-	// We need to use the pipe correctly: ip was created with one pipe,
-	// we pass the other end to inspectRawPacket for writing CONNACK
-	// Re-create with proper pipe handling
-	clientConn, readConn := net.Pipe()
-	defer readConn.Close()
-	defer clientConn.Close()
 
 	ip.inspectRawPacket(n, clientConn)
 
@@ -133,7 +113,7 @@ func TestInspectAuth_InvalidCredentials_RejectsWithConnack(t *testing.T) {
 
 	connack, ok := respPacket.(*packets.ConnackPacket)
 	require.True(t, ok, "expected ConnackPacket")
-	assert.Equal(t, packets.ErrRefusedNotAuthorised, connack.ReturnCode)
+	assert.Equal(t, byte(packets.ErrRefusedNotAuthorised), connack.ReturnCode)
 
 	<-done
 	assert.True(t, ip.AuthRejected)
@@ -174,7 +154,7 @@ func TestInspectAuth_EmptyUsername_RejectsWithConnack(t *testing.T) {
 
 	connack, ok := respPacket.(*packets.ConnackPacket)
 	require.True(t, ok, "expected ConnackPacket")
-	assert.Equal(t, packets.ErrRefusedNotAuthorised, connack.ReturnCode)
+	assert.Equal(t, byte(packets.ErrRefusedNotAuthorised), connack.ReturnCode)
 
 	<-done
 	assert.True(t, ip.AuthRejected)
@@ -247,7 +227,7 @@ func TestInspectAuth_VerifyError_RejectsWithConnack(t *testing.T) {
 
 	connack, ok := respPacket.(*packets.ConnackPacket)
 	require.True(t, ok, "expected ConnackPacket")
-	assert.Equal(t, packets.ErrRefusedNotAuthorised, connack.ReturnCode)
+	assert.Equal(t, byte(packets.ErrRefusedNotAuthorised), connack.ReturnCode)
 
 	<-done
 	assert.True(t, ip.AuthRejected)

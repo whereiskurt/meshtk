@@ -19,6 +19,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/whereiskurt/meshtk/internal/app/help"
+	"github.com/whereiskurt/meshtk/internal/credcache"
 	"github.com/whereiskurt/meshtk/pkg/config"
 	"github.com/whereiskurt/meshtk/pkg/network"
 )
@@ -33,7 +34,8 @@ type ServerCmd struct {
 	ConnMutex sync.RWMutex
 
 	Ciphers              []cipher.Block
-	PacketDecider        Decider // Interface for making packet routing decisions
+	PacketDecider        Decider        // Interface for making packet routing decisions
+	Authenticator        Authenticator  // Interface for MQTT CONNECT credential validation
 	Limiters             []network.Limiter
 	LogFileMutex         sync.RWMutex
 	InspectorLogger      *log.Logger
@@ -54,6 +56,26 @@ func NewServer(c *config.Config) (n *ServerCmd) {
 	n.SetupTracker()
 	n.LoadCiphers(c)
 	n.LoadInspectorRules()
+
+	// Initialize credential cache and authenticator for proxy mode
+	cache, err := credcache.NewCache(
+		c.Server.CredCache.TTLSecs,
+		c.Server.CredCache.MaxSizeMB,
+	)
+	if err != nil {
+		c.Log.Fatalf("Failed to create credential cache: %v", err)
+	}
+
+	store, err := credcache.NewDynamoDBStore(
+		c.Server.CredCache.TableName,
+		c.Server.CredCache.TableRegion,
+		c.Server.CredCache.DynamoDBEndpoint,
+	)
+	if err != nil {
+		c.Log.Fatalf("Failed to create DynamoDB store: %v", err)
+	}
+	n.Authenticator = credcache.NewCacheAuthenticator(cache, store)
+
 	return n
 }
 

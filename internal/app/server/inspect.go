@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/cipher"
 	"encoding/binary"
 	"fmt"
@@ -60,7 +61,7 @@ func (i *InspectorPacket) String() string {
 }
 
 // TODO: Refactor the inspcet* functions to work on InspectorPacket instead of ServerCmd
-func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
+func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd, clientConn net.Conn) {
 
 	switch p := (*ip.Raw.MQTT).(type) {
 	case *packets.ConnectPacket:
@@ -77,7 +78,7 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 		n.ConnTrack[ip.Track.SocketAddress] = connInfo
 		n.ConnMutex.Unlock()
 
-		// TODO(phase2): Replace with credential cache lookup
+		// Passthrough check
 		passthrough := false
 		for _, pt := range n.Config.Server.CredCache.Passthrough {
 			if p.Username == pt {
@@ -85,12 +86,35 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd) {
 				break
 			}
 		}
+
 		if passthrough {
-			// Passthrough — these usernames bypass credential validation
+			// Passthrough -- forward as-is with original credentials
+		} else if p.Username == "" {
+			// Empty username -- reject (fail closed)
+			writeConnackRejection(clientConn)
+			ip.AuthRejected = true
 		} else {
-			// Clobber credentials as safe default — Phase 2 will replace with cache-backed auth
-			p.Username = ""
-			p.Password = []byte("")
+			// Credential validation
+			ctx, cancel := context.WithTimeout(context.Background(),
+				time.Duration(n.Config.Server.CredCache.TimeoutSecs)*time.Second)
+			defer cancel()
+
+			valid, err := n.Authenticator.Verify(ctx, p.Username, p.Password)
+			if err != nil {
+				n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=error, err=%v",
+					ip.Track.SocketAddress, p.Username, err)
+				writeConnackRejection(clientConn)
+				ip.AuthRejected = true
+			} else if !valid {
+				n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=invalid",
+					ip.Track.SocketAddress, p.Username)
+				writeConnackRejection(clientConn)
+				ip.AuthRejected = true
+			} else {
+				// Valid -- swap to generic Mosquitto credentials
+				p.Username = n.Config.Server.ProxyUsername
+				p.Password = []byte(n.Config.Server.ProxyPassword)
+			}
 		}
 
 	case *packets.PublishPacket:

@@ -66,13 +66,10 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 				Raw:   &RawPacket{MQTT: &packet},
 			}
 
-			ip.inspectRawPacket(n)
+			ip.inspectRawPacket(n, conn)
 
-			switch p := (*ip.Raw.MQTT).(type) {
-			case *packets.ConnectPacket:
-				if p.Username == "" {
-					return
-				}
+			if ip.AuthRejected {
+				return
 			}
 
 			// TODO: Build this out as an actual ALLOW_LIST

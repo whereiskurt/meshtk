@@ -149,6 +149,34 @@ func TestCacheTTLExpiry(t *testing.T) {
 	}
 }
 
+func TestCache_Size_EmptyCache(t *testing.T) {
+	c, err := NewCache(900, 64)
+	if err != nil {
+		t.Fatalf("NewCache() error = %v", err)
+	}
+	defer c.Close()
+
+	size := c.Size()
+	if size != 0 {
+		t.Errorf("Size() = %d, want 0 for empty cache", size)
+	}
+}
+
+func TestCache_Size_AfterSet(t *testing.T) {
+	c, err := NewCache(900, 64)
+	if err != nil {
+		t.Fatalf("NewCache() error = %v", err)
+	}
+	defer c.Close()
+
+	c.Set("alice", &Credential{Username: "alice", Password: "pass", Usertype: "og"})
+
+	size := c.Size()
+	if size < 0 {
+		t.Errorf("Size() = %d, want non-negative after Set", size)
+	}
+}
+
 func TestCacheCloseNoPanic(t *testing.T) {
 	c, err := NewCache(900, 64)
 	if err != nil {

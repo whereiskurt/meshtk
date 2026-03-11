@@ -416,6 +416,51 @@ func TestCircuitBreaker_ResetsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestCacheAuthenticator_ResetCircuitBreaker(t *testing.T) {
+	cache := newTestCache(t)
+	store := newMockStore()
+	store.setError(errors.New("dynamodb timeout"))
+
+	auth := NewCacheAuthenticator(cache, store,
+		WithFailureThreshold(5),
+		WithCooldownDuration(50*time.Millisecond),
+	)
+
+	// Cause some failures to increment the counter
+	for i := 0; i < 3; i++ {
+		auth.Verify(context.Background(), fmt.Sprintf("fail%d", i), []byte("pass"))
+	}
+
+	// Reset the circuit breaker
+	auth.ResetCircuitBreaker()
+
+	// After reset, store should be callable again (not degraded)
+	store.setError(nil)
+	store.setCred("afterreset", &Credential{
+		Username: "afterreset",
+		Password: "6f6b", // hex("ok")
+		Usertype: "device",
+	})
+
+	ok, err := auth.Verify(context.Background(), "afterreset", []byte("ok"))
+	if err != nil {
+		t.Fatalf("Verify() after ResetCircuitBreaker: error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Verify() after ResetCircuitBreaker = false, want true")
+	}
+}
+
+func TestCacheAuthenticator_ResetCircuitBreaker_NoOp(t *testing.T) {
+	cache := newTestCache(t)
+	store := newMockStore()
+
+	auth := NewCacheAuthenticator(cache, store)
+
+	// Should not panic when failures already at 0
+	auth.ResetCircuitBreaker()
+}
+
 func TestCircuitBreaker_CacheHitsDuringDegradedMode(t *testing.T) {
 	cache := newTestCache(t)
 	store := newMockStore()

@@ -18,10 +18,10 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Authentication Flow
 
 - [ ] **AUTH-01**: On valid credentials, proxy swaps username/password with generic Mosquitto creds before forwarding
-- [ ] **AUTH-02**: Generic Mosquitto credentials are sourced from YAML config or env vars (not hardcoded)
+- [x] **AUTH-02**: Generic Mosquitto credentials are sourced from YAML config or env vars (not hardcoded)
 - [ ] **AUTH-03**: On invalid or missing credentials, proxy sends CONNACK with return code 0x05 (not authorized)
 - [ ] **AUTH-04**: Configured passthrough usernames bypass credential validation entirely
-- [ ] **AUTH-05**: Passthrough allowlist is sourced from YAML config (not hardcoded)
+- [x] **AUTH-05**: Passthrough allowlist is sourced from YAML config (not hardcoded)
 
 ### Admin API
 
@@ -35,10 +35,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Configuration
 
-- [ ] **CONF-01**: Cache TTL and max memory size are configurable via `Server.CacheTTLSecs` and `Server.CacheMaxSizeMB` in YAML config
-- [ ] **CONF-02**: Admin API listen address is configurable via `Server.AdminListenAddress`
-- [ ] **CONF-03**: DynamoDB table name is configurable via `Server.CredentialTableName`
-- [ ] **CONF-04**: DynamoDB region is configurable via `Server.CredentialTableRegion`
+- [x] **CONF-01**: Cache TTL and max memory size are configurable via `Server.CacheTTLSecs` and `Server.CacheMaxSizeMB` in YAML config
+- [x] **CONF-02**: Admin API listen address is configurable via `Server.AdminListenAddress`
+- [x] **CONF-03**: DynamoDB table name is configurable via `Server.CredentialTableName`
+- [x] **CONF-04**: DynamoDB region is configurable via `Server.CredentialTableRegion`
 
 ## v2 Requirements
 
@@ -73,10 +73,10 @@ Deferred to future release. Tracked but not in current roadmap.
 | CRED-04 | Phase 2 | Pending |
 | CRED-05 | Phase 2 | Pending |
 | AUTH-01 | Phase 2 | Pending |
-| AUTH-02 | Phase 1 | Pending |
+| AUTH-02 | Phase 1 | Complete |
 | AUTH-03 | Phase 2 | Pending |
 | AUTH-04 | Phase 2 | Pending |
-| AUTH-05 | Phase 1 | Pending |
+| AUTH-05 | Phase 1 | Complete |
 | ADMIN-01 | Phase 3 | Pending |
 | ADMIN-02 | Phase 3 | Pending |
 | ADMIN-03 | Phase 3 | Pending |
@@ -84,10 +84,10 @@ Deferred to future release. Tracked but not in current roadmap.
 | ADMIN-05 | Phase 4 | Pending |
 | ADMIN-06 | Phase 4 | Pending |
 | ADMIN-07 | Phase 3 | Pending |
-| CONF-01 | Phase 1 | Pending |
-| CONF-02 | Phase 1 | Pending |
-| CONF-03 | Phase 1 | Pending |
-| CONF-04 | Phase 1 | Pending |
+| CONF-01 | Phase 1 | Complete |
+| CONF-02 | Phase 1 | Complete |
+| CONF-03 | Phase 1 | Complete |
+| CONF-04 | Phase 1 | Complete |
 
 **Coverage:**
 - v1 requirements: 21 total

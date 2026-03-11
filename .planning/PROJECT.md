@@ -2,7 +2,7 @@
 
 ## What This Is
 
-An enhancement to the existing MeshTK server proxy that adds DynamoDB-backed MQTT credential validation with an in-memory application cache. When Meshtastic mobile clients (iPhone/Android) connect via MQTT, the proxy validates their username/password against cached credentials (backed by DynamoDB), then swaps them with generic shared credentials before forwarding to the Mosquitto broker.
+An MQTT proxy enhancement for MeshTK that validates Meshtastic client connections against DynamoDB-backed credentials with sub-millisecond in-memory caching. Valid clients are transparently forwarded with generic Mosquitto credentials; invalid clients are rejected with CONNACK 0x05 before reaching the broker. Operators manage the cache via an HTTP admin API with eviction, refresh, stats, listing, flush, and health endpoints.
 
 ## Core Value
 
@@ -12,27 +12,30 @@ Every MQTT CONNECT is validated against cached credentials with minimal latency 
 
 ### Validated
 
-<!-- Inferred from existing codebase -->
-
-- ✓ TCP proxy listener accepts MQTT connections — existing (`internal/app/server/cmd.go`)
-- ✓ MQTT packet parsing extracts username, password, clientID — existing (`internal/app/server/inspect.go`)
-- ✓ Rule-based packet inspection with allow/block/kill/slow decisions — existing (`internal/app/server/decider.go`)
-- ✓ Proxy forwarding to backend MQTT broker — existing (`internal/app/server/proxy.go`)
+- ✓ TCP proxy listener accepts MQTT connections — existing
+- ✓ MQTT packet parsing extracts username, password, clientID — existing
+- ✓ Rule-based packet inspection with allow/block/kill/slow decisions — existing
+- ✓ Proxy forwarding to backend MQTT broker — existing
 - ✓ Connection tracking via ConnTrack — existing
 - ✓ S3-backed inspector logging with rotation — existing
-- ✓ YAML config with env var overrides — existing (`pkg/config/`)
+- ✓ YAML config with env var overrides — existing
+- ✓ DynamoDB credential lookup using defcon.run schema — v1.0
+- ✓ In-memory credential cache (Otter v2) with configurable TTL and max size — v1.0
+- ✓ TTL-based automatic cache expiry — v1.0
+- ✓ CONNECT interception: validate → swap generic creds → forward — v1.0
+- ✓ CONNECT rejection: CONNACK 0x05 for invalid/missing creds — v1.0
+- ✓ Passthrough allowlist from YAML config — v1.0
+- ✓ Generic Mosquitto credentials from YAML/env — v1.0
+- ✓ Singleflight-deduplicated DynamoDB fetch on cache miss — v1.0
+- ✓ Circuit breaker for DynamoDB outage graceful degradation — v1.0
+- ✓ Admin API: evict, refresh, stats, list, flush, health — v1.0
+- ✓ Negative caching for brute-force protection — v1.0
+- ✓ Health endpoint for ECS health checks — v1.0
+- ✓ All config fields (TTL, max size, admin address, table, region, negative TTL) configurable — v1.0
 
 ### Active
 
-- [ ] DynamoDB credential lookup using defcon.run schema
-- [ ] In-memory credential cache keyed by MQTT username
-- [ ] TTL-based automatic cache expiry
-- [ ] HTTP API for manual cache eviction (evict specific entry)
-- [ ] HTTP API for cache refresh (force re-fetch from DynamoDB)
-- [ ] HTTP API for cache stats/inspection (current entries, hit/miss rates)
-- [ ] CONNECT interception: validate creds → swap with generic creds → forward
-- [ ] CONNECT rejection: send CONNACK auth failure for invalid/missing creds
-- [ ] Generic Mosquitto credentials sourced from config/env vars
+(None — planning next milestone)
 
 ### Out of Scope
 
@@ -41,31 +44,43 @@ Every MQTT CONNECT is validated against cached credentials with minimal latency 
 - OAuth/token-based auth — MQTT username/password only
 - Changes to fleet simulation or nodeinfo commands — proxy only
 - Persistent cache (Redis, etc.) — in-memory with DynamoDB as source of truth
+- Admin API authentication — internal API on ECS; network-level security sufficient
+- Rate limiting per source IP — deferred to v2
+- Prometheus metrics — deferred to v2
+- Structured JSON logging for auth events — deferred to v2
 
 ## Context
 
-- Existing Go codebase with Cobra CLI, Paho MQTT client, protobuf-based inspection
-- The proxy already parses MQTT packets and extracts credentials in the inspection layer
-- DynamoDB schema follows the defcon.run project (username/password stored there)
-- Process running the proxy has AWS credentials (ECS task role or EC2 instance profile)
-- Every packet can trigger a lookup, so caching is critical for performance at scale
-- Generic Mosquitto creds are static — configured via YAML or env vars
+Shipped v1.0 with 29,299 LOC Go (2,461 new/modified for credential cache).
+Tech stack: Go, Cobra CLI, Paho MQTT, Otter v2, AWS SDK v2, stdlib net/http.
+4 phases, 8 plans, 21 requirements — all satisfied and verified.
+
+Known tech debt:
+- Admin package uses stdlib `log.Logger` instead of project's logrus logger
+- DynamoDB table schema (attribute names, password format) verified against live table pattern but not production-tested
 
 ## Constraints
 
 - **Tech stack**: Go — must integrate with existing codebase patterns
 - **AWS**: DynamoDB access via standard AWS SDK credential chain (ECS/EC2/default)
-- **Schema**: Must match existing defcon.run DynamoDB table schema for credential lookups
+- **Schema**: Must match existing defcon.run DynamoDB table schema
 - **Performance**: Cache lookups must be sub-millisecond; DynamoDB only hit on cache miss
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| In-memory cache over Redis | Single-process proxy, avoid infrastructure dependency | — Pending |
-| TTL + manual eviction API | Balance freshness with admin control | — Pending |
-| Reject invalid at proxy | Don't burden Mosquitto with bad connections | — Pending |
-| Swap creds on forward | Clients never auth directly to Mosquitto | — Pending |
+| In-memory cache (Otter v2) over Redis | Single-process proxy, avoid infra dependency | ✓ Good — sub-ms lookups, zero GC pressure |
+| TTL + manual eviction API | Balance freshness with admin control | ✓ Good — 900s default TTL + 6 admin endpoints |
+| Reject invalid at proxy level | Don't burden Mosquitto with bad connections | ✓ Good — CONNACK 0x05 before broker sees it |
+| Swap creds on forward | Clients never auth directly to Mosquitto | ✓ Good — transparent to broker |
+| Singleflight for concurrent fetches | Prevent DynamoDB stampede on cache miss | ✓ Good — verified by test: 10 goroutines, 1 fetch |
+| Circuit breaker for DynamoDB | Graceful degradation, not cascading failure | ✓ Good — cache hits continue during outage |
+| Negative caching with short TTL | Prevent DynamoDB cost spikes from brute-force | ✓ Good — 60s configurable TTL |
+| Health endpoint always HTTP 200 | ECS should not kill task during DynamoDB outage | ✓ Good — status field reports healthy/degraded |
+| stdlib log in admin/credcache | Avoid logrus dependency in new packages | ⚠️ Revisit — inconsistent with proxy logging |
+| aws-sdk-go-v2 for DynamoDB | v1 EOL July 2025; v1 S3 code untouched | ✓ Good |
+| Go 1.22+ ServeMux for admin | No framework needed for 6 endpoints | ✓ Good — exact match before wildcard |
 
 ---
-*Last updated: 2026-03-10 after initialization*
+*Last updated: 2026-03-11 after v1.0 milestone*

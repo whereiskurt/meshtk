@@ -16,9 +16,10 @@ import (
 )
 
 type InspectorPacket struct {
-	Track *ConnectionInfo
-	Log   *log.Logger
-	Raw   *RawPacket
+	Track        *ConnectionInfo
+	Log          *log.Logger
+	Raw          *RawPacket
+	AuthRejected bool
 
 	MQTT struct {
 		Type   string

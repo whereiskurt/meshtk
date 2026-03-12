@@ -70,10 +70,10 @@ func TestVerify_CacheHit_ValidPassword(t *testing.T) {
 	cache := newTestCache(t)
 	store := newMockStore()
 
-	// Pre-populate cache with hex-encoded password for "hello"
+	// Pre-populate cache with plain password
 	cache.Set("alice", &Credential{
 		Username: "alice",
-		Password: "68656c6c6f", // hex("hello")
+		Password: "hello",
 		Usertype: "device",
 	})
 
@@ -97,7 +97,7 @@ func TestVerify_CacheHit_InvalidPassword(t *testing.T) {
 
 	cache.Set("alice", &Credential{
 		Username: "alice",
-		Password: "68656c6c6f", // hex("hello")
+		Password: "hello",
 		Usertype: "device",
 	})
 
@@ -117,7 +117,7 @@ func TestVerify_CacheMiss_FetchAndPopulate(t *testing.T) {
 	store := newMockStore()
 	store.setCred("bob", &Credential{
 		Username: "bob",
-		Password: "776f726c64", // hex("world")
+		Password: "world",
 		Usertype: "device",
 	})
 
@@ -139,8 +139,8 @@ func TestVerify_CacheMiss_FetchAndPopulate(t *testing.T) {
 	if !found {
 		t.Fatal("cache should contain bob after fetch")
 	}
-	if cred.Password != "776f726c64" {
-		t.Errorf("cached password = %q, want %q", cred.Password, "776f726c64")
+	if cred.Password != "world" {
+		t.Errorf("cached password = %q, want %q", cred.Password, "world")
 	}
 }
 
@@ -181,31 +181,31 @@ func TestVerify_HexEncoding(t *testing.T) {
 	cache := newTestCache(t)
 	store := newMockStore()
 
-	// Store credential with known hex password
+	// Store credential with known password
 	cache.Set("hexuser", &Credential{
 		Username: "hexuser",
-		Password: "68656c6c6f", // hex("hello")
+		Password: "hello",
 		Usertype: "device",
 	})
 
 	auth := NewCacheAuthenticator(cache, store)
 
-	// Should match: []byte("hello") -> hex -> "68656c6c6f"
+	// Should match: direct string comparison
 	ok, err := auth.Verify(context.Background(), "hexuser", []byte("hello"))
 	if err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("Verify() = false, want true for hex-matched password")
+		t.Fatal("Verify() = false, want true for matching password")
 	}
 
-	// Should NOT match with raw string
-	ok, err = auth.Verify(context.Background(), "hexuser", []byte("68656c6c6f"))
+	// Should NOT match with wrong password
+	ok, err = auth.Verify(context.Background(), "hexuser", []byte("wrong"))
 	if err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
 	if ok {
-		t.Fatal("Verify() = true, want false for double-hex-encoded password")
+		t.Fatal("Verify() = true, want false for wrong password")
 	}
 }
 
@@ -221,7 +221,7 @@ func TestVerify_ConstantTimeCompare(t *testing.T) {
 
 	cache.Set("ctuser", &Credential{
 		Username: "ctuser",
-		Password: "74657374", // hex("test")
+		Password: "test",
 		Usertype: "device",
 	})
 
@@ -251,7 +251,7 @@ func TestSingleflight_DeduplicatesConcurrentFetches(t *testing.T) {
 	store := newMockStore()
 	store.setCred("shared", &Credential{
 		Username: "shared",
-		Password: "616263", // hex("abc")
+		Password: "abc",
 		Usertype: "device",
 	})
 
@@ -345,7 +345,7 @@ func TestCircuitBreaker_RecoveryAfterCooldown(t *testing.T) {
 	store.setError(nil)
 	store.setCred("recovered", &Credential{
 		Username: "recovered",
-		Password: "6f6b", // hex("ok")
+		Password: "ok",
 		Usertype: "device",
 	})
 
@@ -377,7 +377,7 @@ func TestCircuitBreaker_ResetsOnSuccess(t *testing.T) {
 	store.setError(nil)
 	store.setCred("good", &Credential{
 		Username: "good",
-		Password: "6f6b", // hex("ok")
+		Password: "ok",
 		Usertype: "device",
 	})
 
@@ -400,7 +400,7 @@ func TestCircuitBreaker_ResetsOnSuccess(t *testing.T) {
 	store.setError(nil)
 	store.setCred("good2", &Credential{
 		Username: "good2",
-		Password: "6f6b",
+		Password: "ok",
 		Usertype: "device",
 	})
 
@@ -438,7 +438,7 @@ func TestCacheAuthenticator_ResetCircuitBreaker(t *testing.T) {
 	store.setError(nil)
 	store.setCred("afterreset", &Credential{
 		Username: "afterreset",
-		Password: "6f6b", // hex("ok")
+		Password: "ok",
 		Usertype: "device",
 	})
 
@@ -518,7 +518,7 @@ func TestNegativeCache_DoesNotAffectValidEntries(t *testing.T) {
 	store := newMockStore()
 	store.setCred("valid", &Credential{
 		Username: "valid",
-		Password: "68656c6c6f", // hex("hello")
+		Password: "hello",
 		Usertype: "device",
 	})
 
@@ -578,7 +578,7 @@ func TestCircuitBreaker_CacheHitsDuringDegradedMode(t *testing.T) {
 	// Pre-populate cache
 	cache.Set("cached", &Credential{
 		Username: "cached",
-		Password: "68656c6c6f", // hex("hello")
+		Password: "hello",
 		Usertype: "device",
 	})
 

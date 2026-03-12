@@ -136,11 +136,10 @@ func (a *CacheAuthenticator) fetchWithSingleflight(ctx context.Context, username
 	return v.(*Credential), nil
 }
 
-// comparePassword hex-encodes the raw password bytes and performs a
-// constant-time comparison against the stored hex string.
+// comparePassword performs a constant-time comparison of the raw password
+// bytes against the stored password string.
 func comparePassword(stored string, raw []byte) bool {
-	hexPassword := fmt.Sprintf("%x", raw)
-	return subtle.ConstantTimeCompare([]byte(hexPassword), []byte(stored)) == 1
+	return subtle.ConstantTimeCompare(raw, []byte(stored)) == 1
 }
 
 // ResetCircuitBreaker resets the consecutive failure counter to zero.

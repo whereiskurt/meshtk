@@ -98,10 +98,16 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 					if n.Config.Server.ShouldLogAllows {
 						ip.WriteDecisionLog(result)
 					}
+					if ip.Meshtastic.WasUnmarshalled {
+						n.Config.Log.Infof("[proxy] ALLOW from=!%08x to=!%08x type=%s topic=%v user=%s",
+							ip.Meshtastic.From, ip.Meshtastic.To, ip.Meshtastic.PortNum.String(), ip.MQTT.Topics, ip.Track.Username)
+					}
 				case Block:
 					if n.Config.Server.ShouldLogBlocks {
 						ip.WriteDecisionLog(result)
 					}
+					n.Config.Log.Warnf("[proxy] BLOCK from=!%08x to=!%08x reason=%q user=%s ip=%s",
+						ip.Meshtastic.From, ip.Meshtastic.To, result.Reason, ip.Track.Username, ip.Track.SocketAddress)
 					return
 				default:
 					if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {

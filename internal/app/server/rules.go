@@ -14,8 +14,8 @@ func (n *ServerCmd) LoadInspectorRules() {
 func inspectRules() []Rule {
 	rules := []Rule{
 		{
-			Name:        "AllowMQTTTypes",
-			Description: "Allow MQTT connect/sub/unsub packets",
+			Name:        "AllowMQTTControl",
+			Description: "Allow MQTT control packets (not PUBLISH — those go through meshtastic inspection)",
 			Matcher: func(ip *InspectorPacket) bool {
 				switch (*ip.Raw.MQTT).(type) {
 				case *packets.ConnectPacket,
@@ -23,7 +23,6 @@ func inspectRules() []Rule {
 					*packets.PubackPacket,
 					*packets.PingreqPacket,
 					*packets.UnsubscribePacket,
-					*packets.PublishPacket,
 					*packets.DisconnectPacket:
 					return true
 				default:
@@ -31,14 +30,22 @@ func inspectRules() []Rule {
 				}
 			},
 			Action: Allow,
-			Reason: "MQTT Connect packets are allowed",
+			Reason: "MQTT control packets are allowed",
+		},
+		{
+			Name:        "AllowPKIEncrypted",
+			Description: "Allow PKI-encrypted packets (point-to-point, can't validate PSK)",
+			Matcher: func(packet *InspectorPacket) bool {
+				return packet.Meshtastic.WasPKIEncrypted
+			},
+			Action: Allow,
+			Reason: "PKI-encrypted packets are allowed",
 		},
 		{
 			Name:        "BlockInvalidEncryption",
-			Description: "Block packets that failed to decrypt with any known key",
+			Description: "Block packets that had encrypted data but failed to decrypt with any known channel key",
 			Matcher: func(packet *InspectorPacket) bool {
-				return (!packet.Meshtastic.WasPKIEncrypted) &&
-					(packet.Meshtastic.WasEncrypted && !packet.Meshtastic.WasUnmarshalled)
+				return packet.Meshtastic.HadEncryptedPayload && !packet.Meshtastic.WasEncrypted
 			},
 			Action: Block,
 			Reason: "Failed to decrypt with any known key",

@@ -38,8 +38,9 @@ type InspectorPacket struct {
 		Payload         []byte
 		PayloadString   string
 		HexKey          string
-		WasEncrypted    bool
-		WasPKIEncrypted bool
+		WasEncrypted       bool
+		WasPKIEncrypted    bool
+		HadEncryptedPayload bool
 	}
 }
 type RawPacket struct {
@@ -172,6 +173,7 @@ func (ip *InspectorPacket) inspectMeshtastic(n *ServerCmd) {
 	if decoded == nil {
 		encrypted := packet.GetEncrypted()
 		if encrypted != nil {
+			ip.Meshtastic.HadEncryptedPayload = true
 			if packet.GetPkiEncrypted() {
 				ip.Meshtastic.WasPKIEncrypted = true
 			} else {

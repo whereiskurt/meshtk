@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="meshtk"><trk><name>example</name><trkseg>
+<trkpt lat="36.1300" lon="-115.1500"><ele>620</ele></trkpt>
+<trkpt lat="36.1310" lon="-115.1490"><ele>621</ele></trkpt>
+</trkseg></trk></gpx>

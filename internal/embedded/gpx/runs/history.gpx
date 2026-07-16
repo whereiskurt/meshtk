@@ -1,0 +1,109 @@
+<?xml version="1.0" standalone="yes"?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1" creator="KML2GPX.COM" version="1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+    <metadata>
+        <name><![CDATA[History Run]]></name>
+        <desc><![CDATA[Converted from a KML file KML2GPX.COM]]></desc>
+    </metadata>
+
+    <wpt lat="36.1228521" lon="-115.166267">
+        <name><![CDATA[001 Sands Entrance]]></name>
+        <cmt><![CDATA[Waypoint no: 1]]></cmt>
+        <desc><![CDATA[This is waypoint no: 1]]></desc>
+    </wpt>
+
+    <wpt lat="36.1423552" lon="-115.1567235">
+        <name><![CDATA[002 Sahara Las Vegas]]></name>
+        <cmt><![CDATA[Waypoint no: 2]]></cmt>
+        <desc><![CDATA[This is waypoint no: 2]]></desc>
+    </wpt>
+
+    <wpt lat="36.0988118" lon="-115.1703887">
+        <ele>0</ele>
+        <name><![CDATA[003 Tropicana Las Vegas - a DoubleTree by Hilton Hotel]]></name>
+        <cmt><![CDATA[Waypoint no: 3]]></cmt>
+        <desc><![CDATA[This is waypoint no: 3]]></desc>
+    </wpt>
+
+    <wpt lat="36.1045839" lon="-115.1744648">
+        <ele>0</ele>
+        <name><![CDATA[004 Monte Carlo]]></name>
+        <cmt><![CDATA[Waypoint no: 4]]></cmt>
+        <desc><![CDATA[This is waypoint no: 4]]></desc>
+    </wpt>
+
+    <wpt lat="36.1366136" lon="-115.1617631">
+        <ele>0</ele>
+        <name><![CDATA[008 Former Riveria!]]></name>
+        <cmt><![CDATA[Waypoint no: 5]]></cmt>
+        <desc><![CDATA[This is waypoint no: 5]]></desc>
+    </wpt>
+
+    <wpt lat="36.171784" lon="-115.146861">
+        <ele>0</ele>
+        <name><![CDATA[006 Plaza Hotel & Casino]]></name>
+        <cmt><![CDATA[Waypoint no: 6]]></cmt>
+        <desc><![CDATA[This is waypoint no: 6]]></desc>
+    </wpt>
+
+    <wpt lat="36.1075771" lon="-115.1562516">
+        <ele>0</ele>
+        <name><![CDATA[007 Alexis Park Resort]]></name>
+        <cmt><![CDATA[Waypoint no: 7]]></cmt>
+        <desc><![CDATA[This is waypoint no: 7]]></desc>
+    </wpt>
+
+    <wpt lat="36.1175148" lon="-115.1881593">
+        <ele>0</ele>
+        <name><![CDATA[009 Rio All-Suite Hotel & Casino]]></name>
+        <cmt><![CDATA[Waypoint no: 8]]></cmt>
+        <desc><![CDATA[This is waypoint no: 8]]></desc>
+    </wpt>
+
+    <wpt lat="36.112462" lon="-115.1707075">
+        <ele>0</ele>
+        <name><![CDATA[010 Paris Las Vegas]]></name>
+        <cmt><![CDATA[Waypoint no: 9]]></cmt>
+        <desc><![CDATA[This is waypoint no: 9]]></desc>
+    </wpt>
+
+    <wpt lat="36.1140611" lon="-115.170627">
+        <ele>0</ele>
+        <name><![CDATA[010 Horseshoe Las Vegas Formerly Bally's]]></name>
+        <cmt><![CDATA[Waypoint no: 10]]></cmt>
+        <desc><![CDATA[This is waypoint no: 10]]></desc>
+    </wpt>
+
+    <wpt lat="36.1161685" lon="-115.174499">
+        <ele>0</ele>
+        <name><![CDATA[011 Caesars Palace]]></name>
+        <cmt><![CDATA[Waypoint no: 11]]></cmt>
+        <desc><![CDATA[This is waypoint no: 11]]></desc>
+    </wpt>
+
+    <wpt lat="36.1164409" lon="-115.1707917">
+        <ele>0</ele>
+        <name><![CDATA[012 Flamingo Las Vegas Hotel & Casino]]></name>
+        <cmt><![CDATA[Waypoint no: 12]]></cmt>
+        <desc><![CDATA[This is waypoint no: 12]]></desc>
+    </wpt>
+
+    <wpt lat="36.1186888" lon="-115.1664144">
+        <ele>0</ele>
+        <name><![CDATA[013 CAESARS FORUM]]></name>
+        <cmt><![CDATA[Waypoint no: 13]]></cmt>
+        <desc><![CDATA[This is waypoint no: 13]]></desc>
+    </wpt>
+
+    <wpt lat="36.1099696" lon="-115.1700646">
+        <ele>0</ele>
+        <name><![CDATA[005 Aladdin now the Planet Hollywood Las Vegas Resort & Casino ]]></name>
+        <cmt><![CDATA[Waypoint no: 14]]></cmt>
+        <desc><![CDATA[This is waypoint no: 14]]></desc>
+    </wpt>
+
+    <wpt lat="36.1349464" lon="-115.1579221">
+        <name><![CDATA[LVCC Defcon 32]]></name>
+        <cmt><![CDATA[Waypoint no: 15]]></cmt>
+        <desc><![CDATA[This is waypoint no: 15]]></desc>
+    </wpt>
+</gpx>

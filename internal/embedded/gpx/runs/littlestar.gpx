@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<gpx version="1.1" creator="GDAL 2.2.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ogr="http://osgeo.org/gdal" xmlns="http://www.topografix.com/GPX/1/1" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+<metadata><bounds minlat="36.110940800000002" minlon="-115.173738599999993" maxlat="36.117489100000000" maxlon="-115.167741899999996"/></metadata>              
+<trk>
+  <name>Little Star</name>
+  <trkseg>
+    <trkpt lat="36.1148603" lon="-115.1726121">
+    </trkpt>
+    <trkpt lat="36.1146985" lon="-115.1677419">
+    </trkpt>
+    <trkpt lat="36.1143724" lon="-115.1677674">
+    </trkpt>
+    <trkpt lat="36.1144125" lon="-115.1686217">
+    </trkpt>
+    <trkpt lat="36.1143431" lon="-115.1724197">
+    </trkpt>
+    <trkpt lat="36.1129607" lon="-115.1726342">
+    </trkpt>
+    <trkpt lat="36.1109692" lon="-115.1727578">
+    </trkpt>
+    <trkpt lat="36.1109408" lon="-115.173239">
+    </trkpt>
+    <trkpt lat="36.1142281" lon="-115.1731172">
+    </trkpt>
+    <trkpt lat="36.1143408" lon="-115.1735785">
+    </trkpt>
+    <trkpt lat="36.1145141" lon="-115.1737287">
+    </trkpt>
+    <trkpt lat="36.114869" lon="-115.1737386">
+    </trkpt>
+    <trkpt lat="36.1148927" lon="-115.1731283">
+    </trkpt>
+    <trkpt lat="36.1174891" lon="-115.1731226">
+    </trkpt>
+    <trkpt lat="36.1174664" lon="-115.1727256">
+    </trkpt>
+    <trkpt lat="36.1149318" lon="-115.1726617">
+    </trkpt>
+  </trkseg>
+</trk>
+</gpx>

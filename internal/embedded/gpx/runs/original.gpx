@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.topografix.com/GPX/1/1" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd http://www.garmin.com/xmlschemas/GpxExtensions/v3 http://www.garmin.com/xmlschemas/GpxExtensionsv3.xsd http://www.garmin.com/xmlschemas/TrackPointExtension/v1 http://www.garmin.com/xmlschemas/TrackPointExtensionv1.xsd http://www.topografix.com/GPX/gpx_style/0/2 http://www.topografix.com/GPX/gpx_style/0/2/gpx_style.xsd" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1" xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3" xmlns:gpx_style="http://www.topografix.com/GPX/gpx_style/0/2" version="1.1" creator="KML2GPX.COM">
+<metadata>
+    <name>The Original</name>
+    <author>
+        <name>gpx.studio</name>
+        <link href="https://gpx.studio"></link>
+    </author>
+</metadata>
+<wpt lat="36.1147583" lon="-115.1795226">
+    <ele>0.0</ele>
+    <name>Danger Zone</name>
+    <cmt>Traffic intersection and sketchy area to highway overpass. Stay alert.</cmt>
+    <desc></desc>
+    <sym></sym>
+</wpt>
+<trk>
+    <name>The Original</name>
+    <type>Running</type>
+    <trkseg>
+    <trkpt lat="36.1165463" lon="-115.188092">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1164423" lon="-115.1874268">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1160263" lon="-115.1866811">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1156536" lon="-115.1869923">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1153243" lon="-115.1869815">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1145702" lon="-115.1833015">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1145247" lon="-115.1815499">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.114958" lon="-115.1774247">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1148597" lon="-115.173295">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1154735" lon="-115.1731042">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1151617" lon="-115.1726275">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1148603" lon="-115.1726121">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1148671" lon="-115.1721661">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1144075" lon="-115.1724055">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1141737" lon="-115.1723163">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1137143" lon="-115.1726489">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1089708" lon="-115.1725558">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1093576" lon="-115.1733779">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1143024" lon="-115.1732129">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1143923" lon="-115.1737292">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1149191" lon="-115.173754">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1149884" lon="-115.1774232">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1145074" lon="-115.1832651">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1153524" lon="-115.1869397">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1159959" lon="-115.1866152">
+        <ele>0.0</ele>
+    </trkpt>
+    <trkpt lat="36.1165528" lon="-115.1881628">
+        <ele>0.0</ele>
+    </trkpt>
+    </trkseg>
+</trk>
+</gpx>

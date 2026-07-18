@@ -123,7 +123,12 @@ func (c *MqttClient) FetchPublicKeyFromDefcon(nodeID uint32) (string, error) {
 		return "", fmt.Errorf("invalid node data format for node %d", nodeID)
 	}
 
-	pubKey, exists := nodeMap["publicKey"]
+	// meshobserv writes the public key under "pubkey" in nodes.json; older/alternate
+	// schemas used "publicKey". Try both so PKI decrypt + reply-encrypt can find it.
+	pubKey, exists := nodeMap["pubkey"]
+	if !exists {
+		pubKey, exists = nodeMap["publicKey"]
+	}
 	if !exists {
 		return "", fmt.Errorf("PubKey not found for node %d", nodeID)
 	}

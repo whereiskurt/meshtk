@@ -86,7 +86,10 @@ func (c *MqttClient) ParseHexKey(hexKey string) ([]byte, error) {
 
 // FetchPublicKeyFromDefcon fetches the public key for a given nodeID from the DEFCON nodes API
 func (c *MqttClient) FetchPublicKeyFromDefcon(nodeID uint32) (string, error) {
-	url := "https://mqtt.defcon.run/map/nodes.json"
+	// The JSON node DB is served at /nodes.json. /map/nodes.json returns the
+	// map SPA's index.html (nginx SPA fallback), which fails to decode as JSON
+	// and silently breaks every PKI chatbot reply.
+	url := "https://mqtt.defcon.run/nodes.json"
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,

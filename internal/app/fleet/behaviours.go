@@ -135,7 +135,15 @@ func (f *FleetCmd) publishNextGPXMovement(idx int, node *mqtt.Node, gitter bool)
 func (f *FleetCmd) publishACK(idx int, node *mqtt.Node, toNode uint32, requestId uint32) {
 	whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
 	
-	routing := &meshtastic.Routing{}
+	// A proper Meshtastic ACK is a Routing with error_reason = NONE. An empty
+	// Routing{} marshals to zero bytes (no oneof variant set), which the
+	// Meshtastic app surfaces as "Empty Ack Error". Set the variant explicitly
+	// so the app decodes a clean delivery ack.
+	routing := &meshtastic.Routing{
+		Variant: &meshtastic.Routing_ErrorReason{
+			ErrorReason: meshtastic.Routing_NONE,
+		},
+	}
 	
 	routingBytes, err := proto.Marshal(routing)
 	if err != nil {

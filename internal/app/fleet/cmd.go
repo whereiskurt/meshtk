@@ -105,6 +105,19 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 			}
 		})
 		
+		// Chatbot ghosts must receive incoming DMs to reply. Relying on the
+		// lazy publish-time connect (whose OnConnect subscribe races and can
+		// silently fail behind the meshtk proxy) leaves them publish-only, so
+		// explicitly ConnectAndListen here to deterministically connect and
+		// subscribe. Movement-only sim fleets (rabbits) never chat, so skip.
+		if len(f.Config.Fleet[idx].ChatBot) > 0 {
+			if err := mqttClient.ConnectAndListen(f.Config.NodeInfo.SubscribedTopics); err != nil {
+				f.Config.Log.Errorf("Fleet[%d] %s: ConnectAndListen failed, DMs will not be received: %v", idx, f.Config.Fleet[idx].Id, err)
+			} else {
+				f.Config.Log.Infof("Fleet[%d] %s: connected and listening for DMs on %v", idx, f.Config.Fleet[idx].Id, f.Config.NodeInfo.SubscribedTopics)
+			}
+		}
+
 		f.MqttClient = append(f.MqttClient, mqttClient)
 	}
 

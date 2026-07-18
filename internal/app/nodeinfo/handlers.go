@@ -117,6 +117,11 @@ func (n *NodeInfoCmd) NodeHandler(to, from uint32, topic string, portNum meshtas
 			n.Nodes[from] = mqtt.NewNode(topic)
 		}
 		n.Nodes[from].UpdateUser(from, longName, shortName, hwModel, role, pubkey, nil)
+		// Retain the learned pubkey so it survives prune/recreate (UpdateUser
+		// has already formatted it as 0x... when non-empty).
+		if pk := n.Nodes[from].PubKey; pk != "" {
+			n.PubKeys[from] = pk
+		}
 		// n.AddMessageLedger(to, from, topic, portNum, payload)
 		n.NodesMutex.Unlock()
 	case meshtastic.PortNum_TELEMETRY_APP:

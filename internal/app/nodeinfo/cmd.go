@@ -19,6 +19,12 @@ import (
 type NodeInfoCmd struct {
 	Nodes      internal.NodeDB
 	NodesMutex sync.Mutex
+	// PubKeys retains the last public key learned for each node id, keyed by
+	// node number. Unlike Nodes it is never pruned, so a node's pubkey survives
+	// the prune-then-recreate churn (a brief publishing gap prunes the node,
+	// and the next POSITION packet recreates it without a pubkey). Guarded by
+	// NodesMutex. Restored into freshly-recreated nodes before every write.
+	PubKeys    map[uint32]string
 	Config     *config.Config
 	MqttClient *internal.MqttClient
 	CmdOutput  struct {
@@ -30,8 +36,21 @@ func NewNodeInfo(c *config.Config) (n *NodeInfoCmd) {
 	n = new(NodeInfoCmd)
 	n.Config = c
 	n.Nodes = make(internal.NodeDB)
+	n.PubKeys = make(map[uint32]string)
 
 	return n
+}
+
+// restorePubKeys fills in any node missing a public key from the retained
+// PubKeys store. Caller must hold NodesMutex.
+func (n *NodeInfoCmd) restorePubKeys() {
+	for id, node := range n.Nodes {
+		if node.PubKey == "" {
+			if pk, ok := n.PubKeys[id]; ok && pk != "" {
+				node.PubKey = pk
+			}
+		}
+	}
 }
 
 func (n *NodeInfoCmd) Help(cmd *cobra.Command, argz []string) {
@@ -131,6 +150,7 @@ func (n *NodeInfoCmd) initNodeDb() {
 		defer ticker.Stop()
 		for range ticker.C {
 			n.NodesMutex.Lock()
+			n.restorePubKeys()
 			n.Nodes.WriteFile(n.Config.NodeDbPath)
 			n.NodesMutex.Unlock()
 		}

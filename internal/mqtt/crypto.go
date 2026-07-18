@@ -12,11 +12,19 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 	"golang.org/x/crypto/curve25519"
 )
+
+// pubKeyCache remembers the last public key successfully learned for each node
+// (keyed by nodeID). meshobserv prunes a node's whole entry — pubkey included —
+// once its SeenBy entries age out, so the sender's key flaps in and out of
+// nodes.json. Caching lets PKI decrypt + reply-encrypt keep working across those
+// gaps once the key has been seen. Shared across all fleet clients in-process.
+var pubKeyCache sync.Map // map[uint32]string
 
 func (c *MqttClient) decryptPKI(packet *meshtastic.MeshPacket, encryptedData []byte) ([]byte, error) {
 
@@ -84,8 +92,25 @@ func (c *MqttClient) ParseHexKey(hexKey string) ([]byte, error) {
 	return keyBytes, nil
 }
 
-// FetchPublicKeyFromDefcon fetches the public key for a given nodeID from the DEFCON nodes API
+// FetchPublicKeyFromDefcon returns the public key for a nodeID, preferring the
+// live nodes.json feed but falling back to the last key cached for that node
+// when the feed has pruned it (see pubKeyCache). A successful feed lookup
+// refreshes the cache.
 func (c *MqttClient) FetchPublicKeyFromDefcon(nodeID uint32) (string, error) {
+	pubKeyStr, err := c.fetchPublicKeyFromFeed(nodeID)
+	if err == nil && pubKeyStr != "" {
+		pubKeyCache.Store(nodeID, pubKeyStr)
+		return pubKeyStr, nil
+	}
+	if cached, ok := pubKeyCache.Load(nodeID); ok {
+		c.log.Debugf("pubkey feed miss for node %d (%v); using cached key", nodeID, err)
+		return cached.(string), nil
+	}
+	return "", err
+}
+
+// fetchPublicKeyFromFeed fetches the public key for a given nodeID from the DEFCON nodes API
+func (c *MqttClient) fetchPublicKeyFromFeed(nodeID uint32) (string, error) {
 	// The JSON node DB is served at /nodes.json. /map/nodes.json returns the
 	// map SPA's index.html (nginx SPA fallback), which fails to decode as JSON
 	// and silently breaks every PKI chatbot reply.

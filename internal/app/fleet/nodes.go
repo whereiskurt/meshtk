@@ -16,6 +16,23 @@ import (
 
 var curve = ecdh.X25519()
 
+// overrideFleetKeys replaces every node's committed keypair in fleet idx with a
+// deterministic secret-derived one, but only when MESHTK_GHOST_KEY_SECRET is
+// set. Absent the secret it is a no-op and committed keys are used as-is.
+func (f *FleetCmd) overrideFleetKeys(idx int) {
+	secret := f.Config.GhostKeySecret
+	if secret == "" {
+		return
+	}
+	f.NodesMutex[idx].Lock()
+	defer f.NodesMutex[idx].Unlock()
+	for _, node := range f.Nodes[idx] {
+		if err := node.ApplyDerivedKey(secret); err != nil {
+			f.Config.Log.Warnf("ghost key override failed for node %d: %v", node.From, err)
+		}
+	}
+}
+
 func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int) (n *mqtt.Node) {
 	n = mqtt.NewNode(f.Config.NodeInfo.Topic)
 
@@ -56,6 +73,13 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 	role := roles[propRand.Intn(len(roles))]
 
 	n.UpdateUser(nodeID, longName, shortName, hwModel, role, publicKeyBytes, privateKeyBytes)
+
+	// When a server-only secret is present, override the seed-derived keypair
+	// with one deterministically derived from that secret (covers the generate
+	// path; loaded nodes are covered by overrideFleetKeys after initNodeDb).
+	if f.Config.GhostKeySecret != "" {
+		_ = n.ApplyDerivedKey(f.Config.GhostKeySecret)
+	}
 
 	baseLatitude := int32(0)
 	baseLongitude := int32(0)

@@ -257,6 +257,19 @@ func (node *Node) UpdateUser(from uint32, longName, shortName, hwModel, role str
 	}
 }
 
+// ApplyDerivedKey overwrites the node's keypair with one deterministically
+// derived from secret and the node's stable ID. Used to override committed
+// decoy keys with production keys when MESHTK_GHOST_KEY_SECRET is set.
+func (node *Node) ApplyDerivedKey(secret string) error {
+	pub, priv, err := DeriveNodeKey(secret, node.From)
+	if err != nil {
+		return err
+	}
+	node.PubKey = HexKey(pub)
+	node.PrivKey = HexKey(priv)
+	return nil
+}
+
 type NodeDB map[uint32]*Node
 
 func (db NodeDB) Prune(seenByTtl, neighborTtl, metricsTtl, mapReportTtl int64) {

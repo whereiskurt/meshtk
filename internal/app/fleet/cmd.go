@@ -86,6 +86,7 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 
 	for idx := range f.Config.Fleet {
 		f.initNodeDb(idx)
+		f.overrideFleetKeys(idx)
 		mqttClient := internal.NewMqttClient(f.Config, &f.Nodes[idx], f.FleetNodeHandler)
 		
 		// Set up ACK handler for this fleet member

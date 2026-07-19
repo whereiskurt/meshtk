@@ -45,6 +45,8 @@ type FleetCmd struct {
 	OTPUnlockMux    []sync.RWMutex          // Mutex to protect the OTPUnlocks map, per fleet
 	LyricsResponded []map[uint32]int        // Track which REQUESTERS ('from') have received lyrics responses, per fleet
 	LyricsRespMux   []sync.RWMutex          // Mutex to protect the LyricsResponded map, per fleet
+	RecentReq       []map[string]time.Time  // Recent inbound DMs, for retransmit dedup, per fleet
+	RecentReqMux    []sync.Mutex            // Mutex to protect the RecentReq map, per fleet
 
 	// KeyResolver is the ONE process-wide authoritative pubkey resolver
 	// (internal/keycache, DDB MeshRadio) shared by EVERY fleet MqttClient — the
@@ -66,6 +68,8 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		f.OTPUnlockMux = append(f.OTPUnlockMux, sync.RWMutex{})
 		f.LyricsResponded = append(f.LyricsResponded, make(map[uint32]int))
 		f.LyricsRespMux = append(f.LyricsRespMux, sync.RWMutex{})
+		f.RecentReq = append(f.RecentReq, make(map[string]time.Time))
+		f.RecentReqMux = append(f.RecentReqMux, sync.Mutex{})
 
 		otpURL := f.Config.Fleet[i].OtpUrl
 		if otpURL != "" {
@@ -144,12 +148,12 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 		// Set up ACK handler for this fleet member
 		fleetIdx := idx // Capture idx for closure
 		mqttClient.SetAckHandler(func(to, from uint32, requestId uint32) {
-			// Find the node in the fleet  
+			// Find the node in the fleet
 			if node, exists := f.Nodes[fleetIdx][to]; exists {
 				f.publishACK(fleetIdx, node, from, requestId)
 			}
 		})
-		
+
 		// Set up NACK handler to trigger nodeinfo request
 		mqttClient.SetNackHandler(func(to, from uint32, requestId uint32) {
 			// Find the node in the fleet and request nodeinfo
@@ -157,7 +161,7 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 				f.publishNodeInfoRequest(fleetIdx, node, from)
 			}
 		})
-		
+
 		// Chatbot ghosts must receive incoming DMs to reply. Relying on the
 		// lazy publish-time connect (whose OnConnect subscribe races and can
 		// silently fail behind the meshtk proxy) leaves them publish-only, so
@@ -266,14 +270,14 @@ func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
 // replying ghost's OWN gateway id, "<base>/!<ghostNum hex>".
 //
 // Two constraints, both learned the hard way on-wire:
-//   1. Own gateway, not the sender's: reusing the incoming topic
-//      (".../PKI/!<sender>") publishes on the SENDER's gateway topic, which the
-//      sending device ignores as a self-echo — replies never displayed.
-//   2. PKI base, not the channel base: a PKI-encrypted reply republished on the
-//      channel topic (".../dc.run/!<ghost>") is dropped by the device, which
-//      tries CHANNEL decryption on it. The DM must stay on the PKI base so the
-//      device routes it to PKI decryption. Deriving the base from the incoming
-//      DM topic (the fleet only subscribes to ".../2/e/PKI/#") keeps it there.
+//  1. Own gateway, not the sender's: reusing the incoming topic
+//     (".../PKI/!<sender>") publishes on the SENDER's gateway topic, which the
+//     sending device ignores as a self-echo — replies never displayed.
+//  2. PKI base, not the channel base: a PKI-encrypted reply republished on the
+//     channel topic (".../dc.run/!<ghost>") is dropped by the device, which
+//     tries CHANNEL decryption on it. The DM must stay on the PKI base so the
+//     device routes it to PKI decryption. Deriving the base from the incoming
+//     DM topic (the fleet only subscribes to ".../2/e/PKI/#") keeps it there.
 func replyTopicFor(incomingTopic string, ghostNum uint32) string {
 	base := incomingTopic
 	if i := strings.LastIndex(incomingTopic, "/"); i >= 0 {
@@ -382,6 +386,38 @@ func sendSpread(count int, spacing time.Duration, sleep func(time.Duration), sen
 	}()
 }
 
+// requestDedupWindow collapses a radio's own retransmissions of the same DM.
+// Meshtastic resends an unacked direct message ~3 times, ~8s apart, so without
+// this every chatbot reply is multiplied by the retransmit count: 3 requests x
+// pkiReplyRetryCount = 9 copies of each line. Observed live on 2026-07-19.
+// 30s covers the ~16s retransmit span with margin; the cost is that a genuine
+// repeat of the identical text inside the window gets one reply, not two.
+const requestDedupWindow = 30 * time.Second
+
+// dedupRequest reports whether key was already seen within window, and records
+// it otherwise. It prunes expired entries on the way through so the map cannot
+// grow without bound over a multi-day fleet lifetime.
+func dedupRequest(seen map[string]time.Time, key string, now time.Time, window time.Duration) bool {
+	for k, t := range seen {
+		if now.Sub(t) > window {
+			delete(seen, k)
+		}
+	}
+	if t, ok := seen[key]; ok && now.Sub(t) <= window {
+		return true
+	}
+	seen[key] = now
+	return false
+}
+
+// isRetransmit guards every chatbot reply path against a device retransmit.
+func (n *FleetCmd) isRetransmit(toFleetIdx int, from uint32, message string) bool {
+	key := fmt.Sprintf("%d:%s", from, message)
+	n.RecentReqMux[toFleetIdx].Lock()
+	defer n.RecentReqMux[toFleetIdx].Unlock()
+	return dedupRequest(n.RecentReq[toFleetIdx], key, time.Now(), requestDedupWindow)
+}
+
 // sendPKIReplyReliable is the one-shot reply path: same reply, re-sent to
 // survive a disconnect gap. Do NOT use it from handleLyricsChat — ricky already
 // emits ~60 messages per request and a 3x retry would flood the channel,
@@ -410,6 +446,14 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
 		var hasOTP = false
 		message := string(payload)
+
+		// A radio retransmits an unacked DM ~3x, ~8s apart. Each copy used to
+		// start its own reply chain, so the reply count multiplied by the
+		// retransmit count. Drop the duplicates before any chatbot path runs.
+		if n.isRetransmit(toFleetIdx, from, message) {
+			n.Config.Log.Infof("Duplicate DM from %d within %v (device retransmit), not replying again: %q", from, requestDedupWindow, message)
+			return
+		}
 
 		if n.OTPHandler[toFleetIdx] != nil {
 			totps, err := n.OTPHandler[toFleetIdx].CalculateTOTPWithAdjacentPeriods()
@@ -527,7 +571,7 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 	n.LyricsRespMux[toFleetIdx].Lock()
 	n.LyricsResponded[toFleetIdx][from]++
 	n.LyricsRespMux[toFleetIdx].Unlock()
-	
+
 	// Decode base64 lyrics
 	lyricsBytes, err := base64.StdEncoding.DecodeString(lyricsB64)
 	if err != nil {

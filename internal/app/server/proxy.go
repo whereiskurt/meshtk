@@ -82,16 +82,18 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 				// Apply decision rules
 				result := n.PacketDecider.Decide(ip)
 
-				// slowed, kill, tokenCount := rateLimiter.CheckLimit(socketAddr)
-				slowed, kill, tokenCount := rateLimiter.EnforceLimit(socketAddr, socketPenalty)
-				penalty := min(socketPenalty*time.Duration(-tokenCount+1), 10*time.Second)
-
-				if slowed {
-					ip.WriteLimiterLog(Slow, tokenCount, penalty)
-				} else if kill {
-					ip.WriteLimiterLog(Kill, tokenCount, penalty)
-					return
-				}
+				// RATE LIMITING DISABLED 2026-07-19 (con debug): the SLOW/KILL
+				// enforcement was penalizing/tearing down real BLE-proxied radios on
+				// reconnect bursts, disrupting downlink. Allow-all pass-through; no
+				// throttle. Re-enable post-con by restoring EnforceLimit below.
+				// slowed, kill, tokenCount := rateLimiter.EnforceLimit(socketAddr, socketPenalty)
+				// penalty := min(socketPenalty*time.Duration(-tokenCount+1), 10*time.Second)
+				// if slowed {
+				// 	ip.WriteLimiterLog(Slow, tokenCount, penalty)
+				// } else if kill {
+				// 	ip.WriteLimiterLog(Kill, tokenCount, penalty)
+				// 	return
+				// }
 
 				switch result.Decision {
 				case Allow:

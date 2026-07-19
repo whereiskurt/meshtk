@@ -48,6 +48,13 @@ type FleetCmd struct {
 	RecentReq       []map[string]time.Time  // Recent inbound DMs, for retransmit dedup, per fleet
 	RecentReqMux    []sync.Mutex            // Mutex to protect the RecentReq map, per fleet
 
+	// Pending holds one-shot replies that may have been published into a gap
+	// while the recipient was disconnected, keyed by recipient node. Flushed
+	// when we next see that node transmit. Process-wide, not per fleet: the
+	// recipient is a radio, not a fleet member.
+	Pending    map[uint32][]*pendingReply
+	PendingMux sync.Mutex
+
 	// KeyResolver is the ONE process-wide authoritative pubkey resolver
 	// (internal/keycache, DDB MeshRadio) shared by EVERY fleet MqttClient — the
 	// fleet-wide generalization of crypto.go's pubKeyCache. Built once in
@@ -79,6 +86,8 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 			f.OTPHandler = append(f.OTPHandler, nil)
 		}
 	}
+
+	f.Pending = make(map[uint32][]*pendingReply)
 
 	f.KeyResolver = buildKeyResolver(c)
 
@@ -135,6 +144,7 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 	f.Config.Log.Trace("fleet.Simulate")
 	f.Config.Log.Tracef("%+v", f.Config)
 
+	presenceWatcherAssigned := false
 	for idx := range f.Config.Fleet {
 		f.initNodeDb(idx)
 		f.overrideFleetKeys(idx)
@@ -172,6 +182,17 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 		// ghosts container. Movement-only sim fleets (rabbits) never chat, skip.
 		if len(f.Config.Fleet[idx].ChatBot) > 0 {
 			dmTopics := []string{"msh/+/2/e/PKI/#", "msh/2/e/PKI/#"}
+
+			// Exactly ONE chatbot fleet also watches the channel topic, to see
+			// radios transmit and drive the pending-reply flush (onNodeSeen).
+			// Only one: FleetNodeHandler is shared across every client, so a
+			// second subscriber would duplicate every packet's work for no gain
+			// and starve the small ghosts container.
+			if !presenceWatcherAssigned {
+				presenceWatcherAssigned = true
+				dmTopics = append(dmTopics, f.Config.NodeInfo.Topic+"/+")
+				f.Config.Log.Infof("Fleet[%d] %s: also watching %s for radio presence (pending-reply flush)", idx, f.Config.Fleet[idx].Id, f.Config.NodeInfo.Topic+"/+")
+			}
 			if err := mqttClient.ConnectAndListen(dmTopics); err != nil {
 				f.Config.Log.Errorf("Fleet[%d] %s: ConnectAndListen failed, DMs will not be received: %v", idx, f.Config.Fleet[idx].Id, err)
 			} else {
@@ -418,17 +439,103 @@ func (n *FleetCmd) isRetransmit(toFleetIdx int, from uint32, message string) boo
 	return dedupRequest(n.RecentReq[toFleetIdx], key, time.Now(), requestDedupWindow)
 }
 
+// mosquitto runs `persistence false` and Meshtastic publishes QoS0, so a reply
+// published while the recipient is between reconnects is dropped with no queue
+// and no retry -- the broker will not store and forward it. The timed retry
+// above fires blind and hopes to overlap a connected window; this queue instead
+// waits for proof of life. Every packet a radio transmits (its own NodeInfo or
+// Position on the channel) proves it is connected RIGHT NOW, so that is the
+// moment to re-send anything it may have missed.
+const (
+	pendingReplyTTL      = 10 * time.Minute
+	pendingMaxFlush      = 2
+	pendingFlushCooldown = 45 * time.Second
+)
+
+type pendingReply struct {
+	fleetIdx  int
+	ghost     uint32 // the replying ghost (sender)
+	to        uint32 // the recipient radio
+	topic     string
+	text      string
+	created   time.Time
+	flushes   int
+	lastFlush time.Time
+}
+
+// selectDueFlushes splits entries into those still worth keeping and those to
+// re-send now. Entries are dropped once they expire or exhaust their flushes,
+// so the queue drains on its own without a sweeper goroutine.
+func selectDueFlushes(entries []*pendingReply, now time.Time) (kept, due []*pendingReply) {
+	for _, e := range entries {
+		if now.Sub(e.created) > pendingReplyTTL || e.flushes >= pendingMaxFlush {
+			continue
+		}
+		kept = append(kept, e)
+		if now.Sub(e.lastFlush) >= pendingFlushCooldown {
+			e.flushes++
+			e.lastFlush = now
+			due = append(due, e)
+		}
+	}
+	return kept, due
+}
+
+// queuePendingReply records a reply for redelivery on the recipient's next
+// sighting. lastFlush starts at now so the cooldown is measured from the
+// original send, not from the epoch.
+func (n *FleetCmd) queuePendingReply(toFleetIdx int, ghost, to uint32, topic, text string) {
+	now := time.Now()
+	n.PendingMux.Lock()
+	defer n.PendingMux.Unlock()
+	n.Pending[to] = append(n.Pending[to], &pendingReply{
+		fleetIdx: toFleetIdx, ghost: ghost, to: to, topic: topic, text: text,
+		created: now, lastFlush: now,
+	})
+}
+
+// onNodeSeen is the store-and-forward trigger: any transmission from a node
+// proves it is connected, so flush whatever it may have missed.
+func (n *FleetCmd) onNodeSeen(node uint32) {
+	n.PendingMux.Lock()
+	entries, ok := n.Pending[node]
+	if !ok {
+		n.PendingMux.Unlock()
+		return
+	}
+	kept, due := selectDueFlushes(entries, time.Now())
+	if len(kept) == 0 {
+		delete(n.Pending, node)
+	} else {
+		n.Pending[node] = kept
+	}
+	n.PendingMux.Unlock()
+
+	for _, e := range due {
+		n.Config.Log.Infof("Node %d is back; re-sending pending reply (flush %d/%d): %s", node, e.flushes, pendingMaxFlush, e.text)
+		go n.sendPKIReply(e.fleetIdx, e.ghost, e.to, e.topic, e.text)
+	}
+}
+
 // sendPKIReplyReliable is the one-shot reply path: same reply, re-sent to
 // survive a disconnect gap. Do NOT use it from handleLyricsChat — ricky already
 // emits ~60 messages per request and a 3x retry would flood the channel,
 // re-creating the drowning problem that hid this bug in the first place.
 func (n *FleetCmd) sendPKIReplyReliable(toFleetIdx int, to, from uint32, topic string, reply string) {
+	// `to` is the replying ghost, `from` is the recipient radio (swapped for the reply).
+	n.queuePendingReply(toFleetIdx, to, from, topic, reply)
 	sendSpread(pkiReplyRetryCount, pkiReplyRetrySpacing, time.Sleep, func() {
 		n.sendPKIReply(toFleetIdx, to, from, topic, reply)
 	})
 }
 
 func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
+	// Any packet from this node -- including the broadcast NodeInfo/Position it
+	// emits on reconnect -- proves it is connected right now. Flush anything we
+	// published into a gap. Must run BEFORE the broadcast skip below, because
+	// the reconnect beacon we rely on IS a broadcast.
+	n.onNodeSeen(from)
+
 	// Skip broadcast message
 	if to == 4294967295 {
 		return

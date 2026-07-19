@@ -204,8 +204,10 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 
 			c.log.Tracef("Successfully PKI decrypted payload from %v on %v", from, topic)
 
-			// if packet.GetWantAck() && c.ackHandler != nil {
-			if c.ackHandler != nil {
+			// Only ack when the sender asked for one -- firmware never acks
+			// unsolicited (want_ack=false) packets, and a real radio's DM
+			// always sets want_ack (that flag is what drives its retransmits).
+			if packet.GetWantAck() && c.ackHandler != nil {
 				c.log.Debugf("Sending ACK for PKI message from %v to %v (request_id: %v)", from, to, packet.GetId())
 				c.ackHandler(to, from, packet.GetId())
 			}

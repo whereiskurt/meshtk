@@ -13,6 +13,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// movementDue reports whether this node should publish position/movement on
+// this tic. every <= 1 means every tic (the default, unchanged behaviour).
+// The nodeNum offset staggers nodes so a fleet does not emit all of its
+// positions on the same tic.
+func movementDue(every, tic int, nodeNum uint32) bool {
+	if every <= 1 {
+		return true
+	}
+	return (tic+int(nodeNum%uint32(every)))%every == 0
+}
+
 func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 	tags := f.Config.Fleet[idx].BehaviourTag
 	tagMap := make(map[string]bool)
@@ -24,11 +35,18 @@ func (f *FleetCmd) behaviours(idx int, node *mqtt.Node, tic int) {
 		f.publishNodeInfo(idx, node)
 	}
 
-	if tagMap["movement"] {
-		f.publishNextGPXMovement(idx, node, tagMap["gitter"])
-	}
-	if tagMap["position"] {
-		f.publishPosition(idx, node, tagMap["gitter"])
+	// Position/movement is thinned independently of NodeInfo: it is half of all
+	// channel traffic but the least useful half for a radio that just reconnected
+	// and needs identities + pubkeys to DM anyone. Nodes are offset by their node
+	// number so the surviving position publishes spread across tics instead of
+	// bunching onto every Nth one.
+	if movementDue(f.Config.Fleet[idx].MovementEveryTics, tic, node.From) {
+		if tagMap["movement"] {
+			f.publishNextGPXMovement(idx, node, tagMap["gitter"])
+		}
+		if tagMap["position"] {
+			f.publishPosition(idx, node, tagMap["gitter"])
+		}
 	}
 
 	if tic == 0 {
@@ -134,7 +152,7 @@ func (f *FleetCmd) publishNextGPXMovement(idx int, node *mqtt.Node, gitter bool)
 
 func (f *FleetCmd) publishACK(idx int, node *mqtt.Node, toNode uint32, requestId uint32) {
 	whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
-	
+
 	// A proper Meshtastic ACK is a Routing with error_reason = NONE. An empty
 	// Routing{} marshals to zero bytes (no oneof variant set), which the
 	// Meshtastic app surfaces as "Empty Ack Error". Set the variant explicitly
@@ -144,31 +162,31 @@ func (f *FleetCmd) publishACK(idx int, node *mqtt.Node, toNode uint32, requestId
 			ErrorReason: meshtastic.Routing_NONE,
 		},
 	}
-	
+
 	routingBytes, err := proto.Marshal(routing)
 	if err != nil {
 		f.Config.Log.Errorf("Failed to marshal ACK routing message: %v", err)
 		return
 	}
-	
+
 	f.MqttClient[idx].PublishACK(node.From, toNode, whoamiTopic, requestId, routingBytes)
 }
 
 func (f *FleetCmd) publishNodeInfoRequest(idx int, node *mqtt.Node, toNode uint32) {
 	// Request nodeinfo from the target node
 	whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
-	
+
 	// Send an empty user message which triggers nodeinfo response
 	user := &meshtastic.User{
 		Id: fmt.Sprintf("!%08x", toNode), // Request info for this node
 	}
-	
+
 	userBytes, err := proto.Marshal(user)
 	if err != nil {
 		f.Config.Log.Errorf("Failed to marshal nodeinfo request: %v", err)
 		return
 	}
-	
+
 	f.Config.Log.Debugf("Requesting nodeinfo from node %08x via node %08x", toNode, node.From)
 	f.MqttClient[idx].PublishMessageEncrypted(node.From, toNode, whoamiTopic, meshtastic.PortNum_NODEINFO_APP, userBytes)
 }
@@ -187,4 +205,3 @@ func ZigzagIndex(i, total int) int {
 	// left to right
 	return total - 1 - col
 }
-

@@ -50,11 +50,11 @@ type Config struct {
 }
 
 type CredCacheConfig struct {
-	TTLSecs          int      `default:"900"`
-	MaxSizeMB        int      `default:"64"`
-	TableName        string   `default:"run-human-electro"`
-	TableRegion      string   `default:"us-east-1"`
-	DynamoDBEndpoint string   `default:""`
+	TTLSecs          int    `default:"900"`
+	MaxSizeMB        int    `default:"64"`
+	TableName        string `default:"run-human-electro"`
+	TableRegion      string `default:"us-east-1"`
+	DynamoDBEndpoint string `default:""`
 	Passthrough      []string
 	TimeoutSecs      int `default:"5"`
 	NegativeTTLSecs  int `default:"60"`
@@ -78,19 +78,19 @@ type KeyCacheConfig struct {
 }
 
 type Server struct {
-	InspectorListenAddress string `default:"localhost:50051"`
-	ProxyListenAddress     string `default:"0.0.0.0:1883"`
-	ProxyForwardAddress    string `default:"localhost:1884"`
-	BlockFilenameTmpl      string `default:"blocklist.{{.DTS}}.log"`
-	MaxMBLogSize           int    `default:"2"`
-	UseS3Bucket            bool   `default:"true"`
-	S3BucketRegion         string `default:"us-east-1"`
-	S3BucketName           string `default:"meshtk-blocklist-20250101"`
-	S3BucketPrefix         string `default:"meshtk/blocklist"`
-	CheckLogIntervalMins   int    `default:"15"`
-	CheckLogIntervalSecs   int    `default:"10"`
-	ShouldLogBlocks        bool   `default:"true"`
-	ShouldLogAllows        bool   `default:"true"`
+	InspectorListenAddress string          `default:"localhost:50051"`
+	ProxyListenAddress     string          `default:"0.0.0.0:1883"`
+	ProxyForwardAddress    string          `default:"localhost:1884"`
+	BlockFilenameTmpl      string          `default:"blocklist.{{.DTS}}.log"`
+	MaxMBLogSize           int             `default:"2"`
+	UseS3Bucket            bool            `default:"true"`
+	S3BucketRegion         string          `default:"us-east-1"`
+	S3BucketName           string          `default:"meshtk-blocklist-20250101"`
+	S3BucketPrefix         string          `default:"meshtk/blocklist"`
+	CheckLogIntervalMins   int             `default:"15"`
+	CheckLogIntervalSecs   int             `default:"10"`
+	ShouldLogBlocks        bool            `default:"true"`
+	ShouldLogAllows        bool            `default:"true"`
 	CredCache              CredCacheConfig `json:"CredCache"`
 	KeyCache               KeyCacheConfig  `json:"KeyCache"`
 	ProxyUsername          string          `default:"public"`
@@ -99,28 +99,35 @@ type Server struct {
 }
 
 type Fleet struct {
-	Id                     string     `json:"Id"`
-	Description            string     `json:"Description"`
-	Seed                   string     `json:"Seed"`
-	NodesPerRampInterval   []int      `json:"NodesPerRampInterval"`
-	NodesPerSteadyInterval []int      `json:"NodesPerSteadyInterval"`
-	Distribution           string     `json:"Distribution" default:"uniform"`
-	BroadcastGitterSec     int        `json:"BroadcastGitterSec"`
-	LatLongAltGitter       int        `json:"LatLongAltGitter"`
-	TextMessageGitterSec   int        `json:"TextMessageGitterSec"`
-	NodeDbPath             string     `default:"./fleet.default.db"`
-	BehaviourTag           []string   `default:"[ 'small', 'friendly' ]"`
-	BehaviourSecs          int        `default:"60"`
-	RampUpSecs             int        `default:"120"`
-	RampSteadySecs         int        `default:"60"`
-	RampDownSecs           int        `default:"120"`
-	Movement               []Movement `json:"Movement"`
-	ChatBot                []ChatBot  `json:"ChatBot"`
-	ShortNameTmpl          string     `default:"M{fleetId}{nodeId}"`
-	LongNameTmpl           string     `default:"mtk-{{.fleetId}}{{.nodeId}}-{{shortseed}}"`
-	OtpUrl                 string     `default:""`
-	OpenAIKey              string     `default:""`
-	OpenAISystemPrompt     string     `default:""`
+	Id                     string   `json:"Id"`
+	Description            string   `json:"Description"`
+	Seed                   string   `json:"Seed"`
+	NodesPerRampInterval   []int    `json:"NodesPerRampInterval"`
+	NodesPerSteadyInterval []int    `json:"NodesPerSteadyInterval"`
+	Distribution           string   `json:"Distribution" default:"uniform"`
+	BroadcastGitterSec     int      `json:"BroadcastGitterSec"`
+	LatLongAltGitter       int      `json:"LatLongAltGitter"`
+	TextMessageGitterSec   int      `json:"TextMessageGitterSec"`
+	NodeDbPath             string   `default:"./fleet.default.db"`
+	BehaviourTag           []string `default:"[ 'small', 'friendly' ]"`
+	BehaviourSecs          int      `default:"60"`
+	// MovementEveryTics thins position/movement publishes to every Nth behaviour
+	// tic while NodeInfo keeps publishing every tic. At 1:1 (the default) position
+	// traffic is half of all channel packets, but a reconnecting radio needs
+	// identities and pubkeys far more than it needs fresh coordinates, and a
+	// BLE-proxied radio drops what it cannot keep up with. 0 or 1 = every tic
+	// (unchanged behaviour).
+	MovementEveryTics  int        `json:"MovementEveryTics" default:"1"`
+	RampUpSecs         int        `default:"120"`
+	RampSteadySecs     int        `default:"60"`
+	RampDownSecs       int        `default:"120"`
+	Movement           []Movement `json:"Movement"`
+	ChatBot            []ChatBot  `json:"ChatBot"`
+	ShortNameTmpl      string     `default:"M{fleetId}{nodeId}"`
+	LongNameTmpl       string     `default:"mtk-{{.fleetId}}{{.nodeId}}-{{shortseed}}"`
+	OtpUrl             string     `default:""`
+	OpenAIKey          string     `default:""`
+	OpenAISystemPrompt string     `default:""`
 }
 
 type Coordinate struct {

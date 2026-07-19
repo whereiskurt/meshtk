@@ -46,6 +46,7 @@ func (a *App) RegisterOsArgs() {
 	cmd.GlobalS("HomeFolder", &a.Config.HomeFolder, []string{"d", "home"}, nil)
 	cmd.GlobalS("VerboseLevel", &a.Config.VerboseLevel, []string{"v", "verbose"}, nil)
 	cmd.GlobalS("ConfigFileName", &a.Config.ConfigFileName, []string{"c", "config"}, nil)
+	cmd.GlobalS("GhostKeySecret", &a.Config.GhostKeySecret, nil, []string{"MESHTK_GHOST_KEY_SECRET"})
 
 	ni := nodeinfo.NewNodeInfo(a.Config)
 	nodeInfoCmd := cmd.NewCmd([]string{"nodeinfo", "n"}, ni.Help)

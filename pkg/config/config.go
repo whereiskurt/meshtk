@@ -29,6 +29,7 @@ type Config struct {
 	Log            *log.Logger `json:"-"`
 	LogFolder      string
 	ConfigFileName string `json:"-"`
+	GhostKeySecret string `json:"-"`
 
 	Release struct {
 		Date    string

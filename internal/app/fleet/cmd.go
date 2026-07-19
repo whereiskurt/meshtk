@@ -122,6 +122,7 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 
 	for idx := range f.Config.Fleet {
 		f.initNodeDb(idx)
+		f.overrideFleetKeys(idx)
 		mqttClient := internal.NewMqttClient(f.Config, &f.Nodes[idx], f.FleetNodeHandler)
 
 		// Thread the ONE shared authoritative pubkey resolver into every client so

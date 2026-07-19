@@ -88,23 +88,34 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 func buildKeyResolver(c *config.Config) *keycache.KeyResolver {
 	kc := c.Server.KeyCache
 
+	// NOTE: buildKeyResolver runs inside NewFleets during early bootstrap
+	// (NewApp -> RegisterOsArgs -> NewFleets), BEFORE c.Log is wired, so c.Log
+	// is nil here. Guard every logger call — an unconditional c.Log.*f panics
+	// the whole meshtk process at startup (SIGSEGV in logrus). Runtime resolve/
+	// fallback logging (crypto.go) is unaffected: c.Log is set by decrypt time.
 	cache, err := keycache.NewCache(kc.TTLSecs, kc.MaxSizeMB)
 	if err != nil {
-		c.Log.Errorf("keycache: failed to create pubkey cache (%v); falling back to nodes.json", err)
+		if c.Log != nil {
+			c.Log.Errorf("keycache: failed to create pubkey cache (%v); falling back to nodes.json", err)
+		}
 		return nil
 	}
 
 	store, err := keycache.NewDynamoDBStore(kc.TableName, kc.TableRegion, kc.DynamoDBEndpoint)
 	if err != nil {
-		c.Log.Errorf("keycache: failed to create DynamoDB store (%v); falling back to nodes.json", err)
+		if c.Log != nil {
+			c.Log.Errorf("keycache: failed to create DynamoDB store (%v); falling back to nodes.json", err)
+		}
 		return nil
 	}
 
 	resolver := keycache.NewKeyResolver(cache, store,
 		keycache.WithNegativeTTL(time.Duration(kc.NegativeTTLSecs)*time.Second),
 	)
-	c.Log.Infof("keycache: authoritative pubkey resolver ready (table=%s region=%s ttl=%ds fallback=%q)",
-		kc.TableName, kc.TableRegion, kc.TTLSecs, kc.Fallback)
+	if c.Log != nil {
+		c.Log.Infof("keycache: authoritative pubkey resolver ready (table=%s region=%s ttl=%ds fallback=%q)",
+			kc.TableName, kc.TableRegion, kc.TTLSecs, kc.Fallback)
+	}
 	return resolver
 }
 func (f *FleetCmd) Help(cmd *cobra.Command, argz []string) {

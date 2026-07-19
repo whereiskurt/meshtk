@@ -1,6 +1,7 @@
 package mqtt
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/whereiskurt/meshtk/internal/keycache"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 	"golang.org/x/crypto/curve25519"
 )
@@ -51,10 +53,13 @@ func (c *MqttClient) decryptPKI(packet *meshtastic.MeshPacket, encryptedData []b
 		return nil, fmt.Errorf("recipient private key has invalid length: %d bytes (expected 32)", len(recipientPrivateKeyBytes))
 	}
 
-	// Fetch sender public key from DEFCON API instead of local nodeDB
-	senderPubKeyHex, err := c.FetchPublicKeyFromDefcon(packet.GetFrom())
+	// Resolve the sender public key from the authoritative keycache (DDB
+	// MeshRadio), NOT the unauthenticated nodes.json feed. On a keycache miss
+	// the configured Fallback decides: nodes.json (bring-up) or NACK (none,
+	// poisoning-resistant). A returned error flows into mqtt.go's nackHandler.
+	senderPubKeyHex, err := c.resolveSenderPubKey(packet.GetFrom())
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch sender public key from DEFCON API: %v", err)
+		return nil, fmt.Errorf("failed to resolve sender public key: %v", err)
 	}
 
 	senderPublicKeyBytes, err := c.ParseHexKey(senderPubKeyHex)
@@ -90,6 +95,65 @@ func (c *MqttClient) ParseHexKey(hexKey string) ([]byte, error) {
 		return nil, fmt.Errorf("invalid key length: %d, expected 32 (hex string length was %d)", len(keyBytes), len(cleanHex))
 	}
 	return keyBytes, nil
+}
+
+// resolveSenderPubKey returns a node's 0x-hex decrypt pubkey from the
+// authoritative keycache (DDB MeshRadio), applying the configured Fallback on a
+// miss. This is the single decision point shared by BOTH the decrypt site
+// (crypto.go decryptPKI) and the reply-encrypt site (fleet/cmd.go sendPKIReply)
+// — migrating only one would leave stale-key replies (landmine L4).
+//
+//   - keycache hit               → (0x hex, nil)
+//   - miss/degraded, "nodes.json" → FetchPublicKeyFromDefcon (bring-up feed)
+//   - miss/degraded, "none"       → error → existing nackHandler (poisoning closed)
+//
+// Every fallback/miss is logged (never key material) for enrollment-coverage
+// measurement before the deploy-time flip to "none". A nil resolver (e.g. the
+// nodeinfo utility) preserves the legacy feed path.
+//
+// ResolveSenderPubKey is the exported wrapper used by the reply-encrypt site in
+// package fleet; the decrypt site in this package uses the unexported form.
+func (c *MqttClient) ResolveSenderPubKey(nodeNum uint32) (string, error) {
+	return c.resolveSenderPubKey(nodeNum)
+}
+
+func (c *MqttClient) resolveSenderPubKey(nodeNum uint32) (string, error) {
+	if c.keyResolver == nil {
+		// No authoritative resolver wired: legacy feed behavior.
+		return c.fallbackFeedFetch(nodeNum)
+	}
+
+	hexKey, ok, err := c.keyResolver.Resolve(context.Background(), nodeNum)
+	if err == nil && ok {
+		return hexKey, nil
+	}
+
+	// Distinguish a plain miss (ok=false, err=nil) from a store/circuit-breaker
+	// error; both apply the same Fallback branch (degraded ≈ miss, V-degraded).
+	if err != nil {
+		c.log.Warnf("keycache degraded for node !%08x (%v); applying fallback=%q", nodeNum, err, c.keyFallback)
+	}
+
+	switch c.keyFallback {
+	case "none":
+		// Poisoning-resistant: a NODEINFO-injected feed key can NOT change decrypt
+		// behavior. The error flows into the existing nackHandler.
+		c.log.Infof("keycache miss for node !%08x, fallback=none, NACKing (enrollment-coverage)", nodeNum)
+		return "", fmt.Errorf("keycache miss for node !%08x with fallback=none: %w", nodeNum, keycache.ErrNotFound)
+	default: // "nodes.json" (bring-up)
+		c.log.Infof("keycache miss for node !%08x, nodes.json fallback used (enrollment-coverage)", nodeNum)
+		return c.fallbackFeedFetch(nodeNum)
+	}
+}
+
+// fallbackFeedFetch performs the nodes.json feed lookup, routed through an
+// optional test seam (nodesFeedFn) so the fallback branch can be exercised
+// without network I/O.
+func (c *MqttClient) fallbackFeedFetch(nodeNum uint32) (string, error) {
+	if c.nodesFeedFn != nil {
+		return c.nodesFeedFn(nodeNum)
+	}
+	return c.FetchPublicKeyFromDefcon(nodeNum)
 }
 
 // FetchPublicKeyFromDefcon returns the public key for a nodeID, preferring the

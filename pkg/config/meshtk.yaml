@@ -85,6 +85,18 @@ Server:
       - "kph"
       - "ax"
       - "meshmap"
+  KeyCache:
+    TTLSecs: 90
+    MaxSizeMB: 16
+    TableName: "run-human-electro"
+    TableRegion: "us-east-1"
+    DynamoDBEndpoint: ""
+    NegativeTTLSecs: 60
+    # Fallback miss behavior for the authoritative pubkey resolver (plan 66-07):
+    #   "nodes.json" (bring-up default) resolves keycache misses via the broadcast feed.
+    #   "none" (poisoning-resistant target) lets a miss flow into the existing NACK path.
+    # Flipping to "none" is a deploy-time op once enrollment coverage is verified.
+    Fallback: "nodes.json"
 
 Fleet:
   - Id: "rebar-fleet"

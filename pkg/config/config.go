@@ -60,6 +60,23 @@ type CredCacheConfig struct {
 	NegativeTTLSecs  int `default:"60"`
 }
 
+// KeyCacheConfig sits alongside CredCacheConfig but drives the authoritative
+// Meshtastic pubkey resolver (internal/keycache): a process-wide, cache-first
+// GetItem read of the MeshRadio entity. TTL defaults to 90s (60-120s plain
+// expiry), NOT credcache's 900s — up-to-TTL key staleness is acceptable.
+type KeyCacheConfig struct {
+	TTLSecs          int    `default:"90"`
+	MaxSizeMB        int    `default:"16"`
+	TableName        string `default:"run-human-electro"`
+	TableRegion      string `default:"us-east-1"`
+	DynamoDBEndpoint string `default:""`
+	NegativeTTLSecs  int    `default:"60"`
+	// Fallback selects miss behavior in the decrypt/reply paths (plan 66-07):
+	// "nodes.json" (bring-up) resolves misses via the broadcast feed;
+	// "none" (poisoning-resistant) lets a miss flow into the existing NACK path.
+	Fallback string `default:"nodes.json"`
+}
+
 type Server struct {
 	InspectorListenAddress string `default:"localhost:50051"`
 	ProxyListenAddress     string `default:"0.0.0.0:1883"`
@@ -75,6 +92,7 @@ type Server struct {
 	ShouldLogBlocks        bool   `default:"true"`
 	ShouldLogAllows        bool   `default:"true"`
 	CredCache              CredCacheConfig `json:"CredCache"`
+	KeyCache               KeyCacheConfig  `json:"KeyCache"`
 	ProxyUsername          string          `default:"public"`
 	ProxyPassword          string          `default:"31337"`
 	AdminListenAddress     string          `default:"localhost:9090"`

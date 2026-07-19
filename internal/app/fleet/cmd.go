@@ -43,7 +43,7 @@ type FleetCmd struct {
 	OTPHandler      []*otp.TOTPConfig
 	OTPUnlocks      []map[uint32]*OTPUnlock // Map from radio ID to unlock info, per fleet
 	OTPUnlockMux    []sync.RWMutex          // Mutex to protect the OTPUnlocks map, per fleet
-	LyricsResponded []map[uint32]int        // Track which 'to' addresses have received lyrics responses, per fleet
+	LyricsResponded []map[uint32]int        // Track which REQUESTERS ('from') have received lyrics responses, per fleet
 	LyricsRespMux   []sync.RWMutex          // Mutex to protect the LyricsResponded map, per fleet
 
 	// KeyResolver is the ONE process-wide authoritative pubkey resolver
@@ -349,6 +349,49 @@ func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, r
 	}
 }
 
+// One-shot chatbot replies (goldstein/dt/mudge/condor style: a single packet)
+// are re-sent pkiReplyRetryCount times, pkiReplyRetrySpacing apart. The iOS
+// BLE↔MQTT proxy reconnects roughly every 60s and mosquitto runs
+// `persistence false` with QoS0 publishes, so anything published while a radio
+// is between reconnects is silently dropped — there is no queue. Three sends
+// over ~90s covers ~1.5 flapping cycles. This is exactly why ricky's ~60-message
+// lyric bursts always land and single-shot repliers vanish.
+//
+// Duplicates on a healthy link are strictly better than silence.
+const (
+	pkiReplyRetryCount   = 3
+	pkiReplyRetrySpacing = 30 * time.Second
+)
+
+// sendSpread invokes send once immediately, then count-1 more times spaced
+// `spacing` apart on a background goroutine so the packet handler is never
+// stalled. sleep is a test seam.
+func sendSpread(count int, spacing time.Duration, sleep func(time.Duration), send func()) {
+	if count < 1 {
+		count = 1
+	}
+	send()
+	if count == 1 {
+		return
+	}
+	go func() {
+		for range count - 1 {
+			sleep(spacing)
+			send()
+		}
+	}()
+}
+
+// sendPKIReplyReliable is the one-shot reply path: same reply, re-sent to
+// survive a disconnect gap. Do NOT use it from handleLyricsChat — ricky already
+// emits ~60 messages per request and a 3x retry would flood the channel,
+// re-creating the drowning problem that hid this bug in the first place.
+func (n *FleetCmd) sendPKIReplyReliable(toFleetIdx int, to, from uint32, topic string, reply string) {
+	sendSpread(pkiReplyRetryCount, pkiReplyRetrySpacing, time.Sleep, func() {
+		n.sendPKIReply(toFleetIdx, to, from, topic, reply)
+	})
+}
+
 func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {
 	// Skip broadcast message
 	if to == 4294967295 {
@@ -412,7 +455,7 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 						n.handleGPTChat(toFleetIdx, to, from, topic, message, fleetConfig.OpenAIKey, fleetConfig.OpenAISystemPrompt)
 					} else {
 						n.Config.Log.Errorf("OpenAI key not configured for fleet %d", toFleetIdx)
-						n.sendPKIReply(toFleetIdx, to, from, topic, "OpenAI key not configured")
+						n.sendPKIReplyReliable(toFleetIdx, to, from, topic, "OpenAI key not configured")
 					}
 				}
 			}
@@ -420,7 +463,7 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 			if chatBot, ok := chatBotMap["otp_success"]; ok {
 				for _, reply := range chatBot.Message {
 					n.Config.Log.Infof("PKI Reply for OTP success: %+v - %s", chatBot.Type, reply)
-					n.sendPKIReply(toFleetIdx, to, from, topic, reply)
+					n.sendPKIReplyReliable(toFleetIdx, to, from, topic, reply)
 				}
 
 				if chatBot.UnlocksChatMode {
@@ -452,7 +495,7 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 				} else {
 					for _, reply := range chatBot.Message {
 						n.Config.Log.Infof("PKI Reply for OTP failure: %+v - %s", chatBot.Type, reply)
-						n.sendPKIReply(toFleetIdx, to, from, topic, reply)
+						n.sendPKIReplyReliable(toFleetIdx, to, from, topic, reply)
 					}
 				}
 			}
@@ -467,19 +510,22 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 }
 
 func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic string, lyricsB64 string) {
-	// Check if we've already responded to this 'to' address
+	// Dedup by the REQUESTER (`from`), not the ghost (`to`). Keying by `to` meant
+	// only the first requester per fleet lifetime ever got lyrics — everyone after
+	// was silently skipped until the fleet restarted. At a con that is one attendee
+	// and nobody else.
 	n.LyricsRespMux[toFleetIdx].RLock()
-	count, exists := n.LyricsResponded[toFleetIdx][to]
+	count, exists := n.LyricsResponded[toFleetIdx][from]
 	n.LyricsRespMux[toFleetIdx].RUnlock()
-	
+
 	if exists && count > 0 {
-		n.Config.Log.Infof("Already responded to lyrics request for 'to' address %d (count: %d), skipping", to, count)
+		n.Config.Log.Infof("Already responded to lyrics request from requester %d (count: %d), skipping", from, count)
 		return
 	}
-	
-	// Mark this 'to' address as having received a response
+
+	// Mark this requester as having received a response
 	n.LyricsRespMux[toFleetIdx].Lock()
-	n.LyricsResponded[toFleetIdx][to]++
+	n.LyricsResponded[toFleetIdx][from]++
 	n.LyricsRespMux[toFleetIdx].Unlock()
 	
 	// Decode base64 lyrics

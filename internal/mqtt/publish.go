@@ -32,8 +32,17 @@ func (c *MqttClient) PublishNodeInfo(from uint32, to uint32, topic string, longN
 		return fmt.Errorf("failed to serialize user data: %v", err)
 	}
 
-	// Send the NodeInfo message
-	return c.PublishMessageEncrypted(from, to, topic, meshtastic.PortNum_NODEINFO_APP, userBytes)
+	// Send the NodeInfo message with retain=true so a radio that reconnects (the
+	// iOS BLE↔MQTT proxy re-connects roughly every 60s) re-learns the whole fleet
+	// the instant it SUBSCRIBEs, instead of waiting minutes for each node's next
+	// beacon. MQTT keeps the retained value per topic and a later retain=false
+	// publish does NOT overwrite it, so live Position/text on the same
+	// msh/US/2/e/<ch>/!<node> topic keep flowing normally.
+	//
+	// SECURITY: only NodeInfo is ever retained. PKI/direct messages must never be
+	// (a retained DM would be replayed to every future subscriber), and Position /
+	// MapReport stay unretained too — stale positions are worse than none.
+	return c.publishMessageEncrypted(from, to, topic, meshtastic.PortNum_NODEINFO_APP, userBytes, true)
 }
 func (c *MqttClient) PublishMessagePlain(from uint32, to uint32, topic string, portNum meshtastic.PortNum, payload []byte) error {
 	// Create Data protobuf
@@ -104,7 +113,13 @@ func (c *MqttClient) PublishMessagePlain(from uint32, to uint32, topic string, p
 
 }
 
+// PublishMessageEncrypted publishes channel (non-PKI) traffic. It never retains —
+// see publishMessageEncrypted / PublishNodeInfo for the one retained case.
 func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic string, portNum meshtastic.PortNum, payload []byte) error {
+	return c.publishMessageEncrypted(from, to, topic, portNum, payload, false)
+}
+
+func (c *MqttClient) publishMessageEncrypted(from uint32, to uint32, topic string, portNum meshtastic.PortNum, payload []byte, retain bool) error {
 	data := &meshtastic.Data{
 		Portnum: portNum,
 		Payload: payload,
@@ -165,7 +180,7 @@ func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic strin
 	// Attempt to publish the message up to 3 times
 	var lastErr error
 	for range 3 {
-		token := c.client.Publish(topic, 0, false, envelopeBytes)
+		token := c.client.Publish(topic, 0, retain, envelopeBytes)
 
 		// Add timeout to avoid hanging indefinitely
 		select {

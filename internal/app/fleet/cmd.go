@@ -261,6 +261,15 @@ func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
 	return done
 }
 
+// ownGatewayTopic builds the MQTT topic a fleet node publishes its OWN packets
+// on: "<channelBase>/!<nodeNum hex>". Every meshtk publisher (ACK, NodeInfo,
+// position, and now the chatbot reply) must use the replying node's own gateway
+// id here — NOT the incoming sender's topic — or the receiving device silently
+// drops the packet as a self-echo (it sees its own gateway id in the topic).
+func ownGatewayTopic(channelBase string, nodeNum uint32) string {
+	return fmt.Sprintf("%s/!%08x", channelBase, nodeNum)
+}
+
 func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, reply string) {
 	// Get the nodes to access their keys
 	_, toNode, _, _ := n.FindNodes(to, from)
@@ -300,12 +309,21 @@ func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, r
 		return
 	}
 
+	// Publish the reply on THIS ghost's OWN gateway topic, mirroring
+	// publishACK/publishNodeInfo (behaviours.go). Reusing the incoming `topic`
+	// puts the reply on the *sender's* gateway topic (e.g. msh/US/2/e/PKI/!<sender>),
+	// which the sending device ignores as a self-echo — so chatbot replies never
+	// arrived at the device even though they were published, ACKed, and correctly
+	// PKI-encrypted. `to` is the replying ghost's node num. (Phase 66 field bug,
+	// confirmed on-wire: republishing a real reply to !<ghost> made it appear.)
+	replyTopic := ownGatewayTopic(n.Config.NodeInfo.Topic, to)
+
 	// Send the PKI encrypted reply
 	// Note: from and to are swapped for the reply
 	err = n.MqttClient[toFleetIdx].PublishPKIMessage(
 		to,   // sender of reply (was receiver of original message)
 		from, // receiver of reply (was sender of original message)
-		topic,
+		replyTopic,
 		meshtastic.PortNum_TEXT_MESSAGE_APP,
 		[]byte(reply),
 		senderPrivKeyBytes,

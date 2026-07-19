@@ -2,32 +2,34 @@ package fleet
 
 import "testing"
 
-// TestOwnGatewayTopic locks the Phase-66 chatbot-reply fix: a ghost must publish
-// its PKI reply on ITS OWN gateway topic, never on the sender's incoming topic.
-//
-// Field bug: sendPKIReply reused the incoming `topic`
-// (msh/US/2/e/PKI/!<sender>). The sender is its own MQTT gateway, and a
-// Meshtastic device ignores traffic on its own gateway topic (self-echo), so
-// replies were published + ACKed + PKI-encrypted correctly yet never displayed.
-// Republishing a captured reply to !<ghost> made it appear instantly on-device.
-func TestOwnGatewayTopic(t *testing.T) {
-	const base = "msh/US/2/e/dc.run"
-	const ghost = uint32(0x1555f041) // goldstein
-	const sender = uint32(0x435990e4) // the user's device (was the incoming gateway)
+// TestReplyTopicFor locks the Phase-66 chatbot-reply fix. A ghost's PKI reply
+// must go to: (1) its OWN gateway id, not the sender's (else the sending device
+// self-drops it), and (2) the PKI base, not the channel base (else the device
+// tries channel-decryption on a PKI packet and drops it). Both were confirmed
+// on-wire: replies on ".../PKI/!<sender>" and ".../dc.run/!<ghost>" never
+// displayed; ".../PKI/!<ghost>" did.
+func TestReplyTopicFor(t *testing.T) {
+	const incoming = "msh/US/2/e/PKI/!435990e4" // DM arrived from the user's device
+	const ghost = uint32(0x1555f041)            // goldstein
 
-	got := ownGatewayTopic(base, ghost)
+	got := replyTopicFor(incoming, ghost)
 
-	if want := "msh/US/2/e/dc.run/!1555f041"; got != want {
+	if want := "msh/US/2/e/PKI/!1555f041"; got != want {
 		t.Fatalf("reply topic = %q, want %q", got, want)
 	}
 
-	// Regression guard: the reply must NOT go to the sender's gateway topic.
-	if senderTopic := ownGatewayTopic(base, sender); got == senderTopic {
-		t.Fatalf("reply topic reused the sender's gateway topic %q — device would self-drop it", senderTopic)
+	// Must keep the PKI base from the incoming DM, never the channel base.
+	if got == "msh/US/2/e/dc.run/!1555f041" {
+		t.Fatalf("reply must stay on the PKI base, not the channel base: %q", got)
 	}
 
-	// pad-8 lowercase hex, matching publishACK/publishNodeInfo formatting.
-	if small := ownGatewayTopic(base, 0xabc); small != "msh/US/2/e/dc.run/!00000abc" {
-		t.Fatalf("node id not pad-8 lowercase hex: %q", small)
+	// Must NOT reuse the sender's gateway topic (self-echo drop).
+	if got == incoming {
+		t.Fatalf("reply reused the sender's gateway topic %q — device self-drops it", incoming)
+	}
+
+	// Region-less base is preserved too (fleet subscribes msh/2/e/PKI/# as well).
+	if r := replyTopicFor("msh/2/e/PKI/!435990e4", 0xabc); r != "msh/2/e/PKI/!00000abc" {
+		t.Fatalf("region-less base or pad-8 hex wrong: %q", r)
 	}
 }

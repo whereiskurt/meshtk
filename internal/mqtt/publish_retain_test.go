@@ -12,9 +12,10 @@ import (
 
 // publishCall records one Publish invocation on the fake broker client.
 type publishCall struct {
-	topic  string
-	qos    byte
-	retain bool
+	topic   string
+	qos     byte
+	retain  bool
+	payload []byte
 }
 
 // doneToken is an already-completed, error-free paho Token.
@@ -39,8 +40,9 @@ func (f *fakeBroker) IsConnected() bool      { return true }
 func (f *fakeBroker) IsConnectionOpen() bool { return true }
 func (f *fakeBroker) Connect() mqtt.Token    { return newDoneToken() }
 func (f *fakeBroker) Disconnect(uint)        {}
-func (f *fakeBroker) Publish(topic string, qos byte, retained bool, _ interface{}) mqtt.Token {
-	f.calls = append(f.calls, publishCall{topic: topic, qos: qos, retain: retained})
+func (f *fakeBroker) Publish(topic string, qos byte, retained bool, payload interface{}) mqtt.Token {
+	b, _ := payload.([]byte)
+	f.calls = append(f.calls, publishCall{topic: topic, qos: qos, retain: retained, payload: b})
 	return newDoneToken()
 }
 func (f *fakeBroker) Subscribe(string, byte, mqtt.MessageHandler) mqtt.Token { return newDoneToken() }

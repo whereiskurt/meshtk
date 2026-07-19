@@ -44,6 +44,15 @@ type Config struct {
 	Fleet       []Fleet
 	Server      Server
 
+	// AckMode controls how fleets ack PKI DMs addressed to them:
+	//   "faithful" (default) - ack shaped exactly like real firmware output:
+	//                          hop_start set, no fabricated rx metadata.
+	//   "legacy"             - the historical ack shape (rx_rssi/rx_snr/via_mqtt
+	//                          pre-filled), kept for A/B comparison.
+	//   "off"                - never ack; lets the radio exhaust retransmissions,
+	//                          isolating whether our acks disturb the device.
+	AckMode string `json:"AckMode"`
+
 	NodeDbPath string `default:"./meshtk.db"`
 
 	WasSuccess bool

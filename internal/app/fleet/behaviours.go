@@ -191,6 +191,13 @@ func (f *FleetCmd) publishNodeInfoRequest(idx int, node *mqtt.Node, toNode uint3
 	f.MqttClient[idx].PublishMessageEncrypted(node.From, toNode, whoamiTopic, meshtastic.PortNum_NODEINFO_APP, userBytes)
 }
 
+// ackEnabled reports whether the configured AckMode wires an ack handler at
+// all. Only the explicit "off" disables acks; every other value (including
+// empty, for configs that predate the knob) acks as before.
+func ackEnabled(mode string) bool {
+	return mode != "off"
+}
+
 func ZigzagIndex(i, total int) int {
 	if total == 1 {
 		return 0

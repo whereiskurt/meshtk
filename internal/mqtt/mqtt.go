@@ -54,6 +54,16 @@ type MqttClient struct {
 	// nodesFeedFn is a test seam for the nodes.json fallback branch. nil → the
 	// real FetchPublicKeyFromDefcon (feed + pubKeyCache).
 	nodesFeedFn func(nodeNum uint32) (string, error)
+
+	// ackStyle shapes the MeshPacket metadata of published ACKs: "faithful"
+	// (default, firmware-shaped) or "legacy" (historical fabricated rx fields).
+	// See config.Config.AckMode; "off" never reaches here (no handler is wired).
+	ackStyle string
+}
+
+// SetAckStyle selects the ACK packet shape ("faithful" or "legacy").
+func (c *MqttClient) SetAckStyle(style string) {
+	c.ackStyle = style
 }
 
 // SetKeyResolver wires the shared authoritative pubkey resolver and the miss

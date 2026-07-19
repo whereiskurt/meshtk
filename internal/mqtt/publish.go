@@ -242,12 +242,25 @@ func (c *MqttClient) PublishACK(from uint32, to uint32, topic string, requestId 
 			Encrypted: encrypted,
 		},
 		Channel:  uint32(GenerateChannelHash(c.channel, c.key)),
-		RxTime:   uint32(time.Now().Unix()),
-		RxRssi:   -2,
-		ViaMqtt:  true,
-		RxSnr:    2,
 		HopLimit: 3,
 		Priority: meshtastic.MeshPacket_ACK,
+	}
+
+	if c.ackStyle == "legacy" {
+		// Historical shape: fabricated receive-side metadata. Kept only for A/B
+		// comparison against "faithful".
+		packet.RxTime = uint32(time.Now().Unix())
+		packet.RxRssi = -2
+		packet.RxSnr = 2
+		packet.ViaMqtt = true
+	} else {
+		// Faithful: what real firmware publishes for its own outgoing ack.
+		// rx_rssi/rx_snr are receiver-side fields a transmitting node leaves
+		// zero, via_mqtt is stamped by the RECEIVING gateway on ingest (never by
+		// the sender), and hop_start mirrors hop_limit on a fresh send -- apps
+		// derive "hops away" from hop_start - hop_limit, which the legacy shape
+		// made negative.
+		packet.HopStart = packet.HopLimit
 	}
 
 	// Create ServiceEnvelope

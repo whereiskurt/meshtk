@@ -1,5 +1,6 @@
 NodeDbPath: "./nodes.default.json"
 LogFolder: "logs/"
+AckMode: "faithful"
 
 Mqtt:
   BrokerUri: "tcp://mqtt.meshtastic.org:1883"

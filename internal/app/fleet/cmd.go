@@ -155,14 +155,21 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 		// (never per-client, never per-packet). Fallback governs miss behavior.
 		mqttClient.SetKeyResolver(f.KeyResolver, f.Config.Server.KeyCache.Fallback)
 
-		// Set up ACK handler for this fleet member
+		// Set up ACK handler for this fleet member. AckMode "off" wires no
+		// handler at all -- the radio then exhausts its retransmissions, which
+		// isolates whether our acks disturb the device (A/B experiment).
 		fleetIdx := idx // Capture idx for closure
-		mqttClient.SetAckHandler(func(to, from uint32, requestId uint32) {
-			// Find the node in the fleet
-			if node, exists := f.Nodes[fleetIdx][to]; exists {
-				f.publishACK(fleetIdx, node, from, requestId)
-			}
-		})
+		if ackEnabled(f.Config.AckMode) {
+			mqttClient.SetAckStyle(f.Config.AckMode)
+			mqttClient.SetAckHandler(func(to, from uint32, requestId uint32) {
+				// Find the node in the fleet
+				if node, exists := f.Nodes[fleetIdx][to]; exists {
+					f.publishACK(fleetIdx, node, from, requestId)
+				}
+			})
+		} else if idx == 0 {
+			f.Config.Log.Warnf("AckMode=off: fleets will NOT ack PKI DMs (radio retransmits until exhausted)")
+		}
 
 		// Set up NACK handler to trigger nodeinfo request
 		mqttClient.SetNackHandler(func(to, from uint32, requestId uint32) {

@@ -261,13 +261,25 @@ func waitForAllCompletions(completionChan chan int, count int) chan struct{} {
 	return done
 }
 
-// ownGatewayTopic builds the MQTT topic a fleet node publishes its OWN packets
-// on: "<channelBase>/!<nodeNum hex>". Every meshtk publisher (ACK, NodeInfo,
-// position, and now the chatbot reply) must use the replying node's own gateway
-// id here — NOT the incoming sender's topic — or the receiving device silently
-// drops the packet as a self-echo (it sees its own gateway id in the topic).
-func ownGatewayTopic(channelBase string, nodeNum uint32) string {
-	return fmt.Sprintf("%s/!%08x", channelBase, nodeNum)
+// replyTopicFor builds the topic a chatbot ghost publishes its PKI reply on:
+// the SAME channel base as the incoming DM (always ".../2/e/PKI"), but with the
+// replying ghost's OWN gateway id, "<base>/!<ghostNum hex>".
+//
+// Two constraints, both learned the hard way on-wire:
+//   1. Own gateway, not the sender's: reusing the incoming topic
+//      (".../PKI/!<sender>") publishes on the SENDER's gateway topic, which the
+//      sending device ignores as a self-echo — replies never displayed.
+//   2. PKI base, not the channel base: a PKI-encrypted reply republished on the
+//      channel topic (".../dc.run/!<ghost>") is dropped by the device, which
+//      tries CHANNEL decryption on it. The DM must stay on the PKI base so the
+//      device routes it to PKI decryption. Deriving the base from the incoming
+//      DM topic (the fleet only subscribes to ".../2/e/PKI/#") keeps it there.
+func replyTopicFor(incomingTopic string, ghostNum uint32) string {
+	base := incomingTopic
+	if i := strings.LastIndex(incomingTopic, "/"); i >= 0 {
+		base = incomingTopic[:i]
+	}
+	return fmt.Sprintf("%s/!%08x", base, ghostNum)
 }
 
 func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, reply string) {
@@ -316,7 +328,7 @@ func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, r
 	// arrived at the device even though they were published, ACKed, and correctly
 	// PKI-encrypted. `to` is the replying ghost's node num. (Phase 66 field bug,
 	// confirmed on-wire: republishing a real reply to !<ghost> made it appear.)
-	replyTopic := ownGatewayTopic(n.Config.NodeInfo.Topic, to)
+	replyTopic := replyTopicFor(topic, to)
 
 	// Send the PKI encrypted reply
 	// Note: from and to are swapped for the reply

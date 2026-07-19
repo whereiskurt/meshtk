@@ -383,8 +383,13 @@ func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, r
 // lyric bursts always land and single-shot repliers vanish.
 //
 // Duplicates on a healthy link are strictly better than silence.
+// Tuned DOWN from 3 after the real cause of the "flapping" turned out to be our
+// own proxy hanging up on idle clients (proxy.go, 10s client read deadline). On
+// a stable link 3 timed sends plus 2 store-and-forward flushes delivered TEN
+// copies of a two-line reply. One send covers the healthy case; the pending
+// queue re-sends on the recipient's next beacon if it really was lost.
 const (
-	pkiReplyRetryCount   = 3
+	pkiReplyRetryCount   = 1
 	pkiReplyRetrySpacing = 30 * time.Second
 )
 
@@ -448,7 +453,7 @@ func (n *FleetCmd) isRetransmit(toFleetIdx int, from uint32, message string) boo
 // moment to re-send anything it may have missed.
 const (
 	pendingReplyTTL      = 10 * time.Minute
-	pendingMaxFlush      = 2
+	pendingMaxFlush      = 1
 	pendingFlushCooldown = 45 * time.Second
 )
 

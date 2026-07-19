@@ -53,7 +53,7 @@ func (f *FleetCmd) makeNode(num int, totalNodes int, fleet config.Fleet, idx int
 	privateKey, _ := curve.GenerateKey(keyRand)
 	publicKeyBytes := privateKey.PublicKey().Bytes()
 	privateKeyBytes := privateKey.Bytes()
-	
+
 	// Create another random generator for other node properties
 	propRand := rand.New(rand.NewSource(keySeedValue + 1000)) // Different seed for properties
 

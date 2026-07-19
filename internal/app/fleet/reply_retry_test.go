@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-// One-shot chatbot replies must be re-sent 3x, ~30s apart, to survive the ~60s
-// iOS proxy reconnect gap (mosquitto: persistence false + QoS0 = no queue).
+// sendSpread's mechanics: N sends, evenly spaced, first one synchronous. Uses a
+// literal 3 rather than pkiReplyRetryCount so retuning the constant does not
+// silently weaken this test.
 func TestSendSpreadEmitsThreeSendsThirtySecondsApart(t *testing.T) {
 	var mu sync.Mutex
 	var sleeps []time.Duration
@@ -23,25 +24,25 @@ func TestSendSpreadEmitsThreeSendsThirtySecondsApart(t *testing.T) {
 	}
 	send := func() { sends <- struct{}{} }
 
-	sendSpread(pkiReplyRetryCount, pkiReplyRetrySpacing, sleep, send)
+	sendSpread(3, pkiReplyRetrySpacing, sleep, send) // 3 explicitly: this tests sendSpread, not the tuning
 
-	for i := 0; i < pkiReplyRetryCount; i++ {
+	for i := 0; i < 3; i++ {
 		select {
 		case <-sends:
 		case <-time.After(2 * time.Second):
-			t.Fatalf("only got %d of %d sends", i, pkiReplyRetryCount)
+			t.Fatalf("only got %d of 3 sends", i)
 		}
 	}
 	select {
 	case <-sends:
-		t.Fatal("got more sends than pkiReplyRetryCount")
+		t.Fatal("got more sends than requested")
 	case <-time.After(50 * time.Millisecond):
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(sleeps) != pkiReplyRetryCount-1 {
-		t.Fatalf("sleeps = %d, want %d", len(sleeps), pkiReplyRetryCount-1)
+	if len(sleeps) != 2 {
+		t.Fatalf("sleeps = %d, want 2", len(sleeps))
 	}
 	for i, d := range sleeps {
 		if d != pkiReplyRetrySpacing {
@@ -50,18 +51,20 @@ func TestSendSpreadEmitsThreeSendsThirtySecondsApart(t *testing.T) {
 	}
 }
 
-// The retry constants are the tuned contract: 3 sends over ~90s covers ~1.5
-// flapping cycles at the measured 60s median reconnect interval.
+// The tuned contract, post proxy fix: a recipient should never see more than 2
+// copies of a reply line (1 immediate + at most 1 store-and-forward flush).
 func TestPKIReplyRetryConstants(t *testing.T) {
-	if pkiReplyRetryCount != 3 {
-		t.Errorf("pkiReplyRetryCount = %d, want 3", pkiReplyRetryCount)
+	// Deliberately 1: the proxy fix removed the flap these retries existed to
+	// survive, and the pending queue covers a genuine loss. Total copies a
+	// recipient can see = pkiReplyRetryCount + pendingMaxFlush.
+	if pkiReplyRetryCount != 1 {
+		t.Errorf("pkiReplyRetryCount = %d, want 1", pkiReplyRetryCount)
 	}
 	if pkiReplyRetrySpacing != 30*time.Second {
 		t.Errorf("pkiReplyRetrySpacing = %v, want 30s", pkiReplyRetrySpacing)
 	}
-	total := pkiReplyRetrySpacing * time.Duration(pkiReplyRetryCount-1)
-	if total != 60*time.Second {
-		t.Errorf("retry spread = %v, want 60s", total)
+	if copies := pkiReplyRetryCount + pendingMaxFlush; copies > 2 {
+		t.Errorf("a recipient can see %d copies of one reply line; keep it <= 2", copies)
 	}
 }
 

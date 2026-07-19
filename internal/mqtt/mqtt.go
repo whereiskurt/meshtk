@@ -21,6 +21,7 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/whereiskurt/meshtk/internal/keycache"
 	"github.com/whereiskurt/meshtk/pkg/config"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 )
@@ -38,6 +39,29 @@ type MqttClient struct {
 	pkiPrivateKey  []byte
 	pkiPublicKey   []byte
 	nodes          *NodeDB
+
+	// keyResolver is the shared, process-wide authoritative pubkey source
+	// (internal/keycache, DDB MeshRadio). ONE resolver is threaded into every
+	// fleet client so all ~34 in-process clients share one cache — never
+	// per-client, never per-packet. When nil (e.g. the nodeinfo utility, or a
+	// resolver that failed to build), resolveSenderPubKey preserves the legacy
+	// nodes.json feed behavior.
+	keyResolver *keycache.KeyResolver
+	// keyFallback selects miss behavior: "nodes.json" (bring-up) resolves misses
+	// via the broadcast feed; "none" (poisoning-resistant) returns an error so the
+	// existing nackHandler fires. Plan 66-07; default stays "nodes.json".
+	keyFallback string
+	// nodesFeedFn is a test seam for the nodes.json fallback branch. nil → the
+	// real FetchPublicKeyFromDefcon (feed + pubKeyCache).
+	nodesFeedFn func(nodeNum uint32) (string, error)
+}
+
+// SetKeyResolver wires the shared authoritative pubkey resolver and the miss
+// fallback mode into this client. Called once per fleet client with the ONE
+// process-wide resolver built at fleet startup.
+func (c *MqttClient) SetKeyResolver(r *keycache.KeyResolver, fallback string) {
+	c.keyResolver = r
+	c.keyFallback = fallback
 }
 
 func NewMqttClient(c *config.Config, nodes *NodeDB, handler func(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte)) *MqttClient {

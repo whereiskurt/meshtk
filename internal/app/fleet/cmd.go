@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/whereiskurt/meshtk/internal/keycache"
 	internal "github.com/whereiskurt/meshtk/internal/mqtt"
 	"github.com/whereiskurt/meshtk/pkg/otp"
 
@@ -44,6 +45,12 @@ type FleetCmd struct {
 	OTPUnlockMux    []sync.RWMutex          // Mutex to protect the OTPUnlocks map, per fleet
 	LyricsResponded []map[uint32]int        // Track which 'to' addresses have received lyrics responses, per fleet
 	LyricsRespMux   []sync.RWMutex          // Mutex to protect the LyricsResponded map, per fleet
+
+	// KeyResolver is the ONE process-wide authoritative pubkey resolver
+	// (internal/keycache, DDB MeshRadio) shared by EVERY fleet MqttClient — the
+	// fleet-wide generalization of crypto.go's pubKeyCache. Built once in
+	// NewFleets; nil if the store failed to build (falls back to nodes.json).
+	KeyResolver *keycache.KeyResolver
 }
 
 const BACKSTOP_GRACE_SEC = 30
@@ -69,7 +76,36 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		}
 	}
 
+	f.KeyResolver = buildKeyResolver(c)
+
 	return f
+}
+
+// buildKeyResolver constructs the ONE shared authoritative pubkey resolver for
+// the whole fleet (mirrors server/cmd.go's credcache construction, but keycache
+// uses GetItem, and a shorter 60-120s TTL). Returns nil on store-build failure
+// so the fleet degrades to the nodes.json fallback rather than refusing to boot.
+func buildKeyResolver(c *config.Config) *keycache.KeyResolver {
+	kc := c.Server.KeyCache
+
+	cache, err := keycache.NewCache(kc.TTLSecs, kc.MaxSizeMB)
+	if err != nil {
+		c.Log.Errorf("keycache: failed to create pubkey cache (%v); falling back to nodes.json", err)
+		return nil
+	}
+
+	store, err := keycache.NewDynamoDBStore(kc.TableName, kc.TableRegion, kc.DynamoDBEndpoint)
+	if err != nil {
+		c.Log.Errorf("keycache: failed to create DynamoDB store (%v); falling back to nodes.json", err)
+		return nil
+	}
+
+	resolver := keycache.NewKeyResolver(cache, store,
+		keycache.WithNegativeTTL(time.Duration(kc.NegativeTTLSecs)*time.Second),
+	)
+	c.Log.Infof("keycache: authoritative pubkey resolver ready (table=%s region=%s ttl=%ds fallback=%q)",
+		kc.TableName, kc.TableRegion, kc.TTLSecs, kc.Fallback)
+	return resolver
 }
 func (f *FleetCmd) Help(cmd *cobra.Command, argz []string) {
 	f.CmdOutput.WasSuccess = true
@@ -87,7 +123,12 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 	for idx := range f.Config.Fleet {
 		f.initNodeDb(idx)
 		mqttClient := internal.NewMqttClient(f.Config, &f.Nodes[idx], f.FleetNodeHandler)
-		
+
+		// Thread the ONE shared authoritative pubkey resolver into every client so
+		// the whole fleet resolves decrypt/reply keys through a single cache
+		// (never per-client, never per-packet). Fallback governs miss behavior.
+		mqttClient.SetKeyResolver(f.KeyResolver, f.Config.Server.KeyCache.Fallback)
+
 		// Set up ACK handler for this fleet member
 		fleetIdx := idx // Capture idx for closure
 		mqttClient.SetAckHandler(func(to, from uint32, requestId uint32) {
@@ -220,9 +261,12 @@ func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, r
 	// The 'to' node (receiver of original message) is now the sender of the reply
 	senderPrivKey := toNode.PrivKey
 
-	senderPubKeyHex, err := n.MqttClient[toFleetIdx].FetchPublicKeyFromDefcon(from)
+	// Reply-encrypt recipient key MUST come from the same authoritative resolver
+	// as the decrypt site (crypto.go). Migrating only decrypt would encrypt replies
+	// to a stale/poisoned nodes.json key (landmine L4).
+	senderPubKeyHex, err := n.MqttClient[toFleetIdx].ResolveSenderPubKey(from)
 	if err != nil {
-		n.Config.Log.Errorf("failed to fetch sender public key from DEFCON API: %v", err)
+		n.Config.Log.Errorf("failed to resolve recipient public key: %v", err)
 		return
 	}
 

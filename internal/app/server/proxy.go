@@ -10,6 +10,8 @@ import (
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
 	"github.com/whereiskurt/meshtk/pkg/network"
+	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 var rateLimiter = network.NewLimiter(
@@ -193,6 +195,10 @@ func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, backendCon
 				return
 			}
 
+			if pub, ok := backendPacket.(*packets.PublishPacket); ok {
+				n.logDownlink(conn, pub)
+			}
+
 			var buf bytes.Buffer
 			if err := backendPacket.Write(&buf); err != nil {
 				n.Config.Log.Errorf("failed to serialize backend response packet: %v", err)
@@ -205,4 +211,39 @@ func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, backendCon
 			}
 		}
 	}
+}
+
+// meshBroadcast is the Meshtastic broadcast NodeNum (^all).
+const meshBroadcast = 0xffffffff
+
+// logDownlink closes the proxy's last observability gap: every uplink packet is
+// inspected and logged, but the downlink side logged nothing, so "the reply/ACK
+// was published to the broker" and "the device never received it" were
+// indistinguishable. Envelope metadata only, no decryption. Direct-to-node
+// traffic (DMs, ACKs) is the interesting, low-volume signal and logs at Info;
+// broadcast fan-out (NodeInfo/Position, every connected client gets a copy)
+// logs at Debug to keep the firehose out of production logs.
+func (n *ServerCmd) logDownlink(conn net.Conn, pub *packets.PublishPacket) {
+	envelope := new(meshtastic.ServiceEnvelope)
+	if err := proto.Unmarshal(pub.Payload, envelope); err != nil {
+		return
+	}
+	packet := envelope.GetPacket()
+	if packet == nil {
+		return
+	}
+
+	from, to, id := packet.GetFrom(), packet.GetTo(), packet.GetId()
+	if to == meshBroadcast {
+		n.Config.Log.Debugf("[proxy] DOWNLINK bcast from=!%08x id=%08x topic=%s client=%s",
+			from, id, pub.TopicName, conn.RemoteAddr())
+		return
+	}
+
+	kind := "channel"
+	if packet.GetPkiEncrypted() {
+		kind = "pki"
+	}
+	n.Config.Log.Infof("[proxy] DOWNLINK %s from=!%08x to=!%08x id=%08x topic=%s client=%s",
+		kind, from, to, id, pub.TopicName, conn.RemoteAddr())
 }

@@ -55,6 +55,11 @@ type FleetCmd struct {
 	Pending    map[uint32][]*pendingReply
 	PendingMux sync.Mutex
 
+	// ReplyNextAt staggers consecutive one-shot reply lines to the same
+	// recipient (see sendPKIReplyReliable); keyed by recipient node num.
+	ReplyNextAt    map[uint32]time.Time
+	ReplyNextAtMux sync.Mutex
+
 	// KeyResolver is the ONE process-wide authoritative pubkey resolver
 	// (internal/keycache, DDB MeshRadio) shared by EVERY fleet MqttClient — the
 	// fleet-wide generalization of crypto.go's pubKeyCache. Built once in
@@ -88,6 +93,7 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 	}
 
 	f.Pending = make(map[uint32][]*pendingReply)
+	f.ReplyNextAt = make(map[uint32]time.Time)
 
 	f.KeyResolver = buildKeyResolver(c)
 
@@ -315,12 +321,29 @@ func replyTopicFor(incomingTopic string, ghostNum uint32) string {
 }
 
 func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, reply string) {
+	replyTopic, envelope, ok := n.buildPKIReply(toFleetIdx, to, from, topic, reply)
+	if !ok {
+		return
+	}
+	if err := n.MqttClient[toFleetIdx].PublishEnvelopeBytes(replyTopic, envelope); err != nil {
+		n.Config.Log.Errorf("Failed to send PKI reply: %v", err)
+	} else {
+		n.Config.Log.Infof("Successfully sent PKI reply from %d to %d: %s", to, from, reply)
+	}
+}
+
+// buildPKIReply resolves keys and constructs the marshaled reply envelope
+// WITHOUT publishing. The reliable path builds once and re-sends the same
+// bytes, so every copy shares one packet id and the device's dedup makes
+// repeats invisible -- re-sending fresh-built packets (new id each time) is
+// what used to display duplicate reply lines.
+func (n *FleetCmd) buildPKIReply(toFleetIdx int, to, from uint32, topic string, reply string) (replyTopic string, envelope []byte, ok bool) {
 	// Get the nodes to access their keys
 	_, toNode, _, _ := n.FindNodes(to, from)
 
 	if toNode == nil {
 		n.Config.Log.Errorf("Failed to find nodes: to=%d, from=%d", to, from)
-		return
+		return "", nil, false
 	}
 
 	// The 'to' node (receiver of original message) is now the sender of the reply
@@ -332,14 +355,14 @@ func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, r
 	senderPubKeyHex, err := n.MqttClient[toFleetIdx].ResolveSenderPubKey(from)
 	if err != nil {
 		n.Config.Log.Errorf("failed to resolve recipient public key: %v", err)
-		return
+		return "", nil, false
 	}
 
 	// The 'from' node (sender of original message) is now the receiver of the reply
 	recipientPubKeyBytes, err := n.MqttClient[toFleetIdx].ParseHexKey(senderPubKeyHex)
 	if err != nil {
 		n.Config.Log.Errorf("Failed to parse recipient public key: %v", err)
-		return
+		return "", nil, false
 	}
 
 	// n.Config.Log.Tracef("Sending PKI reply from node %d to node %d", to, from)
@@ -350,7 +373,7 @@ func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, r
 	senderPrivKeyBytes, err := n.MqttClient[toFleetIdx].ParseHexKey(senderPrivKey)
 	if err != nil {
 		n.Config.Log.Errorf("Failed to parse sender private key: %v", err)
-		return
+		return "", nil, false
 	}
 
 	// Publish the reply on THIS ghost's OWN gateway topic, mirroring
@@ -360,25 +383,24 @@ func (n *FleetCmd) sendPKIReply(toFleetIdx int, to, from uint32, topic string, r
 	// arrived at the device even though they were published, ACKed, and correctly
 	// PKI-encrypted. `to` is the replying ghost's node num. (Phase 66 field bug,
 	// confirmed on-wire: republishing a real reply to !<ghost> made it appear.)
-	replyTopic := replyTopicFor(topic, to)
+	replyTopic = replyTopicFor(topic, to)
 
-	// Send the PKI encrypted reply
+	// Build the PKI encrypted reply
 	// Note: from and to are swapped for the reply
-	err = n.MqttClient[toFleetIdx].PublishPKIMessage(
+	envelope, err = n.MqttClient[toFleetIdx].BuildPKIMessage(
 		to,   // sender of reply (was receiver of original message)
 		from, // receiver of reply (was sender of original message)
-		replyTopic,
 		meshtastic.PortNum_TEXT_MESSAGE_APP,
 		[]byte(reply),
 		senderPrivKeyBytes,
 		recipientPubKeyBytes,
 	)
-
 	if err != nil {
-		n.Config.Log.Errorf("Failed to send PKI reply: %v", err)
-	} else {
-		n.Config.Log.Infof("Successfully sent PKI reply from %d to %d: %s", to, from, reply)
+		n.Config.Log.Errorf("Failed to build PKI reply: %v", err)
+		return "", nil, false
 	}
+
+	return replyTopic, envelope, true
 }
 
 // One-shot chatbot replies (goldstein/dt/mudge/condor style: a single packet)
@@ -459,9 +481,19 @@ func (n *FleetCmd) isRetransmit(toFleetIdx int, from uint32, message string) boo
 // Position on the channel) proves it is connected RIGHT NOW, so that is the
 // moment to re-send anything it may have missed.
 const (
-	pendingReplyTTL      = 10 * time.Minute
-	pendingMaxFlush      = 1
-	pendingFlushCooldown = 45 * time.Second
+	pendingReplyTTL = 10 * time.Minute
+	// Two flushes, 20s cooldown: the first flush lands on the recipient's FIRST
+	// beacon after a loss (~60s cadence) instead of its second, and one spare
+	// remains for a second gap. Safe to raise now that flushes republish the
+	// EXACT bytes of the original send -- same packet id, so the device dedups
+	// and a redundant copy never displays (raising this used to multiply lines
+	// on screen; observed live 2026-07-19).
+	pendingMaxFlush      = 2
+	pendingFlushCooldown = 20 * time.Second
+	// pendingFlushSpacing separates the packets of one flush burst. Both lines
+	// of a 2-line reply used to go out in the same millisecond, and the BLE link
+	// regularly delivered exactly one of them.
+	pendingFlushSpacing = 2 * time.Second
 )
 
 type pendingReply struct {
@@ -469,7 +501,8 @@ type pendingReply struct {
 	ghost     uint32 // the replying ghost (sender)
 	to        uint32 // the recipient radio
 	topic     string
-	text      string
+	text      string // for logs only; the wire copy is `envelope`
+	envelope  []byte // exact marshaled ServiceEnvelope of the original send
 	created   time.Time
 	flushes   int
 	lastFlush time.Time
@@ -496,12 +529,12 @@ func selectDueFlushes(entries []*pendingReply, now time.Time) (kept, due []*pend
 // queuePendingReply records a reply for redelivery on the recipient's next
 // sighting. lastFlush starts at now so the cooldown is measured from the
 // original send, not from the epoch.
-func (n *FleetCmd) queuePendingReply(toFleetIdx int, ghost, to uint32, topic, text string) {
+func (n *FleetCmd) queuePendingReply(toFleetIdx int, ghost, to uint32, topic, text string, envelope []byte) {
 	now := time.Now()
 	n.PendingMux.Lock()
 	defer n.PendingMux.Unlock()
 	n.Pending[to] = append(n.Pending[to], &pendingReply{
-		fleetIdx: toFleetIdx, ghost: ghost, to: to, topic: topic, text: text,
+		fleetIdx: toFleetIdx, ghost: ghost, to: to, topic: topic, text: text, envelope: envelope,
 		created: now, lastFlush: now,
 	})
 }
@@ -523,22 +556,75 @@ func (n *FleetCmd) onNodeSeen(node uint32) {
 	}
 	n.PendingMux.Unlock()
 
-	for _, e := range due {
-		n.Config.Log.Infof("Node %d is back; re-sending pending reply (flush %d/%d): %s", node, e.flushes, pendingMaxFlush, e.text)
-		go n.sendPKIReply(e.fleetIdx, e.ghost, e.to, e.topic, e.text)
+	if len(due) == 0 {
+		return
 	}
+	// One goroutine, sequential sends, spaced apart: a same-millisecond burst
+	// down the BLE pipe regularly loses all but one packet. Each flush is the
+	// EXACT bytes of the original send (same packet id), so a copy the device
+	// already has is deduped and never displays twice.
+	go func() {
+		for i, e := range due {
+			if i > 0 {
+				time.Sleep(pendingFlushSpacing)
+			}
+			n.Config.Log.Infof("Node %d is back; re-sending pending reply (flush %d/%d): %s", node, e.flushes, pendingMaxFlush, e.text)
+			if err := n.MqttClient[e.fleetIdx].PublishEnvelopeBytes(e.topic, e.envelope); err != nil {
+				n.Config.Log.Errorf("Failed to flush pending reply to %d: %v", node, err)
+			}
+		}
+	}()
 }
 
-// sendPKIReplyReliable is the one-shot reply path: same reply, re-sent to
-// survive a disconnect gap. Do NOT use it from handleLyricsChat — ricky already
-// emits ~60 messages per request and a 3x retry would flood the channel,
-// re-creating the drowning problem that hid this bug in the first place.
+// staggerDelay serializes sends to one recipient `spacing` apart: given the
+// earliest allowed send time and now, it returns how long this send must wait
+// and the next send's earliest allowed time. A zero/past nextAt sends
+// immediately.
+func staggerDelay(nextAt, now time.Time, spacing time.Duration) (delay time.Duration, newNextAt time.Time) {
+	if now.Before(nextAt) {
+		delay = nextAt.Sub(now)
+	}
+	return delay, now.Add(delay + spacing)
+}
+
+// sendPKIReplyReliable is the one-shot reply path: the reply envelope is built
+// ONCE and every copy -- immediate, timed retry, pending flush -- republishes
+// the same bytes, so all copies share one packet id and the device's dedup
+// keeps repeats off the screen. Consecutive lines to the same recipient are
+// staggered pendingFlushSpacing apart: a same-millisecond 2-line burst down the
+// BLE pipe regularly delivered exactly one line.
+// Do NOT use it from handleLyricsChat — ricky already emits ~60 messages per
+// request and a 3x retry would flood the channel, re-creating the drowning
+// problem that hid this bug in the first place.
 func (n *FleetCmd) sendPKIReplyReliable(toFleetIdx int, to, from uint32, topic string, reply string) {
 	// `to` is the replying ghost, `from` is the recipient radio (swapped for the reply).
-	n.queuePendingReply(toFleetIdx, to, from, topic, reply)
-	sendSpread(pkiReplyRetryCount, pkiReplyRetrySpacing, time.Sleep, func() {
-		n.sendPKIReply(toFleetIdx, to, from, topic, reply)
-	})
+	replyTopic, envelope, ok := n.buildPKIReply(toFleetIdx, to, from, topic, reply)
+	if !ok {
+		return
+	}
+	n.queuePendingReply(toFleetIdx, to, from, replyTopic, reply, envelope)
+
+	send := func() {
+		if err := n.MqttClient[toFleetIdx].PublishEnvelopeBytes(replyTopic, envelope); err != nil {
+			n.Config.Log.Errorf("Failed to send PKI reply: %v", err)
+		} else {
+			n.Config.Log.Infof("Successfully sent PKI reply from %d to %d: %s", to, from, reply)
+		}
+	}
+
+	n.ReplyNextAtMux.Lock()
+	delay, next := staggerDelay(n.ReplyNextAt[from], time.Now(), pendingFlushSpacing)
+	n.ReplyNextAt[from] = next
+	n.ReplyNextAtMux.Unlock()
+
+	if delay > 0 {
+		go func() {
+			time.Sleep(delay)
+			sendSpread(pkiReplyRetryCount, pkiReplyRetrySpacing, time.Sleep, send)
+		}()
+		return
+	}
+	sendSpread(pkiReplyRetryCount, pkiReplyRetrySpacing, time.Sleep, send)
 }
 
 func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum meshtastic.PortNum, payload []byte) {

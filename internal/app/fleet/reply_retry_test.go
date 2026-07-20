@@ -55,16 +55,75 @@ func TestSendSpreadEmitsThreeSendsThirtySecondsApart(t *testing.T) {
 // copies of a reply line (1 immediate + at most 1 store-and-forward flush).
 func TestPKIReplyRetryConstants(t *testing.T) {
 	// Deliberately 1: the proxy fix removed the flap these retries existed to
-	// survive, and the pending queue covers a genuine loss. Total copies a
-	// recipient can see = pkiReplyRetryCount + pendingMaxFlush.
+	// survive, and the pending queue covers a genuine loss.
 	if pkiReplyRetryCount != 1 {
 		t.Errorf("pkiReplyRetryCount = %d, want 1", pkiReplyRetryCount)
 	}
 	if pkiReplyRetrySpacing != 30*time.Second {
 		t.Errorf("pkiReplyRetrySpacing = %v, want 30s", pkiReplyRetrySpacing)
 	}
-	if copies := pkiReplyRetryCount + pendingMaxFlush; copies > 2 {
-		t.Errorf("a recipient can see %d copies of one reply line; keep it <= 2", copies)
+	// Wire copies may exceed what a user should SEE because every re-send is
+	// byte-identical (one packet id per line; the device dedups repeats). The
+	// cooldown must land the first flush on the recipient's FIRST beacon after
+	// a loss (~60s cadence), and keep total wire traffic bounded.
+	if pendingMaxFlush != 2 {
+		t.Errorf("pendingMaxFlush = %d, want 2", pendingMaxFlush)
+	}
+	if pendingFlushCooldown != 20*time.Second {
+		t.Errorf("pendingFlushCooldown = %v, want 20s (first beacon after a loss, not the second)", pendingFlushCooldown)
+	}
+}
+
+// Every copy of a one-shot reply must be the SAME bytes: the reliable path
+// builds once (buildPKIReply) and republishes via PublishEnvelopeBytes. A
+// fresh build per copy (PublishPKIMessage / sendPKIReply) mints a new packet
+// id each time, and duplicate lines display on the device -- observed live
+// 2026-07-19 as ten copies of a two-line reply.
+func TestReliableRepliesAreByteIdentical(t *testing.T) {
+	for _, fn := range []string{"sendPKIReplyReliable", "onNodeSeen"} {
+		fd, _ := funcBody(t, fn)
+		calls := calleeNames(fd)
+		if calls["PublishPKIMessage"] != 0 || calls["sendPKIReply"] != 0 {
+			t.Errorf("%s builds a fresh packet per copy; it must republish stored envelope bytes", fn)
+		}
+		if calls["PublishEnvelopeBytes"] == 0 {
+			t.Errorf("%s does not publish the stored envelope bytes", fn)
+		}
+	}
+	fd, _ := funcBody(t, "sendPKIReplyReliable")
+	if calleeNames(fd)["buildPKIReply"] == 0 {
+		t.Error("sendPKIReplyReliable no longer builds the envelope once up front")
+	}
+}
+
+// Consecutive lines to one recipient are spaced apart; a same-millisecond
+// 2-line burst down the BLE pipe regularly delivered exactly one line.
+func TestStaggerDelaySpacesConsecutiveSends(t *testing.T) {
+	base := time.Unix(1000, 0)
+
+	// First send: immediate, and the gate advances by one spacing.
+	delay, next := staggerDelay(time.Time{}, base, 2*time.Second)
+	if delay != 0 {
+		t.Errorf("first send delayed %v, want 0 (first line must not lag)", delay)
+	}
+	if want := base.Add(2 * time.Second); !next.Equal(want) {
+		t.Errorf("next = %v, want %v", next, want)
+	}
+
+	// Second send in the same instant: waits out the spacing.
+	delay, next = staggerDelay(next, base, 2*time.Second)
+	if delay != 2*time.Second {
+		t.Errorf("second send delayed %v, want 2s", delay)
+	}
+	if want := base.Add(4 * time.Second); !next.Equal(want) {
+		t.Errorf("next = %v, want %v", next, want)
+	}
+
+	// A send after the gate has passed: immediate again.
+	late := base.Add(10 * time.Second)
+	delay, _ = staggerDelay(next, late, 2*time.Second)
+	if delay != 0 {
+		t.Errorf("post-gate send delayed %v, want 0", delay)
 	}
 }
 

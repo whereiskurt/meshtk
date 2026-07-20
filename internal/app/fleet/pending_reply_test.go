@@ -86,9 +86,9 @@ func TestPendingExpiresAfterTTL(t *testing.T) {
 // Queue-then-flush end to end through the real map, with no MQTT involved.
 func TestQueuePendingReplyStoresPerRecipient(t *testing.T) {
 	n := &FleetCmd{Pending: make(map[uint32][]*pendingReply)}
-	n.queuePendingReply(0, 357953601, 1129943268, "t", "one")
-	n.queuePendingReply(0, 794953058, 1129943268, "t", "two")
-	n.queuePendingReply(0, 357953601, 42, "t", "other radio")
+	n.queuePendingReply(0, 357953601, 1129943268, "t", "one", []byte{1})
+	n.queuePendingReply(0, 794953058, 1129943268, "t", "two", []byte{2})
+	n.queuePendingReply(0, 357953601, 42, "t", "other radio", []byte{3})
 
 	if got := len(n.Pending[1129943268]); got != 2 {
 		t.Errorf("recipient has %d pending, want 2", got)

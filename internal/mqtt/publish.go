@@ -374,7 +374,22 @@ func GenerateChannelHash(name string, key string) int {
 
 // PublishPKIMessage publishes an encrypted message using public key infrastructure
 // Takes the sender's private key and recipient's public key to establish secure communication
+// PublishPKIMessage builds a fresh PKI envelope (new random packet id) and
+// publishes it. For re-sends that must be invisible when the first copy landed,
+// build once with BuildPKIMessage and republish the SAME bytes with
+// PublishEnvelopeBytes -- the device dedups by packet id, so byte-identical
+// re-sends never display twice.
 func (c *MqttClient) PublishPKIMessage(from uint32, to uint32, topic string, portNum meshtastic.PortNum, payload []byte, senderPrivateKey []byte, recipientPublicKey []byte) error {
+	envelopeBytes, err := c.BuildPKIMessage(from, to, portNum, payload, senderPrivateKey, recipientPublicKey)
+	if err != nil {
+		return err
+	}
+	return c.PublishEnvelopeBytes(topic, envelopeBytes)
+}
+
+// BuildPKIMessage constructs and marshals a PKI-encrypted ServiceEnvelope with
+// a fresh random packet id, without publishing it.
+func (c *MqttClient) BuildPKIMessage(from uint32, to uint32, portNum meshtastic.PortNum, payload []byte, senderPrivateKey []byte, recipientPublicKey []byte) ([]byte, error) {
 	// Create Data protobuf
 	data := &meshtastic.Data{
 		Portnum: portNum,
@@ -385,14 +400,14 @@ func (c *MqttClient) PublishPKIMessage(from uint32, to uint32, topic string, por
 	dataBytes, err := proto.Marshal(data)
 	if err != nil {
 		c.log.Errorf("failed to serialize data: %v", err)
-		return err
+		return nil, err
 	}
 
 	// Create a random message ID
 	msgID := make([]byte, 4)
 	if _, err := rand.Read(msgID); err != nil {
 		c.log.Errorf("failed to generate message ID: %v", err)
-		return err
+		return nil, err
 	}
 	messageID := binary.LittleEndian.Uint32(msgID)
 
@@ -400,7 +415,7 @@ func (c *MqttClient) PublishPKIMessage(from uint32, to uint32, topic string, por
 	encrypted, err := c.encryptCurve25519(senderPrivateKey, recipientPublicKey, dataBytes, messageID, from)
 	if err != nil {
 		c.log.Errorf("failed to encrypt with PKI: %v", err)
-		return err
+		return nil, err
 	}
 
 	// Get sender's public key from the private key
@@ -435,10 +450,17 @@ func (c *MqttClient) PublishPKIMessage(from uint32, to uint32, topic string, por
 	envelopeBytes, err := proto.Marshal(envelope)
 	if err != nil {
 		c.log.Errorf("failed to serialize envelope: %v", err)
-		return err
+		return nil, err
 	}
 
-	// Attempt to publish the message up to 3 times
+	return envelopeBytes, nil
+}
+
+// PublishEnvelopeBytes publishes an already-marshaled ServiceEnvelope with the
+// standard 3-attempt/5s-timeout retry. Publishing the SAME bytes again is safe:
+// the device dedups by packet id, so a repeat is invisible when the first copy
+// landed -- which is exactly what makes byte-identical re-sends free.
+func (c *MqttClient) PublishEnvelopeBytes(topic string, envelopeBytes []byte) error {
 	var lastErr error
 	for range 3 {
 		token := c.client.Publish(topic, 0, false, envelopeBytes)
@@ -462,6 +484,6 @@ func (c *MqttClient) PublishPKIMessage(from uint32, to uint32, topic string, por
 	}
 
 	// If all attempts fail, return the last error
-	c.log.Errorf("failed to publish PKI encrypted message after 3 attempts: %v", lastErr)
+	c.log.Errorf("failed to publish envelope after 3 attempts: %v", lastErr)
 	return lastErr
 }

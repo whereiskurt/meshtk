@@ -54,6 +54,12 @@ type ConnectionInfo struct {
 	Password      string
 	SocketAddress string
 	ConnectTime   int64
+	// GatewayID is the Meshtastic gateway id ("!435990e4") this connection
+	// uplinks ServiceEnvelopes as -- learned from its first meshtastic PUBLISH.
+	// The downlink side uses it to suppress self-echoes: mosquitto bounces every
+	// publish back to a subscriber of its own topic (MQTT 3.1.1 has no no-local),
+	// and pushing a radio's own packets back down its BLE pipe is pure waste.
+	GatewayID string
 }
 
 func (i *InspectorPacket) String() string {
@@ -127,6 +133,9 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd, clientConn net.Conn) {
 		var env meshtastic.ServiceEnvelope
 		if err := proto.Unmarshal(p.Payload, &env); err == nil {
 			ip.Raw.Meshtastic = &env
+			if gw := env.GetGatewayId(); gw != "" {
+				n.rememberGateway(ip.Track.SocketAddress, gw)
+			}
 			ip.inspectMeshtastic(n)
 		}
 
@@ -354,6 +363,27 @@ func (*ServerCmd) TrackConnection(conn net.Conn) (socketAddr string) {
 		}
 	}
 	return socketAddr
+}
+
+// rememberGateway records the gateway id a connection uplinks envelopes as,
+// so the downlink side can recognize (and suppress) that connection's own
+// packets echoed back by the broker.
+func (n *ServerCmd) rememberGateway(socketAddr, gatewayID string) {
+	n.ConnMutex.Lock()
+	if connInfo, exists := n.ConnTrack[socketAddr]; exists {
+		connInfo.GatewayID = gatewayID
+	}
+	n.ConnMutex.Unlock()
+}
+
+// gatewayFor returns the recorded uplink gateway id for a connection, or "".
+func (n *ServerCmd) gatewayFor(socketAddr string) string {
+	n.ConnMutex.Lock()
+	defer n.ConnMutex.Unlock()
+	if connInfo, exists := n.ConnTrack[socketAddr]; exists {
+		return connInfo.GatewayID
+	}
+	return ""
 }
 
 func (n *ServerCmd) SetConnTrack(ip *InspectorPacket) {

@@ -76,7 +76,7 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // Ensure we cancel the context when this function exits
 
-	go n.handleBackend(ctx, conn, backendConn, backendReader)
+	go n.handleBackend(ctx, conn, socketAddr, backendConn, backendReader)
 
 	// Starts permissive; tightened to 1.5x once the client's CONNECT tells us
 	// its keepalive. Only this goroutine touches the client read deadline --
@@ -175,7 +175,7 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 	}
 }
 
-func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, backendConn net.Conn, backendReader *bufio.Reader) {
+func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, socketAddr string, backendConn net.Conn, backendReader *bufio.Reader) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -196,7 +196,9 @@ func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, backendCon
 			}
 
 			if pub, ok := backendPacket.(*packets.PublishPacket); ok {
-				n.logDownlink(conn, pub)
+				if n.logDownlink(conn, socketAddr, pub) {
+					continue // self-echo: never forward a connection its own uplink
+				}
 			}
 
 			var buf bytes.Buffer
@@ -223,21 +225,34 @@ const meshBroadcast = 0xffffffff
 // traffic (DMs, ACKs) is the interesting, low-volume signal and logs at Info;
 // broadcast fan-out (NodeInfo/Position, every connected client gets a copy)
 // logs at Debug to keep the firehose out of production logs.
-func (n *ServerCmd) logDownlink(conn net.Conn, pub *packets.PublishPacket) {
+//
+// It also decides self-echo suppression (returns true = do not forward):
+// mosquitto bounces a publish back to any subscriber of its own topic (MQTT
+// 3.1.1 has no no-local), so a radio's own DMs come straight back down its BLE
+// pipe -- wasted bandwidth on the flakiest link in the chain, and firmware
+// would ignore them anyway.
+func (n *ServerCmd) logDownlink(conn net.Conn, socketAddr string, pub *packets.PublishPacket) (suppress bool) {
 	envelope := new(meshtastic.ServiceEnvelope)
 	if err := proto.Unmarshal(pub.Payload, envelope); err != nil {
-		return
+		return false
 	}
 	packet := envelope.GetPacket()
 	if packet == nil {
-		return
+		return false
 	}
 
 	from, to, id := packet.GetFrom(), packet.GetTo(), packet.GetId()
+
+	if gw := envelope.GetGatewayId(); gw != "" && gw == n.gatewayFor(socketAddr) {
+		n.Config.Log.Debugf("[proxy] DOWNLINK self-echo suppressed gw=%s from=!%08x to=!%08x id=%08x topic=%s client=%s",
+			gw, from, to, id, pub.TopicName, conn.RemoteAddr())
+		return true
+	}
+
 	if to == meshBroadcast {
 		n.Config.Log.Debugf("[proxy] DOWNLINK bcast from=!%08x id=%08x topic=%s client=%s",
 			from, id, pub.TopicName, conn.RemoteAddr())
-		return
+		return false
 	}
 
 	kind := "channel"
@@ -246,4 +261,5 @@ func (n *ServerCmd) logDownlink(conn net.Conn, pub *packets.PublishPacket) {
 	}
 	n.Config.Log.Infof("[proxy] DOWNLINK %s from=!%08x to=!%08x id=%08x topic=%s client=%s",
 		kind, from, to, id, pub.TopicName, conn.RemoteAddr())
+	return false
 }

@@ -71,3 +71,14 @@ func TestSetAckHandlerIsGatedOnAckMode(t *testing.T) {
 		t.Error("SetAckHandler is wired without consulting ackEnabled(AckMode); AckMode=off would silently keep acking")
 	}
 }
+
+// Ricky's lyric lines carry 1-based sequence numbers so the stream doubles as
+// a live probe for delivery order and gaps.
+func TestNumberLyric(t *testing.T) {
+	if got := numberLyric(0, "never gonna give you up"); got != "01: never gonna give you up" {
+		t.Errorf("numberLyric(0) = %q", got)
+	}
+	if got := numberLyric(11, "x"); got != "12: x" {
+		t.Errorf("numberLyric(11) = %q", got)
+	}
+}

@@ -577,6 +577,14 @@ func (n *FleetCmd) onNodeSeen(node uint32) {
 	}()
 }
 
+// numberLyric prefixes a lyric line with its 1-based sequence number
+// ("01: never gonna..."). The numbers make ricky's stream a live probe for
+// delivery order and gaps: any misordered or missing line is visible at a
+// glance on the device.
+func numberLyric(i int, text string) string {
+	return fmt.Sprintf("%02d: %s", i+1, text)
+}
+
 // staggerDelay serializes sends to one recipient `spacing` apart: given the
 // earliest allowed send time and now, it returns how long this send must wait
 // and the next send's earliest allowed time. A zero/past nextAt sends
@@ -862,14 +870,15 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 			defer terminationTimer.Stop()
 		}
 
-		for _, entry := range lyricEntries {
+		for i, entry := range lyricEntries {
 			select {
 			case <-terminationTimer.C:
 				n.Config.Log.Infof("Lyrics playback terminated after song duration")
 				return
 			case <-time.After(entry.timestamp - time.Since(startTime)):
-				n.sendPKIReply(toFleetIdx, to, from, topic, entry.text)
-				n.Config.Log.Debugf("Sent lyric at %v: %s", entry.timestamp, entry.text)
+				line := numberLyric(i, entry.text)
+				n.sendPKIReply(toFleetIdx, to, from, topic, line)
+				n.Config.Log.Debugf("Sent lyric at %v: %s", entry.timestamp, line)
 			}
 		}
 	}()

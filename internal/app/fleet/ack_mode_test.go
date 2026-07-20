@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"testing"
+	"time"
 )
 
 // Only the explicit "off" disables acks. Empty (configs predating the knob)
@@ -112,5 +113,19 @@ func TestFleetNodeHandlerAnswersNodeInfoRequests(t *testing.T) {
 	})
 	if !responds {
 		t.Error("FleetNodeHandler no longer answers NODEINFO_APP requests via respondNodeInfo")
+	}
+}
+
+// Repeat lyric requests must get an encore after the cooldown -- and an ANSWER
+// (the encore notice), never silence, while on cooldown. Once-per-lifetime
+// blackholed every repeat request (acked, then nothing; observed 2026-07-20).
+func TestLyricsCooldownNotOncePerLifetime(t *testing.T) {
+	if lyricsEncoreCooldown <= 0 || lyricsEncoreCooldown > 30*time.Minute {
+		t.Errorf("lyricsEncoreCooldown = %v; want a bounded cooldown, not once-per-lifetime", lyricsEncoreCooldown)
+	}
+	fd, _ := funcBody(t, "handleLyricsChat")
+	calls := calleeNames(fd)
+	if calls["sendPKIReply"] < 2 {
+		t.Error("handleLyricsChat has fewer than 2 sendPKIReply sites; the cooldown branch must answer with an encore notice, not silence")
 	}
 }

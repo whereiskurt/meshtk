@@ -43,7 +43,7 @@ type FleetCmd struct {
 	OTPHandler      []*otp.TOTPConfig
 	OTPUnlocks      []map[uint32]*OTPUnlock // Map from radio ID to unlock info, per fleet
 	OTPUnlockMux    []sync.RWMutex          // Mutex to protect the OTPUnlocks map, per fleet
-	LyricsResponded []map[uint32]int        // Track which REQUESTERS ('from') have received lyrics responses, per fleet
+	LyricsResponded []map[uint32]time.Time  // When each REQUESTER ('from') last got lyrics, per fleet (cooldown, not once-ever)
 	LyricsRespMux   []sync.RWMutex          // Mutex to protect the LyricsResponded map, per fleet
 	RecentReq       []map[string]time.Time  // Recent inbound DMs, for retransmit dedup, per fleet
 	RecentReqMux    []sync.Mutex            // Mutex to protect the RecentReq map, per fleet
@@ -78,7 +78,7 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		f.NodesMutex = append(f.NodesMutex, sync.Mutex{})
 		f.OTPUnlocks = append(f.OTPUnlocks, make(map[uint32]*OTPUnlock))
 		f.OTPUnlockMux = append(f.OTPUnlockMux, sync.RWMutex{})
-		f.LyricsResponded = append(f.LyricsResponded, make(map[uint32]int))
+		f.LyricsResponded = append(f.LyricsResponded, make(map[uint32]time.Time))
 		f.LyricsRespMux = append(f.LyricsRespMux, sync.RWMutex{})
 		f.RecentReq = append(f.RecentReq, make(map[string]time.Time))
 		f.RecentReqMux = append(f.RecentReqMux, sync.Mutex{})
@@ -442,6 +442,11 @@ func sendSpread(count int, spacing time.Duration, sleep func(time.Duration), sen
 	}()
 }
 
+// lyricsEncoreCooldown spaces full lyric performances per requester. The burst
+// is ~60 messages, so unbounded repeats would re-create the channel drowning;
+// once-per-lifetime (the old rule) blackholed every repeat request instead.
+const lyricsEncoreCooldown = 10 * time.Minute
+
 // requestDedupWindow collapses a radio's own retransmissions of the same DM.
 // Meshtastic resends an unacked direct message ~3 times, ~8s apart, so without
 // this every chatbot reply is multiplied by the retransmit count: 3 requests x
@@ -710,6 +715,16 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 
 		if isUnlocked {
 			n.Config.Log.Infof("Radio %d is already unlocked (unlocked at: %v with message: %s)", from, unlockInfo.UnlockTimestamp, unlockInfo.UnlockMessage)
+			// A lyrics-only ghost (ricky) has no chatmode_unlocked/GPT config, so
+			// the unlocked state used to silently swallow every follow-up DM for
+			// the unlock TTL. Route those to the lyrics path instead -- its own
+			// cooldown decides between an encore and the encore notice.
+			if _, hasGPT := chatBotMap["chatmode_unlocked"]; !hasGPT {
+				if chatBot, ok := chatBotMap["chatmode_lyrics"]; ok {
+					n.handleLyricsChat(toFleetIdx, to, from, topic, chatBot.Message[0])
+					return
+				}
+			}
 			if chatBot, ok := chatBotMap["chatmode_unlocked"]; ok {
 				if strings.Contains(chatBot.Message[0], "`OPENAI=") {
 					gptAgentUrl := strings.TrimSpace(strings.SplitN(chatBot.Message[0], "=", 2)[1])
@@ -777,22 +792,25 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 }
 
 func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic string, lyricsB64 string) {
-	// Dedup by the REQUESTER (`from`), not the ghost (`to`). Keying by `to` meant
-	// only the first requester per fleet lifetime ever got lyrics — everyone after
-	// was silently skipped until the fleet restarted. At a con that is one attendee
-	// and nobody else.
+	// Cooldown by the REQUESTER (`from`), not the ghost (`to`). Keying by `to`
+	// meant only the first requester per fleet lifetime ever got lyrics. And
+	// once-per-lifetime silently blackholed every repeat request (observed live
+	// 2026-07-20: acked, then nothing) -- a cooldown keeps the ~60-message burst
+	// from drowning the channel while letting a crowd get an encore, and the
+	// blocked case ANSWERS instead of ghosting the requester.
 	n.LyricsRespMux[toFleetIdx].RLock()
-	count, exists := n.LyricsResponded[toFleetIdx][from]
+	last, exists := n.LyricsResponded[toFleetIdx][from]
 	n.LyricsRespMux[toFleetIdx].RUnlock()
 
-	if exists && count > 0 {
-		n.Config.Log.Infof("Already responded to lyrics request from requester %d (count: %d), skipping", from, count)
+	if exists && time.Since(last) < lyricsEncoreCooldown {
+		n.Config.Log.Infof("Lyrics on cooldown for requester %d (%v since last); sending encore notice", from, time.Since(last).Round(time.Second))
+		n.sendPKIReply(toFleetIdx, to, from, topic, "🎤 One song per crowd every 10 minutes... come back for the encore.")
 		return
 	}
 
-	// Mark this requester as having received a response
+	// Mark this requester's showtime
 	n.LyricsRespMux[toFleetIdx].Lock()
-	n.LyricsResponded[toFleetIdx][from]++
+	n.LyricsResponded[toFleetIdx][from] = time.Now()
 	n.LyricsRespMux[toFleetIdx].Unlock()
 
 	// Decode base64 lyrics

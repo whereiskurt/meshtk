@@ -82,3 +82,35 @@ func TestNumberLyric(t *testing.T) {
 		t.Errorf("numberLyric(11) = %q", got)
 	}
 }
+
+// Ghosts must answer directed user-info exchanges (NODEINFO_APP requests) --
+// real firmware does, and a freshly-wiped radio depends on it to learn a
+// ghost's details on demand.
+func TestFleetNodeHandlerAnswersNodeInfoRequests(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "cmd.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse cmd.go: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, d := range f.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "FleetNodeHandler" {
+			fn = fd
+		}
+	}
+	if fn == nil {
+		t.Fatal("FleetNodeHandler not found")
+	}
+	responds := false
+	ast.Inspect(fn, func(m ast.Node) bool {
+		if call, ok := m.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "respondNodeInfo" {
+				responds = true
+			}
+		}
+		return true
+	})
+	if !responds {
+		t.Error("FleetNodeHandler no longer answers NODEINFO_APP requests via respondNodeInfo")
+	}
+}

@@ -15,6 +15,18 @@ import (
 )
 
 func (c *MqttClient) PublishNodeInfo(from uint32, to uint32, topic string, longName, shortName string, pubKey []byte, hwModel meshtastic.HardwareModel, role meshtastic.Config_DeviceConfig_Role) error {
+	return c.publishNodeInfoRetain(from, to, topic, longName, shortName, pubKey, hwModel, role, true)
+}
+
+// PublishNodeInfoTo answers a directed user-info exchange: same payload as the
+// broadcast beacon but retain=false -- MQTT retain is per topic, so a retained
+// directed reply would DISPLACE the retained broadcast NodeInfo on the ghost's
+// own topic and every future subscriber would learn a stale, misaddressed copy.
+func (c *MqttClient) PublishNodeInfoTo(from uint32, to uint32, topic string, longName, shortName string, pubKey []byte, hwModel meshtastic.HardwareModel, role meshtastic.Config_DeviceConfig_Role) error {
+	return c.publishNodeInfoRetain(from, to, topic, longName, shortName, pubKey, hwModel, role, false)
+}
+
+func (c *MqttClient) publishNodeInfoRetain(from uint32, to uint32, topic string, longName, shortName string, pubKey []byte, hwModel meshtastic.HardwareModel, role meshtastic.Config_DeviceConfig_Role, retain bool) error {
 	fromStr := fmt.Sprintf("!%08x", from)
 	user := &meshtastic.User{
 		// The Id field should be properly cast to match what the meshtastic proto expects
@@ -42,7 +54,7 @@ func (c *MqttClient) PublishNodeInfo(from uint32, to uint32, topic string, longN
 	// SECURITY: only NodeInfo is ever retained. PKI/direct messages must never be
 	// (a retained DM would be replayed to every future subscriber), and Position /
 	// MapReport stay unretained too — stale positions are worse than none.
-	return c.publishMessageEncrypted(from, to, topic, meshtastic.PortNum_NODEINFO_APP, userBytes, true)
+	return c.publishMessageEncrypted(from, to, topic, meshtastic.PortNum_NODEINFO_APP, userBytes, retain)
 }
 func (c *MqttClient) PublishMessagePlain(from uint32, to uint32, topic string, portNum meshtastic.PortNum, payload []byte) error {
 	// Create Data protobuf

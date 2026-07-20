@@ -82,6 +82,28 @@ func (f *FleetCmd) publishNodeInfo(idx int, node *mqtt.Node) {
 	f.MqttClient[idx].PublishNodeInfo(node.From, ALL, whoamiTopic, node.LongName, node.ShortName, pk, meshtastic.HardwareModel(hwModelNumber), meshtastic.Config_DeviceConfig_CLIENT)
 }
 
+// respondNodeInfo answers a directed NODEINFO_APP request (the app's "exchange
+// user info" when a node is missing from the NodeDB) with this ghost's user
+// info addressed to the requester. Real firmware replies to these; ignoring
+// them left a freshly-wiped radio unable to learn a ghost's details on demand.
+func (f *FleetCmd) respondNodeInfo(idx int, node *mqtt.Node, requester uint32) {
+	whoamiTopic := fmt.Sprintf("%s/!%08x", f.Config.NodeInfo.Topic, node.From)
+
+	hwModelNumber, ok := meshtastic.HardwareModel_value[node.HwModel]
+	if !ok {
+		hwModelNumber = 0
+	}
+
+	pk, err := hex.DecodeString(strings.TrimPrefix(node.PubKey, "0x"))
+	if err != nil {
+		f.Config.Log.Warnf("⚠️ Failed to decode public key: %v. Defaulting to empty key.\n", err)
+		pk = []byte{}
+	}
+
+	f.Config.Log.Infof("Answering user-info exchange: %08x -> requester %08x", node.From, requester)
+	f.MqttClient[idx].PublishNodeInfoTo(node.From, requester, whoamiTopic, node.LongName, node.ShortName, pk, meshtastic.HardwareModel(hwModelNumber), meshtastic.Config_DeviceConfig_CLIENT)
+}
+
 func (f *FleetCmd) publishPosition(idx int, node *mqtt.Node, gitter bool) {
 	fleet := f.Config.Fleet[idx]
 

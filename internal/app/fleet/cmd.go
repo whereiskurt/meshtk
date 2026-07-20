@@ -657,6 +657,15 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 	fleetConfig := n.Config.Fleet[toFleetIdx]
 
 	switch portNum {
+	case meshtastic.PortNum_NODEINFO_APP:
+		// A directed NODEINFO to a ghost is the app's "exchange user info" (sent
+		// when the requester's NodeDB is missing us -- e.g. freshly wiped). Real
+		// firmware answers with its user info; staying silent left the requester
+		// unable to learn a ghost's details (or pubkey) on demand.
+		if _, ghost, _, _ := n.FindNodes(to, from); ghost != nil {
+			n.respondNodeInfo(toFleetIdx, ghost, from)
+		}
+
 	case meshtastic.PortNum_TEXT_MESSAGE_APP:
 		var hasOTP = false
 		message := string(payload)

@@ -135,3 +135,20 @@ func TestLegacyACKKeepsHistoricalShape(t *testing.T) {
 		t.Errorf("legacy ack sets hop_start=%d; historical shape leaves it unset", pkt.GetHopStart())
 	}
 }
+
+// A directed user-info reply must NOT retain: retain is per topic, so it would
+// displace the retained broadcast NodeInfo on the ghost's own topic.
+func TestPublishNodeInfoToDoesNotRetain(t *testing.T) {
+	c, fb := newRetainTestClient(t)
+	if err := c.PublishNodeInfoTo(0x7bc64694, 0x435990e4, "msh/US/2/e/dc.run/!7bc64694",
+		"ghost-ricky-00", "GR00", make([]byte, 32),
+		meshtastic.HardwareModel_HELTEC_V3, meshtastic.Config_DeviceConfig_CLIENT); err != nil {
+		t.Fatalf("PublishNodeInfoTo: %v", err)
+	}
+	if len(fb.calls) != 1 {
+		t.Fatalf("publishes = %d, want 1", len(fb.calls))
+	}
+	if fb.calls[0].retain {
+		t.Error("directed NodeInfo reply retained; it would displace the retained broadcast NodeInfo on this topic")
+	}
+}

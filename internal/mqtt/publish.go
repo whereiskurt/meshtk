@@ -422,7 +422,15 @@ func (c *MqttClient) BuildPKIMessage(from uint32, to uint32, portNum meshtastic.
 	senderPublicKey := make([]byte, 32)
 	curve25519.ScalarBaseMult((*[32]byte)(senderPublicKey), (*[32]byte)(senderPrivateKey))
 
-	// Create MeshPacket with PKI encrypted data
+	// Create MeshPacket with PKI encrypted data. Faithful firmware shape, same
+	// rationale as the ack fix: rx_time/rx_rssi/rx_snr are RECEIVE-side fields a
+	// transmitting node leaves zero, and via_mqtt is stamped by the receiving
+	// gateway on ingest. Fabricating rx_time was worse than cosmetic -- the
+	// receiver trusted our build-time stamp over actual arrival, so a pending
+	// flush delivered a minute late slotted a minute back in the conversation
+	// history (observed live 2026-07-20: replies sorting above newer messages).
+	// With rx_time unset the receiver stamps ingest time and order follows
+	// arrival. hop_start mirrors hop_limit so hops-away computes as 0.
 	packet := &meshtastic.MeshPacket{
 		From: from,
 		To:   to,
@@ -432,11 +440,8 @@ func (c *MqttClient) BuildPKIMessage(from uint32, to uint32, portNum meshtastic.
 		},
 		PublicKey:    senderPublicKey,
 		PkiEncrypted: true,
-		RxTime:       uint32(time.Now().Unix()),
-		RxRssi:       -2,
-		ViaMqtt:      true,
-		RxSnr:        2,
 		HopLimit:     3,
+		HopStart:     3,
 	}
 
 	// Create ServiceEnvelope

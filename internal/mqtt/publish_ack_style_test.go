@@ -84,6 +84,47 @@ func TestUnsetAckStyleDefaultsToFaithful(t *testing.T) {
 	}
 }
 
+// PKI replies must be faithful firmware shape too. Fabricated rx_time was
+// worse than cosmetic: the receiver trusted our build-time stamp over actual
+// arrival, so a pending flush delivered a minute late slotted a minute back in
+// the conversation history (observed live 2026-07-20).
+func TestBuildPKIMessageHasNoFabricatedRxMetadata(t *testing.T) {
+	c, _ := newRetainTestClient(t)
+	priv := make([]byte, 32)
+	pub := make([]byte, 32)
+	priv[0], pub[0] = 7, 9
+
+	envelopeBytes, err := c.BuildPKIMessage(0x1555f041, 0x435990e4,
+		meshtastic.PortNum_TEXT_MESSAGE_APP, []byte("hi"), priv, pub)
+	if err != nil {
+		t.Fatalf("BuildPKIMessage: %v", err)
+	}
+	envelope := new(meshtastic.ServiceEnvelope)
+	if err := proto.Unmarshal(envelopeBytes, envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	pkt := envelope.GetPacket()
+	if pkt == nil {
+		t.Fatal("envelope has no MeshPacket")
+	}
+
+	if pkt.GetRxTime() != 0 {
+		t.Errorf("rx_time = %d, want 0; a fabricated stamp reorders conversation history on late redelivery", pkt.GetRxTime())
+	}
+	if pkt.GetRxRssi() != 0 || pkt.GetRxSnr() != 0 {
+		t.Errorf("rx_rssi/rx_snr = %d/%v, want 0/0 (receiver-side fields)", pkt.GetRxRssi(), pkt.GetRxSnr())
+	}
+	if pkt.GetViaMqtt() {
+		t.Error("via_mqtt set by sender; only the receiving gateway stamps it")
+	}
+	if pkt.GetHopStart() != pkt.GetHopLimit() {
+		t.Errorf("hop_start = %d, hop_limit = %d; fresh sends set them equal", pkt.GetHopStart(), pkt.GetHopLimit())
+	}
+	if !pkt.GetPkiEncrypted() {
+		t.Error("pki_encrypted not set on a PKI message")
+	}
+}
+
 // Legacy stays available for A/B comparison and keeps its historical shape.
 func TestLegacyACKKeepsHistoricalShape(t *testing.T) {
 	pkt := publishAndDecodeACK(t, "legacy")

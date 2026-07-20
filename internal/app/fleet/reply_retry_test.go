@@ -54,13 +54,14 @@ func TestSendSpreadEmitsThreeSendsThirtySecondsApart(t *testing.T) {
 // The tuned contract, post proxy fix: a recipient should never see more than 2
 // copies of a reply line (1 immediate + at most 1 store-and-forward flush).
 func TestPKIReplyRetryConstants(t *testing.T) {
-	// Deliberately 1: the proxy fix removed the flap these retries existed to
-	// survive, and the pending queue covers a genuine loss.
-	if pkiReplyRetryCount != 1 {
-		t.Errorf("pkiReplyRetryCount = %d, want 1", pkiReplyRetryCount)
+	// Two timed sends, 10s apart: a fast second chance for the packet-of-a-burst
+	// the BLE link regularly eats, well before the ~60s beacon flush. Safe only
+	// because copies are byte-identical (one packet id per line).
+	if pkiReplyRetryCount != 2 {
+		t.Errorf("pkiReplyRetryCount = %d, want 2", pkiReplyRetryCount)
 	}
-	if pkiReplyRetrySpacing != 30*time.Second {
-		t.Errorf("pkiReplyRetrySpacing = %v, want 30s", pkiReplyRetrySpacing)
+	if pkiReplyRetrySpacing != 10*time.Second {
+		t.Errorf("pkiReplyRetrySpacing = %v, want 10s", pkiReplyRetrySpacing)
 	}
 	// Wire copies may exceed what a user should SEE because every re-send is
 	// byte-identical (one packet id per line; the device dedups repeats). The

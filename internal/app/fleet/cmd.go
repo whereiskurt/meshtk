@@ -411,15 +411,16 @@ func (n *FleetCmd) buildPKIReply(toFleetIdx int, to, from uint32, topic string, 
 // over ~90s covers ~1.5 flapping cycles. This is exactly why ricky's ~60-message
 // lyric bursts always land and single-shot repliers vanish.
 //
-// Duplicates on a healthy link are strictly better than silence.
-// Tuned DOWN from 3 after the real cause of the "flapping" turned out to be our
-// own proxy hanging up on idle clients (proxy.go, 10s client read deadline). On
-// a stable link 3 timed sends plus 2 store-and-forward flushes delivered TEN
-// copies of a two-line reply. One send covers the healthy case; the pending
-// queue re-sends on the recipient's next beacon if it really was lost.
+// Two timed sends, 10s apart: the BLE link regularly eats one packet of a
+// burst, and waiting for the recipient's next beacon (~60s cadence) to flush
+// makes the second line of a reply feel a minute late (observed live
+// 2026-07-20). The 10s retry is a fast second chance; the pending queue is the
+// backstop. Copies are byte-identical (one packet id per line), so redundant
+// deliveries never display -- the historical dupe storm this count was cut for
+// cannot recur.
 const (
-	pkiReplyRetryCount   = 1
-	pkiReplyRetrySpacing = 30 * time.Second
+	pkiReplyRetryCount   = 2
+	pkiReplyRetrySpacing = 10 * time.Second
 )
 
 // sendSpread invokes send once immediately, then count-1 more times spaced

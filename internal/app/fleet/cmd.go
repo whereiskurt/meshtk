@@ -84,6 +84,20 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		f.RecentReqMux = append(f.RecentReqMux, sync.Mutex{})
 
 		otpURL := f.Config.Fleet[i].OtpUrl
+		if otpURL != "" && c.GhostKeySecret != "" {
+			// Same server-secret munging as the node keypairs (ApplyDerivedKey):
+			// the committed OtpUrl secret is a decoy HKDF input; the handler
+			// validates against the derived secret. A derivation failure is
+			// fail-CLOSED (nil handler, OTP never unlocks) — never a silent
+			// fallback to the committed plaintext.
+			derived, err := otp.DeriveOtpUrl(c.GhostKeySecret, f.Config.Fleet[i].Id, otpURL)
+			if err != nil {
+				c.Log.Errorf("⚠️ OTP secret derivation failed for %s (OTP disabled): %v", f.Config.Fleet[i].Id, err)
+				otpURL = ""
+			} else {
+				otpURL = derived
+			}
+		}
 		if otpURL != "" {
 			otpHandler, _ := otp.NewOTPHandler(otpURL)
 			f.OTPHandler = append(f.OTPHandler, otpHandler)

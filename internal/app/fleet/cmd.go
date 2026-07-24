@@ -827,9 +827,28 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 				}
 			}
 			if _, ok := chatBotMap["chatmode_unlocked"]; ok {
-				// TEMP stub — replaced by Task C2 (guard-in → deterministic reveal → LLM).
-				_ = fleetConfig
-				n.sendPKIReplyReliable(toFleetIdx, to, from, topic, "👻 …")
+				// presence of chatmode_unlocked marks this ghost LLM-capable.
+
+				// INPUT guardrail on every unlocked message.
+				if allowed, reason := n.guardText(context.Background(), message, guardInput); !allowed {
+					n.Config.Log.Infof("guardrail blocked INPUT from %d (%s)", from, reason)
+					n.sendPKIReplyReliable(toFleetIdx, to, from, topic, cannedRefusal)
+					return
+				}
+
+				// Deterministic covert-flag reveal: if the player raised the trigger
+				// topic, fill {{code}} with the DERIVED code server-side and reply.
+				// The code never enters the LLM; the reveal is exempt from OUTPUT guard.
+				if toFleetIdx < len(n.Challenge) {
+					if rt := n.Challenge[toFleetIdx]; matchesTrigger(rt, message) {
+						n.Config.Log.Infof("flag trigger matched (fleet %d) from %d — revealing derived code", toFleetIdx, from)
+						n.sendPKIReplyReliable(toFleetIdx, to, from, topic, renderReveal(rt))
+						return
+					}
+				}
+
+				// Otherwise: freeform LLM chat (Bedrock or Anthropic backup).
+				n.handleLLMChat(toFleetIdx, to, from, topic, message, fleetConfig.SystemPrompt)
 			}
 		} else if hasOTP {
 			if chatBot, ok := chatBotMap["otp_success"]; ok {

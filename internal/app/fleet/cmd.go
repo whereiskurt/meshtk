@@ -1,12 +1,9 @@
 package fleet
 
 import (
-	"bytes"
+	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -96,6 +93,10 @@ func renderReveal(rt *FlagChallengeRuntime) string {
 }
 
 const BACKSTOP_GRACE_SEC = 30
+
+// cannedRefusal is the short in-character reply sent when a guardrail blocks an
+// inbound message or an LLM reply (never the offending text).
+const cannedRefusal = "👻 …not touching that one."
 
 // otpAcceptWindowEachSide is how many TOTP periods on each side of "now" the bot
 // accepts an OTP for. At period=30 (which phone authenticator apps honor, unlike
@@ -1002,105 +1003,27 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 	n.Config.Log.Infof("Started lyrics playback for %d entries over %v", len(lyricEntries), songDuration)
 }
 
-func (n *FleetCmd) handleGPTChat(toFleetIdx int, to, from uint32, topic string, userMessage string, apiKey string, systemPrompt string) {
-	n.Config.Log.Infof("Calling GPT-4 with message: %s", userMessage)
-
-	gptResponse, err := n.callOpenAIGPT(userMessage, apiKey, systemPrompt)
+func (n *FleetCmd) handleLLMChat(toFleetIdx int, to, from uint32, topic string, userMessage string, systemPrompt string) {
+	n.Config.Log.Infof("LLM chat (fleet %d) msg: %s", toFleetIdx, userMessage)
+	reply, err := generateReply(context.Background(), userMessage, systemPrompt)
 	if err != nil {
-		n.Config.Log.Errorf("Failed to call GPT: %v", err)
-		n.sendPKIReply(toFleetIdx, to, from, topic, "Error calling GPT")
+		n.Config.Log.Errorf("LLM generate failed: %v", err)
+		n.sendPKIReply(toFleetIdx, to, from, topic, "👻 …signal lost. try again.")
 		return
 	}
-
-	chunks := n.splitIntoChunks(gptResponse, 60)
-
-	for i, chunk := range chunks {
+	// OUTPUT guardrail — LLM-generated replies only (the deterministic reveal in
+	// the unlocked branch is exempt so its flag code is never redacted).
+	if allowed, _ := n.guardText(context.Background(), reply, guardOutput); !allowed {
+		n.sendPKIReply(toFleetIdx, to, from, topic, cannedRefusal)
+		return
+	}
+	for i, chunk := range n.splitIntoChunks(reply, 60) {
 		if i == 0 {
 			time.Sleep(500 * time.Millisecond)
 		}
 		n.sendPKIReply(toFleetIdx, to, from, topic, chunk)
 		time.Sleep(500 * time.Millisecond)
 	}
-}
-
-func (n *FleetCmd) callOpenAIGPT(message string, apiKey string, systemPrompt string) (string, error) {
-	if systemPrompt == "" {
-		systemPrompt = "You are a helpful assistant communicating over a mesh network. Keep responses concise and under 240 characters total."
-	}
-
-	// Build messages array with system prompt
-	messages := []map[string]string{
-		{
-			"role":    "system",
-			"content": systemPrompt,
-		},
-		{
-			"role":    "user",
-			"content": message,
-		},
-	}
-
-	requestBody := map[string]interface{}{
-		"model":       "gpt-4o-mini",
-		"messages":    messages,
-		"temperature": 0.8,
-		"max_tokens":  150,
-	}
-
-	jsonBody, err := json.Marshal(requestBody)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %v", err)
-	}
-
-	apiEndpoint := "https://api.openai.com/v1/chat/completions"
-	req, err := http.NewRequest("POST", apiEndpoint, bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %v", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to make request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %v", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GPT API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var response struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-
-	if err := json.Unmarshal(body, &response); err != nil {
-		return "", fmt.Errorf("failed to parse response: %v", err)
-	}
-
-	if response.Error.Message != "" {
-		return "", fmt.Errorf("GPT API error: %s", response.Error.Message)
-	}
-
-	if len(response.Choices) == 0 {
-		return "", fmt.Errorf("no response from GPT")
-	}
-
-	return strings.TrimSpace(response.Choices[0].Message.Content), nil
 }
 
 // splitIntoChunks splits a string into chunks of specified size

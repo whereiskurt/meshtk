@@ -89,7 +89,7 @@ func matchesTrigger(rt *FlagChallengeRuntime, msg string) bool {
 }
 
 func renderReveal(rt *FlagChallengeRuntime) string {
-	return strings.ReplaceAll(rt.RevealTemplate, "{{code}}", rt.DerivedCode)
+	return strings.ReplaceAll(rt.RevealTemplate, "%CODE%", rt.DerivedCode)
 }
 
 const BACKSTOP_GRACE_SEC = 30
@@ -837,7 +837,7 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 				}
 
 				// Deterministic covert-flag reveal: if the player raised the trigger
-				// topic, fill {{code}} with the DERIVED code server-side and reply.
+				// topic, fill %CODE% with the DERIVED code server-side and reply.
 				// The code never enters the LLM; the reveal is exempt from OUTPUT guard.
 				if toFleetIdx < len(n.Challenge) {
 					if rt := n.Challenge[toFleetIdx]; matchesTrigger(rt, message) {

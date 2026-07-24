@@ -3,7 +3,7 @@ package config
 import "testing"
 
 func TestParseFlagChallenges(t *testing.T) {
-	raw := `{"ghost.goldstein":{"triggers":["hack the planet","hacking the planet"],"revealTemplate":"You found a flag! Code: {{code}}","committedCode":"hackers4evr"}}`
+	raw := `{"ghost.goldstein":{"triggers":["hack the planet","hacking the planet"],"revealTemplate":"You found a flag! Code: %CODE%","committedCode":"hackers4evr"}}`
 	m, err := ParseFlagChallenges(raw)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -15,8 +15,8 @@ func TestParseFlagChallenges(t *testing.T) {
 	if len(c.Triggers) != 2 || c.CommittedCode != "hackers4evr" {
 		t.Fatalf("bad parse: %+v", c)
 	}
-	if !contains(c.RevealTemplate, "{{code}}") {
-		t.Fatalf("reveal template missing {{code}}: %q", c.RevealTemplate)
+	if !contains(c.RevealTemplate, "%CODE%") {
+		t.Fatalf("reveal template missing placeholder: %q", c.RevealTemplate)
 	}
 }
 
@@ -30,6 +30,6 @@ func TestParseFlagChallengesEmpty(t *testing.T) {
 func TestParseFlagChallengesRejectsTemplateWithoutPlaceholder(t *testing.T) {
 	raw := `{"g":{"triggers":["x"],"revealTemplate":"no placeholder","committedCode":"c"}}`
 	if _, err := ParseFlagChallenges(raw); err == nil {
-		t.Fatal("expected error for reveal template missing {{code}}")
+		t.Fatal("expected error for reveal template missing %CODE%")
 	}
 }

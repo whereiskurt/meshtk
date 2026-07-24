@@ -26,6 +26,22 @@ func DeriveTotpSecret(serverSecret, fleetID, committedSecret string) (string, er
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(key), nil
 }
 
+// DeriveFlagCode deterministically derives the REAL covert flag code from a
+// server-only secret, the entry's stable Id, and the committed (decoy) flag code.
+// Same HKDF-SHA256 construction as DeriveTotpSecret, domain-separated by a
+// distinct info label, truncated to a short typeable token: 5 bytes → 8-char
+// unpadded uppercase base32. The committed value is only an HKDF input (a decoy
+// that appears in the config/prompt), so what a repo reader sees is never what
+// the bot reveals; rotating the committed value rotates the real code.
+func DeriveFlagCode(serverSecret, fleetID, committedFlag string) (string, error) {
+	info := fmt.Sprintf("meshtk-flag-code:%s:%s", fleetID, committedFlag)
+	key, err := hkdf.Key(sha256.New, []byte(serverSecret), nil, info, 5)
+	if err != nil {
+		return "", fmt.Errorf("hkdf: %w", err)
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(key), nil
+}
+
 // DeriveOtpUrl returns otpURL with ONLY its secret query param replaced by the
 // derived secret. Every other param (algorithm, digits, period, issuer) and the
 // label pass through, so authenticator enrollments keep their display identity.

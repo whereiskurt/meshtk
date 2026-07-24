@@ -75,3 +75,47 @@ func TestDeriveOtpUrlRejectsSecretless(t *testing.T) {
 		t.Error("expected error for missing secret param")
 	}
 }
+
+// Shared cross-implementation vectors for the covert flag code — the SAME table
+// lives in run.human's mesh-otp-derive vitest (defcon.run.34). 5 bytes → 8-char
+// unpadded uppercase base32.
+var flagVectors = []struct {
+	serverSecret string
+	fleetID      string
+	committed    string
+	derived      string
+}{
+	{"test-server-secret", "ghost.goldstein", "hackers4evr", "WVCSNLUF"},
+	{"test-server-secret", "ghost.mudge", "0g3l33t", "FNUUESUC"},
+	{"another-secret", "ghost.condor", "fr33k3v1n", "4JCPQVLU"},
+}
+
+func TestDeriveFlagCodeVectors(t *testing.T) {
+	for _, v := range flagVectors {
+		got, err := DeriveFlagCode(v.serverSecret, v.fleetID, v.committed)
+		if err != nil {
+			t.Fatalf("DeriveFlagCode(%s): %v", v.fleetID, err)
+		}
+		if got != v.derived {
+			t.Errorf("DeriveFlagCode(%s) = %s, want %s", v.fleetID, got, v.derived)
+		}
+		if len(got) != 8 {
+			t.Errorf("DeriveFlagCode(%s) len = %d, want 8", v.fleetID, len(got))
+		}
+	}
+}
+
+func TestDeriveFlagCodeDomainSeparation(t *testing.T) {
+	a, _ := DeriveFlagCode("s", "ghost.a", "CODE")
+	b, _ := DeriveFlagCode("s", "ghost.b", "CODE")
+	c, _ := DeriveFlagCode("s2", "ghost.a", "CODE")
+	d, _ := DeriveFlagCode("s", "ghost.a", "CODE2")
+	if a == b || a == c || a == d {
+		t.Errorf("expected distinct flag codes across id/server/committed changes: %s %s %s %s", a, b, c, d)
+	}
+	// Flag code and TOTP secret must NOT collide for the same inputs (distinct info labels).
+	tot, _ := DeriveTotpSecret("s", "ghost.a", "CODE")
+	if a == tot {
+		t.Errorf("flag code and totp secret collided: %s", a)
+	}
+}

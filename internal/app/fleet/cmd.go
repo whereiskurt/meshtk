@@ -104,6 +104,23 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		} else {
 			f.OTPHandler = append(f.OTPHandler, nil)
 		}
+
+		// Derived covert flag code: substitute the DERIVED value in for the
+		// committed (decoy) FlagCode wherever it appears in the persona prompt, so
+		// the bot reveals the real code while the config keeps only the decoy —
+		// same server-secret munging as the OTP seed and the node keypairs. On a
+		// derivation error we leave the prompt untouched (the decoy shows) rather
+		// than blank the code mid-sentence; HKDF over valid inputs does not fail.
+		fc := f.Config.Fleet[i].FlagCode
+		if c.GhostKeySecret != "" && fc != "" {
+			derivedFlag, err := otp.DeriveFlagCode(c.GhostKeySecret, f.Config.Fleet[i].Id, fc)
+			if err != nil {
+				c.Log.Errorf("⚠️ flag code derivation failed for %s (decoy left in place): %v", f.Config.Fleet[i].Id, err)
+			} else {
+				f.Config.Fleet[i].OpenAISystemPrompt = strings.ReplaceAll(
+					f.Config.Fleet[i].OpenAISystemPrompt, fc, derivedFlag)
+			}
+		}
 	}
 
 	f.Pending = make(map[uint32][]*pendingReply)

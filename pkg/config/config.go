@@ -137,6 +137,12 @@ type Fleet struct {
 	OtpUrl             string     `default:""`
 	OpenAIKey          string     `default:""`
 	OpenAISystemPrompt string     `default:""`
+	// FlagCode is the COMMITTED (decoy) covert flag code — the literal that also
+	// appears in OpenAISystemPrompt. When GhostKeySecret is set, the fleet derives
+	// the real code from it (otp.DeriveFlagCode) and substitutes it into the prompt
+	// so the bot reveals the DERIVED value; the committed value in the config is a
+	// decoy, exactly like the OtpUrl seed and the node keypairs.
+	FlagCode string `default:""`
 }
 
 type Coordinate struct {

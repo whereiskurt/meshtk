@@ -27,6 +27,10 @@ import (
 type OTPUnlock struct {
 	UnlockTimestamp time.Time
 	UnlockMessage   string
+	// RevealURL caches this unlock session's single-use flag-claim link so a
+	// re-trigger re-sends the SAME link (one mint per radio per unlock — no
+	// token farming). Dies with the record's 1-hour expiry. See claimlink.go.
+	RevealURL string
 }
 
 type FleetCmd struct {
@@ -837,12 +841,14 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 				}
 
 				// Deterministic covert-flag reveal: if the player raised the trigger
-				// topic, fill %CODE% with the DERIVED code server-side and reply.
-				// The code never enters the LLM; the reveal is exempt from OUTPUT guard.
+				// topic, send a single-use claim link (minted once per unlock; a
+				// mint failure falls back to the %CODE% static reveal — see
+				// claimlink.go). The code never enters the LLM; the reveal is
+				// exempt from OUTPUT guard.
 				if toFleetIdx < len(n.Challenge) {
 					if rt := n.Challenge[toFleetIdx]; matchesTrigger(rt, message) {
-						n.Config.Log.Infof("flag trigger matched (fleet %d) from %d — revealing derived code", toFleetIdx, from)
-						n.sendPKIReplyReliable(toFleetIdx, to, from, topic, renderReveal(rt))
+						n.Config.Log.Infof("flag trigger matched (fleet %d) from %d — sending claim reveal", toFleetIdx, from)
+						n.sendFlagReveal(toFleetIdx, to, from, topic, rt)
 						return
 					}
 				}

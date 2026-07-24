@@ -95,7 +95,7 @@ func TestRetransmitGuardRunsBeforeChatbotPaths(t *testing.T) {
 			if guardPos == 0 {
 				guardPos = int(call.Pos())
 			}
-		case "sendPKIReplyReliable", "handleLyricsChat", "handleLLMChat":
+		case "sendPKIReplyReliable", "sendFlagReveal", "handleLyricsChat", "handleLLMChat":
 			if firstReplyPos == 0 {
 				firstReplyPos = int(call.Pos())
 			}

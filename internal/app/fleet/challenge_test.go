@@ -16,7 +16,7 @@ func TestMatchesTriggerCaseInsensitive(t *testing.T) {
 }
 
 func TestRenderReveal(t *testing.T) {
-	rt := &FlagChallengeRuntime{RevealTemplate: "👻 flag: {{code}}", DerivedCode: "WVCSNLUF"}
+	rt := &FlagChallengeRuntime{RevealTemplate: "👻 flag: %CODE%", DerivedCode: "WVCSNLUF"}
 	if got := renderReveal(rt); got != "👻 flag: WVCSNLUF" {
 		t.Fatalf("renderReveal = %q", got)
 	}

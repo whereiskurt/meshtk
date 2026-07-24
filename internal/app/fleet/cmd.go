@@ -71,15 +71,26 @@ const BACKSTOP_GRACE_SEC = 30
 
 // otpAcceptWindowEachSide is how many TOTP periods on each side of "now" the bot
 // accepts an OTP for. At period=30 (which phone authenticator apps honor, unlike
-// 120), ±20 gives ~20 minutes of tolerance. A CTF-unlock code has to survive
-// device-clock skew PLUS a slow, retransmit-heavy LoRa round-trip; UAT saw a
-// perfectly-valid code arrive ~90s+ stale and miss a ±5 (2.5min) window, so the
-// window is deliberately generous. The wider replay window is fine for an unlock.
-const otpAcceptWindowEachSide = 20
+// 120), ±6 gives ~3 minutes of tolerance — enough for device-clock skew plus a
+// LoRa round-trip, without an excessive replay window. (The real UAT failure was
+// the derivation being OFF, not the window; see NewFleets' ghostSecret fallback.)
+const otpAcceptWindowEachSide = 6
 
 func NewFleets(c *config.Config) (f *FleetCmd) {
 	f = new(FleetCmd)
 	f.Config = c
+
+	// The GhostKeySecret global flag/env binding does not reliably populate
+	// c.GhostKeySecret in the `fleet simulate` subcommand (MapEnvVars misses it),
+	// which silently left the OTP/flag derivation OFF — the bot validated against
+	// the COMMITTED decoy seed instead of the derived one. Read the env directly
+	// as a fallback. Scoped to the OTP + flag-code derivation ONLY (a local var):
+	// deliberately NOT applied to the node keypair path (nodes.go), so this does
+	// not re-key live ghosts mid-event.
+	ghostSecret := c.GhostKeySecret
+	if ghostSecret == "" {
+		ghostSecret = os.Getenv("MESHTK_GHOST_KEY_SECRET")
+	}
 
 	for i := 0; i < len(c.Fleet); i++ {
 		f.Nodes = append(f.Nodes, make(internal.NodeDB))
@@ -92,13 +103,13 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		f.RecentReqMux = append(f.RecentReqMux, sync.Mutex{})
 
 		otpURL := f.Config.Fleet[i].OtpUrl
-		if otpURL != "" && c.GhostKeySecret != "" {
+		if otpURL != "" && ghostSecret != "" {
 			// Same server-secret munging as the node keypairs (ApplyDerivedKey):
 			// the committed OtpUrl secret is a decoy HKDF input; the handler
 			// validates against the derived secret. A derivation failure is
 			// fail-CLOSED (nil handler, OTP never unlocks) — never a silent
 			// fallback to the committed plaintext.
-			derived, err := otp.DeriveOtpUrl(c.GhostKeySecret, f.Config.Fleet[i].Id, otpURL)
+			derived, err := otp.DeriveOtpUrl(ghostSecret, f.Config.Fleet[i].Id, otpURL)
 			if err != nil {
 				c.Log.Errorf("⚠️ OTP secret derivation failed for %s (OTP disabled): %v", f.Config.Fleet[i].Id, err)
 				otpURL = ""
@@ -120,8 +131,8 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		// derivation error we leave the prompt untouched (the decoy shows) rather
 		// than blank the code mid-sentence; HKDF over valid inputs does not fail.
 		fc := f.Config.Fleet[i].FlagCode
-		if c.GhostKeySecret != "" && fc != "" {
-			derivedFlag, err := otp.DeriveFlagCode(c.GhostKeySecret, f.Config.Fleet[i].Id, fc)
+		if ghostSecret != "" && fc != "" {
+			derivedFlag, err := otp.DeriveFlagCode(ghostSecret, f.Config.Fleet[i].Id, fc)
 			if err != nil {
 				c.Log.Errorf("⚠️ flag code derivation failed for %s (decoy left in place): %v", f.Config.Fleet[i].Id, err)
 			} else {

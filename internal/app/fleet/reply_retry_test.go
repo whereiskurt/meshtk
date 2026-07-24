@@ -202,13 +202,14 @@ func TestLyricsChatDoesNotUseReliableRetry(t *testing.T) {
 }
 
 // The one-shot reply paths all live in FleetNodeHandler: otp_success,
-// otp_failure (non-unlocking branch) and the "OpenAI key not configured"
-// fallback. Every one of them must go through the reliable wrapper.
+// otp_failure (non-unlocking branch), and — in the unlocked branch — the
+// guardrail-block refusal and the deterministic flag reveal. Every one of them
+// must go through the reliable wrapper.
 func TestOneShotReplyPathsUseReliableRetry(t *testing.T) {
 	fd, _ := funcBody(t, "FleetNodeHandler")
 	calls := calleeNames(fd)
-	if got := calls["sendPKIReplyReliable"]; got != 3 {
-		t.Errorf("FleetNodeHandler has %d sendPKIReplyReliable calls, want 3 (otp_success, otp_failure, openai-fallback)", got)
+	if got := calls["sendPKIReplyReliable"]; got != 4 {
+		t.Errorf("FleetNodeHandler has %d sendPKIReplyReliable calls, want 4 (otp_success, otp_failure, guard-refusal, flag-reveal)", got)
 	}
 	if got := calls["sendPKIReply"]; got != 0 {
 		t.Errorf("FleetNodeHandler still has %d bare sendPKIReply calls; one-shot replies must retry", got)

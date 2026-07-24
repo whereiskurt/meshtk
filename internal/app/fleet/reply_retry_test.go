@@ -160,16 +160,18 @@ func TestSendSpreadCountOneDoesNotRetry(t *testing.T) {
 func funcBody(t *testing.T, name string) (*ast.FuncDecl, *token.FileSet) {
 	t.Helper()
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "cmd.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse cmd.go: %v", err)
-	}
-	for _, d := range f.Decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == name {
-			return fd, fset
+	for _, file := range []string{"cmd.go", "claimlink.go"} {
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		for _, d := range f.Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == name {
+				return fd, fset
+			}
 		}
 	}
-	t.Fatalf("func %s not found in cmd.go", name)
+	t.Fatalf("func %s not found in cmd.go/claimlink.go", name)
 	return nil, nil
 }
 
@@ -203,16 +205,33 @@ func TestLyricsChatDoesNotUseReliableRetry(t *testing.T) {
 
 // The one-shot reply paths all live in FleetNodeHandler: otp_success,
 // otp_failure (non-unlocking branch), and — in the unlocked branch — the
-// guardrail-block refusal and the deterministic flag reveal. Every one of them
-// must go through the reliable wrapper.
+// guardrail-block refusal. Every one of them must go through the reliable
+// wrapper. (The deterministic flag reveal moved into sendFlagReveal — covered
+// by TestFlagRevealUsesReliableRetry below.)
 func TestOneShotReplyPathsUseReliableRetry(t *testing.T) {
 	fd, _ := funcBody(t, "FleetNodeHandler")
 	calls := calleeNames(fd)
-	if got := calls["sendPKIReplyReliable"]; got != 4 {
-		t.Errorf("FleetNodeHandler has %d sendPKIReplyReliable calls, want 4 (otp_success, otp_failure, guard-refusal, flag-reveal)", got)
+	if got := calls["sendPKIReplyReliable"]; got != 3 {
+		t.Errorf("FleetNodeHandler has %d sendPKIReplyReliable calls, want 3 (otp_success, otp_failure, guard-refusal)", got)
+	}
+	if calls["sendFlagReveal"] == 0 {
+		t.Error("FleetNodeHandler no longer routes the flag reveal through sendFlagReveal")
 	}
 	if got := calls["sendPKIReply"]; got != 0 {
 		t.Errorf("FleetNodeHandler still has %d bare sendPKIReply calls; one-shot replies must retry", got)
+	}
+}
+
+// Every send inside the claim-link reveal (found-a-flag + link, and the
+// mint-failure static fallback) is a one-shot reply and must retry reliably.
+func TestFlagRevealUsesReliableRetry(t *testing.T) {
+	fd, _ := funcBody(t, "sendFlagReveal")
+	calls := calleeNames(fd)
+	if got := calls["sendPKIReplyReliable"]; got != 3 {
+		t.Errorf("sendFlagReveal has %d sendPKIReplyReliable calls, want 3 (fallback, found-a-flag, link)", got)
+	}
+	if got := calls["sendPKIReply"]; got != 0 {
+		t.Errorf("sendFlagReveal has %d bare sendPKIReply calls; one-shot replies must retry", got)
 	}
 }
 

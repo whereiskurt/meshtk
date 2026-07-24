@@ -135,6 +135,32 @@ func (tc *TOTPConfig) GenerateTOTP(timestamp time.Time) (string, error) {
 	return otpStr, nil
 }
 
+// ValidCodesWindow returns the TOTP codes for the current period plus `each`
+// periods on either side. A single ±1 window (CalculateTOTPWithAdjacentPeriods)
+// is only ~90s at period=30 — too tight for a LoRa mesh round-trip, where a code
+// is read off a phone, typed into a radio, transmitted, and relayed over several
+// hops before it reaches the bot, so a short-period code routinely expires in
+// flight. A wider window keeps period=30 (which phone authenticator apps honor,
+// unlike 120) while tolerating that latency. At period=30, each=5 accepts ~5.5
+// minutes of transit. The wider replay window is acceptable for a CTF unlock.
+func (tc *TOTPConfig) ValidCodesWindow(each int) ([]string, error) {
+	if each < 0 {
+		each = 0
+	}
+	nowUnix := time.Now().Unix()
+	start := nowUnix / int64(tc.Period) * int64(tc.Period)
+	codes := make([]string, 0, 2*each+1)
+	for i := -each; i <= each; i++ {
+		t := time.Unix(start+int64(i)*int64(tc.Period), 0)
+		code, err := tc.GenerateTOTP(t)
+		if err != nil {
+			return nil, err
+		}
+		codes = append(codes, code)
+	}
+	return codes, nil
+}
+
 // CalculateTOTPWithAdjacentPeriods calculates the TOTP for the current period,
 // as well as the previous and next periods
 func (tc *TOTPConfig) CalculateTOTPWithAdjacentPeriods() (map[string]string, error) {

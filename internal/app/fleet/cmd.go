@@ -69,6 +69,12 @@ type FleetCmd struct {
 
 const BACKSTOP_GRACE_SEC = 30
 
+// otpAcceptWindowEachSide is how many TOTP periods on each side of "now" the bot
+// accepts an OTP for. At period=30 (which phone authenticator apps honor, unlike
+// 120), ±5 gives ~5.5 minutes of tolerance so a code survives the read→type→
+// LoRa-transmit→multi-hop round-trip. See otp.ValidCodesWindow.
+const otpAcceptWindowEachSide = 5
+
 func NewFleets(c *config.Config) (f *FleetCmd) {
 	f = new(FleetCmd)
 	f.Config = c
@@ -715,13 +721,18 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 		}
 
 		if n.OTPHandler[toFleetIdx] != nil {
-			totps, err := n.OTPHandler[toFleetIdx].CalculateTOTPWithAdjacentPeriods()
+			// Accept a wide ± window (not just prev/current/next): a short-period
+			// code has to survive a slow LoRa mesh round-trip before it lands here.
+			codes, err := n.OTPHandler[toFleetIdx].ValidCodesWindow(otpAcceptWindowEachSide)
 			if err != nil {
 				n.Config.Log.Errorf("Failed to calculate TOTP: %v", err)
 				return
 			}
-			if strings.Contains(message, totps["current"]) || strings.Contains(message, totps["previous"]) || strings.Contains(message, totps["next"]) {
-				hasOTP = true
+			for _, code := range codes {
+				if strings.Contains(message, code) {
+					hasOTP = true
+					break
+				}
 			}
 		}
 

@@ -134,15 +134,11 @@ type Fleet struct {
 	ChatBot            []ChatBot  `json:"ChatBot"`
 	ShortNameTmpl      string     `default:"M{fleetId}{nodeId}"`
 	LongNameTmpl       string     `default:"mtk-{{.fleetId}}{{.nodeId}}-{{shortseed}}"`
-	OtpUrl             string     `default:""`
-	OpenAIKey          string     `default:""`
-	OpenAISystemPrompt string     `default:""`
-	// FlagCode is the COMMITTED (decoy) covert flag code — the literal that also
-	// appears in OpenAISystemPrompt. When GhostKeySecret is set, the fleet derives
-	// the real code from it (otp.DeriveFlagCode) and substitutes it into the prompt
-	// so the bot reveals the DERIVED value; the committed value in the config is a
-	// decoy, exactly like the OtpUrl seed and the node keypairs.
-	FlagCode string `default:""`
+	OtpUrl       string `default:""`
+	SystemPrompt string `default:""` // persona ONLY: voice, mannerisms, catch-phrases.
+	// Covert flag mechanic (trigger + reveal + decoy code) is delivered OUT of the
+	// committed config via the MESHTK_FLAG_CHALLENGES env blob — see config.FlagChallenge
+	// and internal/app/fleet. Nothing flag-related lives on this struct anymore.
 }
 
 type Coordinate struct {

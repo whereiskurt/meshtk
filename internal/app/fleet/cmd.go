@@ -41,6 +41,7 @@ type FleetCmd struct {
 		WasSuccess bool
 	}
 	OTPHandler      []*otp.TOTPConfig
+	Challenge       []*FlagChallengeRuntime // per-fleet covert flag challenge (nil if none)
 	OTPUnlocks      []map[uint32]*OTPUnlock // Map from radio ID to unlock info, per fleet
 	OTPUnlockMux    []sync.RWMutex          // Mutex to protect the OTPUnlocks map, per fleet
 	LyricsResponded []map[uint32]time.Time  // When each REQUESTER ('from') last got lyrics, per fleet (cooldown, not once-ever)
@@ -67,6 +68,33 @@ type FleetCmd struct {
 	KeyResolver *keycache.KeyResolver
 }
 
+// FlagChallengeRuntime is the per-fleet, resolved covert-flag challenge: trigger
+// phrases, the reveal template, and the DERIVED code (never the committed decoy).
+// The derived code lives here and is filled into the reveal server-side — it is
+// never placed in the LLM system prompt or user turn.
+type FlagChallengeRuntime struct {
+	Triggers       []string
+	RevealTemplate string
+	DerivedCode    string
+}
+
+func matchesTrigger(rt *FlagChallengeRuntime, msg string) bool {
+	if rt == nil {
+		return false
+	}
+	low := strings.ToLower(msg)
+	for _, t := range rt.Triggers {
+		if t != "" && strings.Contains(low, strings.ToLower(t)) {
+			return true
+		}
+	}
+	return false
+}
+
+func renderReveal(rt *FlagChallengeRuntime) string {
+	return strings.ReplaceAll(rt.RevealTemplate, "{{code}}", rt.DerivedCode)
+}
+
 const BACKSTOP_GRACE_SEC = 30
 
 // otpAcceptWindowEachSide is how many TOTP periods on each side of "now" the bot
@@ -90,6 +118,14 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 	ghostSecret := c.GhostKeySecret
 	if ghostSecret == "" {
 		ghostSecret = os.Getenv("MESHTK_GHOST_KEY_SECRET")
+	}
+
+	// Covert flag challenges arrive out-of-band via the SOPS-backed env blob so the
+	// committed config carries no trigger/reveal/decoy. Parse failure disables all
+	// challenges (empty map) rather than bricking fleet boot.
+	challenges, cerr := config.ParseFlagChallenges(os.Getenv("MESHTK_FLAG_CHALLENGES"))
+	if cerr != nil && c.Log != nil {
+		c.Log.Errorf("⚠️ MESHTK_FLAG_CHALLENGES parse failed (challenges disabled): %v", cerr)
 	}
 
 	for i := 0; i < len(c.Fleet); i++ {
@@ -124,22 +160,21 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 			f.OTPHandler = append(f.OTPHandler, nil)
 		}
 
-		// Derived covert flag code: substitute the DERIVED value in for the
-		// committed (decoy) FlagCode wherever it appears in the persona prompt, so
-		// the bot reveals the real code while the config keeps only the decoy —
-		// same server-secret munging as the OTP seed and the node keypairs. On a
-		// derivation error we leave the prompt untouched (the decoy shows) rather
-		// than blank the code mid-sentence; HKDF over valid inputs does not fail.
-		fc := f.Config.Fleet[i].FlagCode
-		if ghostSecret != "" && fc != "" {
-			derivedFlag, err := otp.DeriveFlagCode(ghostSecret, f.Config.Fleet[i].Id, fc)
-			if err != nil {
-				c.Log.Errorf("⚠️ flag code derivation failed for %s (decoy left in place): %v", f.Config.Fleet[i].Id, err)
+		// Resolve the covert flag challenge for this ghost from the env blob and
+		// derive the REAL code (decoy → HKDF). Nothing is injected into the persona
+		// prompt; the derived code is held on the runtime challenge and filled into
+		// the reveal server-side when a trigger fires. Fail-closed: any problem →
+		// nil challenge (no reveal), never a leak of the committed decoy.
+		var rt *FlagChallengeRuntime
+		if ch, ok := challenges[f.Config.Fleet[i].Id]; ok && ghostSecret != "" {
+			derived, derr := otp.DeriveFlagCode(ghostSecret, f.Config.Fleet[i].Id, ch.CommittedCode)
+			if derr != nil {
+				c.Log.Errorf("⚠️ flag code derivation failed for %s (challenge disabled): %v", f.Config.Fleet[i].Id, derr)
 			} else {
-				f.Config.Fleet[i].OpenAISystemPrompt = strings.ReplaceAll(
-					f.Config.Fleet[i].OpenAISystemPrompt, fc, derivedFlag)
+				rt = &FlagChallengeRuntime{Triggers: ch.Triggers, RevealTemplate: ch.RevealTemplate, DerivedCode: derived}
 			}
 		}
+		f.Challenge = append(f.Challenge, rt)
 	}
 
 	f.Pending = make(map[uint32][]*pendingReply)
@@ -790,21 +825,10 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 					return
 				}
 			}
-			if chatBot, ok := chatBotMap["chatmode_unlocked"]; ok {
-				if strings.Contains(chatBot.Message[0], "`OPENAI=") {
-					gptAgentUrl := strings.TrimSpace(strings.SplitN(chatBot.Message[0], "=", 2)[1])
-					n.Config.Log.Infof("GPT Agent URL set to: %s", gptAgentUrl)
-					if fleetConfig.OpenAIKey == "" {
-						fleetConfig.OpenAIKey = os.Getenv("MESHTK_OPENAI_KEY")
-					}
-
-					if fleetConfig.OpenAIKey != "" {
-						n.handleGPTChat(toFleetIdx, to, from, topic, message, fleetConfig.OpenAIKey, fleetConfig.OpenAISystemPrompt)
-					} else {
-						n.Config.Log.Errorf("OpenAI key not configured for fleet %d", toFleetIdx)
-						n.sendPKIReplyReliable(toFleetIdx, to, from, topic, "OpenAI key not configured")
-					}
-				}
+			if _, ok := chatBotMap["chatmode_unlocked"]; ok {
+				// TEMP stub — replaced by Task C2 (guard-in → deterministic reveal → LLM).
+				_ = fleetConfig
+				n.sendPKIReplyReliable(toFleetIdx, to, from, topic, "👻 …")
 			}
 		} else if hasOTP {
 			if chatBot, ok := chatBotMap["otp_success"]; ok {

@@ -71,9 +71,11 @@ const BACKSTOP_GRACE_SEC = 30
 
 // otpAcceptWindowEachSide is how many TOTP periods on each side of "now" the bot
 // accepts an OTP for. At period=30 (which phone authenticator apps honor, unlike
-// 120), ±5 gives ~5.5 minutes of tolerance so a code survives the read→type→
-// LoRa-transmit→multi-hop round-trip. See otp.ValidCodesWindow.
-const otpAcceptWindowEachSide = 5
+// 120), ±20 gives ~20 minutes of tolerance. A CTF-unlock code has to survive
+// device-clock skew PLUS a slow, retransmit-heavy LoRa round-trip; UAT saw a
+// perfectly-valid code arrive ~90s+ stale and miss a ±5 (2.5min) window, so the
+// window is deliberately generous. The wider replay window is fine for an unlock.
+const otpAcceptWindowEachSide = 20
 
 func NewFleets(c *config.Config) (f *FleetCmd) {
 	f = new(FleetCmd)
@@ -733,6 +735,16 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 					hasOTP = true
 					break
 				}
+			}
+			// Diagnostic: on a miss, log what arrived vs the window's midpoint so a
+			// stale/skewed code is visible (the received code and expected "current"
+			// will be adjacent TOTP values a few windows apart). Debug-level only.
+			if !hasOTP {
+				mid := ""
+				if len(codes) > 0 {
+					mid = codes[len(codes)/2]
+				}
+				n.Config.Log.Debugf("OTP miss fleet=%d from=%d msg=%q expected(current)=%s window=±%d", toFleetIdx, from, message, mid, otpAcceptWindowEachSide)
 			}
 		}
 

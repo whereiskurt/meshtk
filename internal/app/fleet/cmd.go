@@ -306,6 +306,12 @@ func (f *FleetCmd) Simulate(cmd *cobra.Command, argz []string) {
 		f.MqttClient = append(f.MqttClient, mqttClient)
 	}
 
+	// OTP delivery poller: drain run.human's MeshOtpPending queue and PKI-DM
+	// verification codes to devices from the NodeInfo (map) node identity.
+	if store := f.buildOtpStore(); store != nil && len(f.MqttClient) > 0 {
+		go f.startOtpPoller(context.Background(), store, otpPollInterval)
+	}
+
 	terminate := make(chan os.Signal, 1)
 
 	signal.Notify(terminate, syscall.SIGINT, syscall.SIGTERM)

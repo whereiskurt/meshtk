@@ -236,6 +236,12 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 		return
 	}
 
+	// Every NODEINFO flowing past feeds the observed-pubkey map (OTP delivery's
+	// last-resort recipient key).
+	if portNum == meshtastic.PortNum_NODEINFO_APP {
+		noteObservedNodeInfo(from, payload)
+	}
+
 	//c.log.Tracef(`{'from': %v, 'topic': '%v', 'portNum': %v, 'isEncrypted': %v, 'payload': '0x%x'}`, from, topic, portNum, isEncrypted, payload)
 	c.messageHandler(to, from, topic, portNum, payload)
 }

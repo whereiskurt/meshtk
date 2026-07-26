@@ -18,6 +18,16 @@ func TestQueueKeyParity(t *testing.T) {
 	}
 }
 
+// LOCKED ↔ run.human's mesh-welcome-pending-key-parity.test.ts.
+func TestWelcomeKeyParity(t *testing.T) {
+	if got := welcomeSK("!433d1cec"); got != "$meshwelcomepending_1#nodeid_!433d1cec" {
+		t.Fatalf("welcome sk drifted: %q", got)
+	}
+	if welcomeSKPrefix != "$meshwelcomepending_1#nodeid_" {
+		t.Fatalf("welcome sk prefix drifted: %q", welcomeSKPrefix)
+	}
+}
+
 // Mirrors keycache's parity lock on the MeshRadio primary key — the poller
 // stamps codeSentAt onto this row after a successful send.
 func TestMeshRadioKeyParity(t *testing.T) {

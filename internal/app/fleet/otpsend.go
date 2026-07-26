@@ -26,6 +26,11 @@ type otpSendDeps interface {
 	// user-supplied on the item → authoritative MeshRadio row → NODEINFO-observed.
 	ResolvePubKeyHex(item otpqueue.Item) (string, bool)
 	SendCode(toNodeNum uint32, pubKeyHex, code string) error
+	// SendWelcome publishes the welcome text immediately AND hands the
+	// byte-identical envelope to the fleet's proof-of-life pending store, so a
+	// radio that comes online within the pending TTL still receives it (the
+	// device's packet-id dedup makes the duplicate invisible).
+	SendWelcome(item otpqueue.WelcomeItem, pubKeyHex string) error
 	NowMs() int64
 }
 
@@ -34,16 +39,16 @@ type otpSendDeps interface {
 // send OK → delete + stamp codeSentAt; send failed → bump attempts and retry
 // next pass.
 func processOtpQueue(ctx context.Context, deps otpSendDeps, store otpqueue.Store, logger *log.Logger) {
-	items, err := store.List(ctx)
+	items, welcomes, err := store.List(ctx)
 	if err != nil {
 		logger.Errorf("otp: queue list failed: %v", err)
 		return
 	}
-	if len(items) == 0 {
+	if len(items) == 0 && len(welcomes) == 0 {
 		return
 	}
 
-	var sent, waiting, reaped, failed int
+	var sent, welcome, waiting, reaped, failed int
 	for _, it := range items {
 		switch {
 		case deps.NowMs()-it.CreatedAt > otpqueue.MaxAgeMs:
@@ -81,7 +86,45 @@ func processOtpQueue(ctx context.Context, deps otpSendDeps, store otpqueue.Store
 			logger.Infof("otp: verification code delivered to %s", it.NodeID)
 		}
 	}
-	logger.Infof("otp: pass done sent=%d waiting=%d reaped=%d failed=%d", sent, waiting, reaped, failed)
+
+	// Welcome items: same lifecycle gates, no codeSentAt stamp (nothing reads
+	// it), delivery via SendWelcome's immediate-publish + proof-of-life re-flush.
+	for _, w := range welcomes {
+		switch {
+		case deps.NowMs()-w.CreatedAt > otpqueue.MaxAgeMs:
+			reaped++
+			if err := store.DeleteWelcome(ctx, w.NodeID); err != nil {
+				logger.Errorf("otp: reap expired welcome %s failed: %v", w.NodeID, err)
+			}
+		case w.Attempts >= otpqueue.MaxAttempts:
+			reaped++
+			logger.Errorf("otp: giving up on welcome %s after %d failed publishes", w.NodeID, w.Attempts)
+			if err := store.DeleteWelcome(ctx, w.NodeID); err != nil {
+				logger.Errorf("otp: reap capped welcome %s failed: %v", w.NodeID, err)
+			}
+		default:
+			pubKey, ok := deps.ResolvePubKeyHex(otpqueue.Item{NodeID: w.NodeID, NodeNum: w.NodeNum})
+			if !ok {
+				waiting++
+				continue
+			}
+			if err := deps.SendWelcome(w, pubKey); err != nil {
+				failed++
+				logger.Errorf("otp: welcome to %s failed (attempt %d): %v", w.NodeID, w.Attempts+1, err)
+				if err := store.BumpWelcomeAttempts(ctx, w.NodeID, w.Attempts+1); err != nil {
+					logger.Errorf("otp: bump welcome %s failed: %v", w.NodeID, err)
+				}
+				continue
+			}
+			welcome++
+			if err := store.DeleteWelcome(ctx, w.NodeID); err != nil {
+				logger.Errorf("otp: delete sent welcome %s failed (device may see a duplicate): %v", w.NodeID, err)
+			}
+			logger.Infof("otp: welcome delivered to %s", w.NodeID)
+		}
+	}
+
+	logger.Infof("otp: pass done sent=%d welcome=%d waiting=%d reaped=%d failed=%d", sent, welcome, waiting, reaped, failed)
 }
 
 // pkiTopicFor derives the SENDER's gateway PKI topic from the NodeInfo channel
@@ -123,30 +166,52 @@ func (d *fleetOtpDeps) ResolvePubKeyHex(item otpqueue.Item) (string, bool) {
 	return client.ObservedPubKey(item.NodeNum)
 }
 
-func (d *fleetOtpDeps) SendCode(toNodeNum uint32, pubKeyHex, code string) error {
+// buildAndPublish PKI-encrypts text from the NodeInfo (map) identity to the
+// device and publishes it on the sender's gateway topic. Returns everything a
+// caller needs for a byte-identical re-send.
+func (d *fleetOtpDeps) buildAndPublish(toNodeNum uint32, pubKeyHex, text string) (sender uint32, topic string, envelope []byte, err error) {
 	cfg := d.f.Config
 	client := d.f.MqttClient[0]
 
-	sender, err := parseNodeID(cfg.NodeInfo.ClientId)
+	sender, err = parseNodeID(cfg.NodeInfo.ClientId)
 	if err != nil {
-		return err
+		return 0, "", nil, err
 	}
 	senderPriv, err := client.ParseHexKey(cfg.NodeInfo.PKI.PrivateKey)
 	if err != nil {
-		return fmt.Errorf("nodeinfo private key: %w", err)
+		return 0, "", nil, fmt.Errorf("nodeinfo private key: %w", err)
 	}
 	recipientPub, err := client.ParseHexKey(pubKeyHex)
 	if err != nil {
-		return fmt.Errorf("recipient pubkey: %w", err)
+		return 0, "", nil, fmt.Errorf("recipient pubkey: %w", err)
 	}
 
-	payload := fmt.Sprintf("run.defcon.run radio verification code: %s", code)
-	envelope, err := client.BuildPKIMessage(sender, toNodeNum,
-		meshtastic.PortNum_TEXT_MESSAGE_APP, []byte(payload), senderPriv, recipientPub)
+	envelope, err = client.BuildPKIMessage(sender, toNodeNum,
+		meshtastic.PortNum_TEXT_MESSAGE_APP, []byte(text), senderPriv, recipientPub)
+	if err != nil {
+		return 0, "", nil, err
+	}
+	topic = pkiTopicFor(cfg.NodeInfo.Topic, sender)
+	return sender, topic, envelope, client.PublishEnvelopeBytes(topic, envelope)
+}
+
+func (d *fleetOtpDeps) SendCode(toNodeNum uint32, pubKeyHex, code string) error {
+	_, _, _, err := d.buildAndPublish(toNodeNum, pubKeyHex,
+		fmt.Sprintf("run.defcon.run radio verification code: %s", code))
+	return err
+}
+
+func (d *fleetOtpDeps) SendWelcome(item otpqueue.WelcomeItem, pubKeyHex string) error {
+	sender, topic, envelope, err := d.buildAndPublish(item.NodeNum, pubKeyHex, item.Message)
 	if err != nil {
 		return err
 	}
-	return client.PublishEnvelopeBytes(pkiTopicFor(cfg.NodeInfo.Topic, sender), envelope)
+	// Proof-of-life re-flush: the radio may still be rebooting/pairing after
+	// the flash. Queue the SAME bytes; the next transmission from the node
+	// (within the pending TTL) re-publishes them — invisible duplicate if the
+	// first copy landed (packet-id dedup), first delivery if it didn't.
+	d.f.queuePendingReply(0, sender, item.NodeNum, topic, "welcome", envelope)
+	return nil
 }
 
 func (d *fleetOtpDeps) NowMs() int64 { return time.Now().UnixMilli() }

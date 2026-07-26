@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -65,38 +66,53 @@ func (s *DynamoDBStore) queueKey(nodeID string) map[string]types.AttributeValue 
 	}
 }
 
-// List returns every pending OTP delivery. The queue partition is tiny, but
-// pagination is followed anyway.
-func (s *DynamoDBStore) List(ctx context.Context) ([]Item, error) {
+// List returns every pending delivery in the queue partition — OTP items and
+// welcome items, classified by sk prefix. Unknown prefixes are skipped
+// (forward compatibility). The partition is tiny; pagination is followed
+// anyway.
+func (s *DynamoDBStore) List(ctx context.Context) ([]Item, []WelcomeItem, error) {
 	var items []Item
+	var welcomes []WelcomeItem
 	var startKey map[string]types.AttributeValue
 
 	for {
 		out, err := s.client.Query(ctx, &dynamodb.QueryInput{
 			TableName:              aws.String(s.tableName),
-			KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :skp)"),
+			KeyConditionExpression: aws.String("pk = :pk"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":pk":  &types.AttributeValueMemberS{Value: queuePK},
-				":skp": &types.AttributeValueMemberS{Value: queueSKPrefix},
+				":pk": &types.AttributeValueMemberS{Value: queuePK},
 			},
 			ExclusiveStartKey: startKey,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("otpqueue query: %w", err)
+			return nil, nil, fmt.Errorf("otpqueue query: %w", err)
 		}
 		for _, raw := range out.Items {
-			var it Item
-			if err := attributevalue.UnmarshalMap(raw, &it); err != nil {
-				return nil, fmt.Errorf("otpqueue unmarshal: %w", err)
+			skAttr, ok := raw["sk"].(*types.AttributeValueMemberS)
+			if !ok {
+				continue
 			}
-			items = append(items, it)
+			switch {
+			case strings.HasPrefix(skAttr.Value, queueSKPrefix):
+				var it Item
+				if err := attributevalue.UnmarshalMap(raw, &it); err != nil {
+					return nil, nil, fmt.Errorf("otpqueue unmarshal: %w", err)
+				}
+				items = append(items, it)
+			case strings.HasPrefix(skAttr.Value, welcomeSKPrefix):
+				var w WelcomeItem
+				if err := attributevalue.UnmarshalMap(raw, &w); err != nil {
+					return nil, nil, fmt.Errorf("otpqueue welcome unmarshal: %w", err)
+				}
+				welcomes = append(welcomes, w)
+			}
 		}
 		if len(out.LastEvaluatedKey) == 0 {
 			break
 		}
 		startKey = out.LastEvaluatedKey
 	}
-	return items, nil
+	return items, welcomes, nil
 }
 
 // Delete removes a queue item (idempotent at the DynamoDB level).
@@ -123,6 +139,40 @@ func (s *DynamoDBStore) BumpAttempts(ctx context.Context, nodeID string, attempt
 	})
 	if err != nil {
 		return fmt.Errorf("otpqueue bump %s: %w", nodeID, err)
+	}
+	return nil
+}
+
+// DeleteWelcome removes a welcome queue item (idempotent).
+func (s *DynamoDBStore) DeleteWelcome(ctx context.Context, nodeID string) error {
+	_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(s.tableName),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: queuePK},
+			"sk": &types.AttributeValueMemberS{Value: welcomeSK(nodeID)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("otpqueue delete welcome %s: %w", nodeID, err)
+	}
+	return nil
+}
+
+// BumpWelcomeAttempts records a failed publish attempt on a welcome item.
+func (s *DynamoDBStore) BumpWelcomeAttempts(ctx context.Context, nodeID string, attempts int) error {
+	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(s.tableName),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: queuePK},
+			"sk": &types.AttributeValueMemberS{Value: welcomeSK(nodeID)},
+		},
+		UpdateExpression: aws.String("SET attempts = :a"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":a": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", attempts)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("otpqueue bump welcome %s: %w", nodeID, err)
 	}
 	return nil
 }

@@ -57,6 +57,15 @@ type FleetCmd struct {
 	Pending    map[uint32][]*pendingReply
 	PendingMux sync.Mutex
 
+	// LastSeen records the wall-clock of each node's most recent transmission
+	// (fed by onNodeSeen). The welcome-DM poller gates on it: a welcome only
+	// sends while the radio is provably alive on the mesh, because a PKI DM
+	// published into a dead session simply evaporates (observed 2026-07-27:
+	// welcomes published 16-31 min before the app's first MQTT connect were
+	// lost — the 10-min pending re-flush had already expired).
+	LastSeen    map[uint32]time.Time
+	LastSeenMux sync.RWMutex
+
 	// ReplyNextAt staggers consecutive one-shot reply lines to the same
 	// recipient (see sendPKIReplyReliable); keyed by recipient node num.
 	ReplyNextAt    map[uint32]time.Time
@@ -183,6 +192,7 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 	}
 
 	f.Pending = make(map[uint32][]*pendingReply)
+	f.LastSeen = make(map[uint32]time.Time)
 	f.ReplyNextAt = make(map[uint32]time.Time)
 
 	f.KeyResolver = buildKeyResolver(c)
@@ -641,9 +651,25 @@ func (n *FleetCmd) queuePendingReply(toFleetIdx int, ghost, to uint32, topic, te
 	})
 }
 
+// markNodeSeen stamps the node's liveness clock (see LastSeen).
+func (n *FleetCmd) markNodeSeen(node uint32) {
+	n.LastSeenMux.Lock()
+	n.LastSeen[node] = time.Now()
+	n.LastSeenMux.Unlock()
+}
+
+// lastSeenWithin reports whether the node transmitted within window.
+func (n *FleetCmd) lastSeenWithin(node uint32, window time.Duration) bool {
+	n.LastSeenMux.RLock()
+	t, ok := n.LastSeen[node]
+	n.LastSeenMux.RUnlock()
+	return ok && time.Since(t) <= window
+}
+
 // onNodeSeen is the store-and-forward trigger: any transmission from a node
 // proves it is connected, so flush whatever it may have missed.
 func (n *FleetCmd) onNodeSeen(node uint32) {
+	n.markNodeSeen(node)
 	n.PendingMux.Lock()
 	entries, ok := n.Pending[node]
 	if !ok {

@@ -56,13 +56,16 @@ func (f *fakeOtpStore) MarkRadioCodeSent(_ context.Context, nodeNum uint32, _ in
 }
 
 type fakeOtpDeps struct {
-	pubkeys      map[uint32]string
-	sendErr      error
-	sent         []uint32
-	welcomeSent  []string // messages, in order
-	welcomeErr   error
-	nowMs        int64
+	pubkeys     map[uint32]string
+	sendErr     error
+	sent        []uint32
+	welcomeSent []string // messages, in order
+	welcomeErr  error
+	alive       map[uint32]bool
+	nowMs       int64
 }
+
+func (f *fakeOtpDeps) NodeAliveNow(nodeNum uint32) bool { return f.alive[nodeNum] }
 
 func (f *fakeOtpDeps) ResolvePubKeyHex(item otpqueue.Item) (string, bool) {
 	if item.PublicKey != "" {
@@ -91,10 +94,30 @@ func welcomeItem(nodeID string, nodeNum uint32, createdAt int64, attempts int) o
 	return otpqueue.WelcomeItem{NodeID: nodeID, NodeNum: nodeNum, Message: "Welcome!", CreatedAt: createdAt, Attempts: attempts}
 }
 
+func TestWelcomeHeldUntilNodeAlive(t *testing.T) {
+	store := newFakeOtpStore()
+	store.welcomes = []otpqueue.WelcomeItem{welcomeItem("!433d1cec", 1128078572, nowMs, 0)}
+	// Pubkey known but node NOT alive — the 2026-07-27 field failure shape.
+	deps := &fakeOtpDeps{nowMs: nowMs, pubkeys: map[uint32]string{1128078572: "0xkey"}}
+
+	processOtpQueue(context.Background(), deps, store, testLogger())
+
+	if len(deps.welcomeSent) != 0 || len(store.welcomeDeleted) != 0 || len(store.welcomeBumped) != 0 {
+		t.Fatal("welcome to a dead session must wait, not send")
+	}
+
+	// Node comes alive → next pass delivers.
+	deps.alive = map[uint32]bool{1128078572: true}
+	processOtpQueue(context.Background(), deps, store, testLogger())
+	if len(deps.welcomeSent) != 1 || len(store.welcomeDeleted) != 1 {
+		t.Fatalf("welcome must send once node is alive: sent=%v deleted=%v", deps.welcomeSent, store.welcomeDeleted)
+	}
+}
+
 func TestWelcomeSuccessSendsAndDeletes(t *testing.T) {
 	store := newFakeOtpStore()
 	store.welcomes = []otpqueue.WelcomeItem{welcomeItem("!433d1cec", 1128078572, nowMs, 0)}
-	deps := &fakeOtpDeps{nowMs: nowMs, pubkeys: map[uint32]string{1128078572: "0xkey"}}
+	deps := &fakeOtpDeps{nowMs: nowMs, pubkeys: map[uint32]string{1128078572: "0xkey"}, alive: map[uint32]bool{1128078572: true}}
 
 	processOtpQueue(context.Background(), deps, store, testLogger())
 
@@ -112,7 +135,7 @@ func TestWelcomeSuccessSendsAndDeletes(t *testing.T) {
 func TestWelcomeNoPubkeyStaysQueued(t *testing.T) {
 	store := newFakeOtpStore()
 	store.welcomes = []otpqueue.WelcomeItem{welcomeItem("!433d1cec", 1128078572, nowMs, 0)}
-	deps := &fakeOtpDeps{nowMs: nowMs}
+	deps := &fakeOtpDeps{nowMs: nowMs, alive: map[uint32]bool{1128078572: true}}
 
 	processOtpQueue(context.Background(), deps, store, testLogger())
 
@@ -124,7 +147,7 @@ func TestWelcomeNoPubkeyStaysQueued(t *testing.T) {
 func TestWelcomeFailureBumpsAndSurvives(t *testing.T) {
 	store := newFakeOtpStore()
 	store.welcomes = []otpqueue.WelcomeItem{welcomeItem("!433d1cec", 1128078572, nowMs, 4)}
-	deps := &fakeOtpDeps{nowMs: nowMs, pubkeys: map[uint32]string{1128078572: "0xkey"}, welcomeErr: errors.New("broker down")}
+	deps := &fakeOtpDeps{nowMs: nowMs, pubkeys: map[uint32]string{1128078572: "0xkey"}, alive: map[uint32]bool{1128078572: true}, welcomeErr: errors.New("broker down")}
 
 	processOtpQueue(context.Background(), deps, store, testLogger())
 

@@ -31,8 +31,19 @@ type otpSendDeps interface {
 	// radio that comes online within the pending TTL still receives it (the
 	// device's packet-id dedup makes the duplicate invisible).
 	SendWelcome(item otpqueue.WelcomeItem, pubKeyHex string) error
+	// NodeAliveNow reports whether the radio transmitted recently. Welcomes
+	// only send while true: a PKI DM published into a dead session evaporates
+	// (2026-07-27 field failure — app pairing finished 16-31 min after the
+	// publish, past the 10-min pending re-flush TTL, and both welcomes were
+	// lost). The queue item waits, up to its 24 h life, for first contact.
+	NodeAliveNow(nodeNum uint32) bool
 	NowMs() int64
 }
+
+// welcomeAliveWindow: how recently a node must have transmitted to count as
+// reachable for a welcome send. Generous enough to bridge broadcast gaps,
+// tight enough that "alive" still means an active session.
+const welcomeAliveWindow = 5 * time.Minute
 
 // processOtpQueue runs one poll pass. Item lifecycle: expired or attempt-capped
 // → reap; no pubkey yet → leave queued (the radio may announce NODEINFO later);
@@ -103,6 +114,12 @@ func processOtpQueue(ctx context.Context, deps otpSendDeps, store otpqueue.Store
 				logger.Errorf("otp: reap capped welcome %s failed: %v", w.NodeID, err)
 			}
 		default:
+			// Hold the welcome until the radio is provably on the mesh right
+			// now — first contact after flashing may be many minutes out.
+			if !deps.NodeAliveNow(w.NodeNum) {
+				waiting++
+				continue
+			}
 			pubKey, ok := deps.ResolvePubKeyHex(otpqueue.Item{NodeID: w.NodeID, NodeNum: w.NodeNum})
 			if !ok {
 				waiting++
@@ -212,6 +229,10 @@ func (d *fleetOtpDeps) SendWelcome(item otpqueue.WelcomeItem, pubKeyHex string) 
 	// first copy landed (packet-id dedup), first delivery if it didn't.
 	d.f.queuePendingReply(0, sender, item.NodeNum, topic, "welcome", envelope)
 	return nil
+}
+
+func (d *fleetOtpDeps) NodeAliveNow(nodeNum uint32) bool {
+	return d.f.lastSeenWithin(nodeNum, welcomeAliveWindow)
 }
 
 func (d *fleetOtpDeps) NowMs() int64 { return time.Now().UnixMilli() }

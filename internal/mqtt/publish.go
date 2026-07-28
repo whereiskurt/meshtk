@@ -14,6 +14,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// BitfieldOkToMqtt is Data.bitfield bit 0 (BITFIELD_OK_TO_MQTT): the origin
+// approves MQTT upload. Real firmware has stamped the bitfield on every packet
+// since 2.5.0, and 2.8 uses its PRESENCE to tell modern zero-hop packets apart
+// from pre-2.3 "pre-hop" firmware — a decoded packet with hop_start=0 and NO
+// bitfield is dropped on ingest (Router::handleReceived pre-hop drop, observed
+// live 2026-07-28: a 2.8.0.dafa583 radio discarded the entire fleet). Set it on
+// every Data we build; it rides inside the encrypted payload so no transport
+// layer can strip it.
+const BitfieldOkToMqtt uint32 = 1
+
 func (c *MqttClient) PublishNodeInfo(from uint32, to uint32, topic string, longName, shortName string, pubKey []byte, hwModel meshtastic.HardwareModel, role meshtastic.Config_DeviceConfig_Role) error {
 	return c.publishNodeInfoRetain(from, to, topic, longName, shortName, pubKey, hwModel, role, true)
 }
@@ -59,8 +69,9 @@ func (c *MqttClient) publishNodeInfoRetain(from uint32, to uint32, topic string,
 func (c *MqttClient) PublishMessagePlain(from uint32, to uint32, topic string, portNum meshtastic.PortNum, payload []byte) error {
 	// Create Data protobuf
 	data := &meshtastic.Data{
-		Portnum: portNum,
-		Payload: payload,
+		Portnum:  portNum,
+		Payload:  payload,
+		Bitfield: proto.Uint32(BitfieldOkToMqtt),
 	}
 
 	// Create a random message ID
@@ -81,6 +92,7 @@ func (c *MqttClient) PublishMessagePlain(from uint32, to uint32, topic string, p
 		ViaMqtt:  true,
 		RxTime:   uint32(time.Now().Unix()),
 		HopLimit: 5,
+		HopStart: 5,
 	}
 
 	// Create ServiceEnvelope
@@ -133,8 +145,9 @@ func (c *MqttClient) PublishMessageEncrypted(from uint32, to uint32, topic strin
 
 func (c *MqttClient) publishMessageEncrypted(from uint32, to uint32, topic string, portNum meshtastic.PortNum, payload []byte, retain bool) error {
 	data := &meshtastic.Data{
-		Portnum: portNum,
-		Payload: payload,
+		Portnum:  portNum,
+		Payload:  payload,
+		Bitfield: proto.Uint32(BitfieldOkToMqtt),
 	}
 
 	// Serialize the data
@@ -173,6 +186,9 @@ func (c *MqttClient) publishMessageEncrypted(from uint32, to uint32, topic strin
 		ViaMqtt:  true,
 		RxSnr:    2,
 		HopLimit: 3,
+		// Mirror hop_limit like a fresh firmware send: 2.8 ingest drops any
+		// packet where hop_start < hop_limit as provably corrupt.
+		HopStart: 3,
 	}
 
 	// Create ServiceEnvelope
@@ -222,6 +238,7 @@ func (c *MqttClient) PublishACK(from uint32, to uint32, topic string, requestId 
 		Portnum:   meshtastic.PortNum_ROUTING_APP,
 		Payload:   routingBytes,
 		RequestId: requestId,
+		Bitfield:  proto.Uint32(BitfieldOkToMqtt),
 	}
 
 	// Serialize the data
@@ -404,8 +421,9 @@ func (c *MqttClient) PublishPKIMessage(from uint32, to uint32, topic string, por
 func (c *MqttClient) BuildPKIMessage(from uint32, to uint32, portNum meshtastic.PortNum, payload []byte, senderPrivateKey []byte, recipientPublicKey []byte) ([]byte, error) {
 	// Create Data protobuf
 	data := &meshtastic.Data{
-		Portnum: portNum,
-		Payload: payload,
+		Portnum:  portNum,
+		Payload:  payload,
+		Bitfield: proto.Uint32(BitfieldOkToMqtt),
 	}
 
 	// Serialize the data

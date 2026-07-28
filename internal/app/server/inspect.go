@@ -278,10 +278,15 @@ func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 		return fmt.Errorf("cannot rewrite packet is PKI encrypted"), false
 	}
 
-	dataBytes, _ := proto.Marshal(&meshtastic.Data{
-		Portnum: ip.Meshtastic.PortNum,
-		Payload: []byte(ip.Meshtastic.PayloadString),
-	})
+	// Preserve the original bitfield: 2.8 firmware drops decoded packets whose
+	// hop_start is 0 and bitfield is absent (pre-hop drop), so re-encoding a
+	// rewritten payload without it would make the message invisible to radios.
+	rewritten := &meshtastic.Data{
+		Portnum:  ip.Meshtastic.PortNum,
+		Payload:  []byte(ip.Meshtastic.PayloadString),
+		Bitfield: ip.Meshtastic.Decoded.Bitfield,
+	}
+	dataBytes, _ := proto.Marshal(rewritten)
 
 	// Prepare the encrypted payload
 	encrypted := make([]byte, len(dataBytes))

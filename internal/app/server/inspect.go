@@ -311,6 +311,24 @@ func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 	return nil, false
 }
 
+// RemarshalEnvelope serializes the (possibly mutated) parsed ServiceEnvelope
+// back into the raw MQTT PUBLISH payload so struct edits actually reach the
+// wire — the proxy forwards ip.Raw.MQTT bytes, not the parsed structs. Only
+// outer MeshPacket fields can be edited this way; payload edits must go
+// through RewritePayloadString (re-encrypt). protobuf-go retains unknown
+// fields across the round-trip, so unmodeled fields survive.
+func (ip *InspectorPacket) RemarshalEnvelope() error {
+	switch p := (*ip.Raw.MQTT).(type) {
+	case *packets.PublishPacket:
+		payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
+		if err != nil {
+			return fmt.Errorf("failed to marshal Meshtastic envelope: %v", err)
+		}
+		p.Payload = payloadBytes
+	}
+	return nil
+}
+
 func (ip *InspectorPacket) WriteLimiterLog(decision Decision, tokenCount float64, penalty time.Duration) string {
 	var action_log string
 	switch decision {

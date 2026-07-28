@@ -88,19 +88,38 @@ func rewriteRules() []Rule {
 	return []Rule{
 		{
 			Name:        "RewriteHopLimit",
-			Description: "Rewrite packets to adjust hop limit",
+			Description: "Clamp oversized hop budgets before fan-out",
+			// RF flood-radius cap: every downlink-enabled radio is an MQTT→RF
+			// gateway that rebroadcasts broadcasts with the packet's hop budget,
+			// so one uplink with hop_limit 7 gets amplified across the whole con
+			// mesh. Clamp hop_limit to 3 (the fleet/firmware default). hop_start
+			// > 7 is clamped to HOP_MAX 7 — firmware rejects the whole packet at
+			// ingest otherwise. hop_start is never pushed below hop_limit: 2.8
+			// drops hop_start < hop_limit as provably corrupt (pre-hop drop).
+			// The mutation only reaches the wire via RemarshalEnvelope — without
+			// it this rule is a silent no-op (it was, until 2026-07-28).
 			Matcher: func(ip *InspectorPacket) bool {
-				// Check if the packet is a Meshtastic packet
-				if ip.Raw.Meshtastic == nil ||
-					ip.Raw.Meshtastic.Packet == nil ||
-					ip.Raw.Meshtastic.Packet.HopLimit <= 3 {
+				if ip.Raw.Meshtastic == nil || ip.Raw.Meshtastic.Packet == nil {
 					return false
 				}
-				ip.Raw.Meshtastic.Packet.HopLimit = 3
+				pkt := ip.Raw.Meshtastic.Packet
+				if pkt.HopLimit <= 3 && pkt.HopStart <= 7 {
+					return false
+				}
+				if pkt.HopLimit > 3 {
+					pkt.HopLimit = 3
+				}
+				if pkt.HopStart > 7 {
+					pkt.HopStart = 7
+				}
+				if err := ip.RemarshalEnvelope(); err != nil {
+					ip.Log.Errorf("hop clamp remarshal failed: %v", err)
+					return false
+				}
 				return true
 			},
 			Action: Rewrote,
-			Reason: "MQTT Connect packets are rewritten",
+			Reason: "Hop budget clamped (RF flood-radius cap)",
 		},
 		{
 			Name:        "RewriteHelloGoodbye",

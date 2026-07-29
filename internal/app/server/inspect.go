@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	v5 "github.com/eclipse/paho.golang/packets"
 	"github.com/eclipse/paho.mqtt.golang/packets"
 	proxyproto "github.com/pires/go-proxyproto"
 	log "github.com/sirupsen/logrus"
@@ -21,6 +22,12 @@ type InspectorPacket struct {
 	Log          *log.Logger
 	Raw          *RawPacket
 	AuthRejected bool
+	// WireRewritten records that a rule mutated the raw packet, so the forwarder
+	// must re-encode it instead of relaying the bytes it captured off the wire.
+	// The v5 uplink loop has both options available and forwarding BOTH -- or
+	// mutating the struct while forwarding the original frame -- is the exact
+	// silent-no-op failure mode meshtk#22 shipped.
+	WireRewritten bool
 
 	MQTT struct {
 		Type   string
@@ -44,7 +51,13 @@ type InspectorPacket struct {
 	}
 }
 type RawPacket struct {
-	MQTT       *packets.ControlPacket
+	MQTT *packets.ControlPacket
+	// MQTT5 carries the packet for MQTT 5.0 connections. Exactly one of MQTT
+	// and MQTT5 is ever non-nil: the two codecs are separate modules with
+	// separate wire formats, and synthesizing a 3.1.1 shim for a v5 packet
+	// would let rules mutate something that never reaches the wire (meshtk#22).
+	// Anything reading Raw.MQTT must nil-guard first.
+	MQTT5      *v5.ControlPacket
 	Meshtastic *meshtastic.ServiceEnvelope
 }
 
@@ -60,6 +73,10 @@ type ConnectionInfo struct {
 	// publish back to a subscriber of its own topic (MQTT 3.1.1 has no no-local),
 	// and pushing a radio's own packets back down its BLE pipe is pure waste.
 	GatewayID string
+	// ProtocolVersion is the MQTT protocol level this connection negotiated
+	// (4 = 3.1.1, 5 = v5). Stamped by the CONNECT inspector, which REPLACES the
+	// ConnTrack entry -- a version stamped before that point is lost.
+	ProtocolVersion byte
 }
 
 func (i *InspectorPacket) String() string {
@@ -273,6 +290,46 @@ func (n *ServerCmd) DecryptMeshtastic(id, from uint32, payload []byte) (decoded 
 	return nil, "", nil, fmt.Errorf("failed to decrypt data with any cipher")
 }
 
+// setPublishPayload writes b into the PUBLISH packet this InspectorPacket
+// actually carries, dispatching on which codec produced it: a 3.1.1 connection
+// fills Raw.MQTT, a v5 connection fills Raw.MQTT5, and exactly one is ever
+// non-nil.
+//
+// Both rewrite paths funnel through here for two reasons. First, the bare
+// `(*ip.Raw.MQTT)` dereference this replaces PANICS on a v5 packet, and a panic
+// in the proxy read loop takes down the whole process. Second -- the subtler
+// half -- if the old type switch had merely failed to match, the hop clamp and
+// the payload censor would have become silent no-ops for every v5 client:
+// rules would report Rewrote while the original bytes went to the broker. That
+// is meshtk#22 exactly, so a rewrite that cannot reach the wire is an error
+// here, never a quiet nothing.
+func (ip *InspectorPacket) setPublishPayload(b []byte) error {
+	switch {
+	case ip.Raw == nil:
+		return fmt.Errorf("cannot set publish payload: no raw packet")
+
+	case ip.Raw.MQTT != nil:
+		p, ok := (*ip.Raw.MQTT).(*packets.PublishPacket)
+		if !ok {
+			return fmt.Errorf("cannot set publish payload: 3.1.1 packet is %T, not a PUBLISH", *ip.Raw.MQTT)
+		}
+		p.Payload = b
+
+	case ip.Raw.MQTT5 != nil:
+		p, ok := ip.Raw.MQTT5.Content.(*v5.Publish)
+		if !ok {
+			return fmt.Errorf("cannot set publish payload: v5 packet is %T, not a PUBLISH", ip.Raw.MQTT5.Content)
+		}
+		p.Payload = b
+
+	default:
+		return fmt.Errorf("cannot set publish payload: neither Raw.MQTT nor Raw.MQTT5 is set")
+	}
+
+	ip.WireRewritten = true
+	return nil
+}
+
 func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 	if ip.Meshtastic.WasPKIEncrypted {
 		return fmt.Errorf("cannot rewrite packet is PKI encrypted"), false
@@ -299,13 +356,12 @@ func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 		Encrypted: encrypted,
 	}
 
-	switch p := (*ip.Raw.MQTT).(type) {
-	case *packets.PublishPacket:
-		payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
-		if err != nil {
-			return fmt.Errorf("failed to marshal Meshtastic payload: %v", err), false
-		}
-		p.Payload = payloadBytes
+	payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Meshtastic payload: %v", err), false
+	}
+	if err := ip.setPublishPayload(payloadBytes); err != nil {
+		return err, false
 	}
 
 	return nil, false
@@ -318,15 +374,11 @@ func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 // through RewritePayloadString (re-encrypt). protobuf-go retains unknown
 // fields across the round-trip, so unmodeled fields survive.
 func (ip *InspectorPacket) RemarshalEnvelope() error {
-	switch p := (*ip.Raw.MQTT).(type) {
-	case *packets.PublishPacket:
-		payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
-		if err != nil {
-			return fmt.Errorf("failed to marshal Meshtastic envelope: %v", err)
-		}
-		p.Payload = payloadBytes
+	payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Meshtastic envelope: %v", err)
 	}
-	return nil
+	return ip.setPublishPayload(payloadBytes)
 }
 
 func (ip *InspectorPacket) WriteLimiterLog(decision Decision, tokenCount float64, penalty time.Duration) string {

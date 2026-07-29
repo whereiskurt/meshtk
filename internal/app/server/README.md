@@ -50,6 +50,78 @@ flowchart LR
     D -- No --> F[Drop / Reject]
 ```
 
+# MQTT protocol versions (dual codec)
+
+The proxy speaks **MQTT 3.1.1 and MQTT 5.0**, chosen per connection. The first
+packet's protocol level is peeked without consuming it, and the whole connection
+— both directions — then uses the matching codec. Meshtastic firmware and iOS
+speak 3.1.1; Meshtastic-Android 2.8 (`mqttastic`) speaks 5.0 and does **not**
+fall back, so both codecs have to work.
+
+| Protocol level | Behaviour |
+|---|---|
+| 4 (MQTT 3.1.1) | Original path, unchanged |
+| 5 (MQTT 5.0) | v5 codec: CONNECT auth + credential swap, PUBLISH inspection, rules, rewrites, downlink logging and self-echo suppression — all the same rules as 3.1.1 |
+| > 5 | Refused before the broker is dialled |
+
+Only CONNECT, CONNACK and PUBLISH are ever parsed on a v5 connection. Every
+other packet — SUBSCRIBE, PUBACK, PINGREQ, DISCONNECT, AUTH, anything carrying
+a property the codec does not model — is relayed as the exact bytes that came
+in. A packet the codec cannot parse is therefore a non-event rather than a
+dropped connection.
+
+## Log actions to grep
+
+All v5 lines follow the existing `action=..., ip=..., username=...` grammar.
+
+| Line | Meaning | What to do |
+|---|---|---|
+| `action=MQTT5_CONNECT` | A v5 client authenticated successfully. Logged with the client's ORIGINAL username, so this is the Android-adoption counter. | Nothing — this is the healthy case |
+| `action=MQTT5_REJECT` | Protocol level above 5. Answered `0x84` before the broker is dialled. | Some client is speaking a version that does not exist yet; check what it is |
+| `action=MQTT5_AUTH_METHOD` | The CONNECT asked for enhanced auth (`Authentication Method` property). Answered `0x8C`. | Kept separate from `AUTH_REJECT` on purpose: if this appears at volume, mqttastic started using enhanced auth and every Android client is being refused |
+| `action=MQTT5_PARSE_FAIL` | A packet could not be decoded. On CONNECT this fails closed (no broker dial); on PUBLISH the raw frame is relayed and the session survives. | At volume, a client is sending a property the codec does not model — investigate before it becomes a blind spot |
+| `action=AUTH_REJECT` | Bad or missing credentials. Answered `0x87`. | Same meaning as on the 3.1.1 path |
+| `action=BLOCK, reason=topic_alias_uplink` | A v5 client published with a topic alias or an empty topic. | Spec-violating client — aliases are suppressed at CONNECT, so it should be impossible |
+
+## CONNACK reason codes
+
+The version-correct code matters: 3.1.1's return code `0x05` is meaningless in
+v5 and surfaces in the Meshtastic app as a bogus "check credentials" error.
+
+| Code | Meaning | When |
+|---|---|---|
+| `0x87` Not Authorized | Bad credentials, empty username, or an authenticator error | Wire bytes `2003008700` |
+| `0x8C` Bad Authentication Method | CONNECT carried an `Authentication Method` property | Wire bytes `2003008c00` |
+| `0x84` Unsupported Protocol Version | Protocol level **above 5** only — never for a v5 client | Wire bytes `2003008400` |
+
+## Topic aliases are suppressed in both directions
+
+mosquitto advertises `Topic Alias Maximum = 10` by default. That would let a v5
+client publish with an **empty topic** plus a Topic Alias, which blinds every
+topic-based rule and every `msh/...` log line while the broker resolves the
+alias and fans the packet out perfectly normally.
+
+The proxy strips `TopicAliasMaximum` from the client's CONNECT (so the broker
+never aliases downlink) and from the broker's CONNACK (so the client never
+aliases uplink), and blocks any uplink PUBLISH that arrives aliased anyway. No
+broker configuration change is involved, so a `mosquitto.conf` drift cannot
+undo it.
+
+## Testing against a real broker
+
+`internal/app/server/proxy_v5_e2e_test.go` runs a live mosquitto behind a live
+proxy listener with a v5 client and a 3.1.1 client in the same run. It is gated
+so a plain `go test ./...` stays hermetic:
+
+```bash
+MESHTK_E2E=1 go test ./internal/app/server/ -run TestE2EDualCodec -v
+MESHTK_E2E=1 MESHTK_E2E_DOCKER=1 go test ./internal/app/server/ -run TestE2EDualCodec
+```
+
+The broker is resolved as Homebrew mosquitto, then `mosquitto` on `PATH`, then a
+docker `alpine:3.21` container (the production image base). Credentials are
+generated at run time into a temp dir; nothing credential-shaped is committed.
+
 # Rules and Rewrites
 
 Rules block/accept packets and can also rewrite MQTT or the Meshtastic details.

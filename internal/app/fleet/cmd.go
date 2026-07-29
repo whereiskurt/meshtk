@@ -729,9 +729,12 @@ func staggerDelay(nextAt, now time.Time, spacing time.Duration) (delay time.Dura
 // keeps repeats off the screen. Consecutive lines to the same recipient are
 // staggered pendingFlushSpacing apart: a same-millisecond 2-line burst down the
 // BLE pipe regularly delivered exactly one line.
-// Do NOT use it from handleLyricsChat — ricky already emits ~60 messages per
-// request and a 3x retry would flood the channel, re-creating the drowning
-// problem that hid this bug in the first place.
+// Do NOT use it for the lyric body in handleLyricsChat — ricky already emits
+// ~60 messages per request and retrying every line would flood the channel,
+// re-creating the drowning problem that hid this bug in the first place. The
+// single exception is the FINAL lyric line: it carries the flag, arrives ~2
+// minutes into playback (past the iOS proxy's ~60s reconnect cadence), and a
+// QoS0 publish into a reconnect gap is silently dropped.
 func (n *FleetCmd) sendPKIReplyReliable(toFleetIdx int, to, from uint32, topic string, reply string) {
 	// `to` is the replying ghost, `from` is the recipient radio (swapped for the reply).
 	replyTopic, envelope, ok := n.buildPKIReply(toFleetIdx, to, from, topic, reply)
@@ -1051,7 +1054,15 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 				return
 			case <-time.After(entry.timestamp - time.Since(startTime)):
 				line := numberLyric(i, entry.text)
-				n.sendPKIReply(toFleetIdx, to, from, topic, line)
+				if i == len(lyricEntries)-1 {
+					// The final line carries the flag. By now the song has run
+					// ~2 minutes — past the iOS proxy's ~60s reconnect cadence —
+					// so this is the line most likely to land in a QoS0 gap.
+					// Reliable path: retry spread + pending flush on reconnect.
+					n.sendPKIReplyReliable(toFleetIdx, to, from, topic, line)
+				} else {
+					n.sendPKIReply(toFleetIdx, to, from, topic, line)
+				}
 				n.Config.Log.Debugf("Sent lyric at %v: %s", entry.timestamp, line)
 			}
 		}

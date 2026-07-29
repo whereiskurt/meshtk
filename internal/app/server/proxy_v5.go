@@ -86,14 +86,36 @@ func writeMqtt5Connack(conn net.Conn, reason byte) error {
 	return err
 }
 
+// writeMqtt5Disconnect answers a v5 client with a bare DISCONNECT carrying the
+// given reason code and no properties, shaped exactly like writeMqtt5Connack.
+//
+// DISCONNECT and not a second CONNACK: a CONNACK is only legal in response to a
+// CONNECT on a fresh session (MQTT 5.0 3.2), so the spec-correct way to answer a
+// mid-session protocol violation is to tell the client why and close.
+func writeMqtt5Disconnect(conn net.Conn, reason byte) error {
+	d := v5.NewControlPacket(v5.DISCONNECT)
+	d.Content.(*v5.Disconnect).ReasonCode = reason
+	_, err := d.WriteTo(conn)
+	return err
+}
+
 // handleProxyV5 is the client->backend read loop for MQTT 5.0 connections. It
 // is a sibling of handleProxy, not a modification of it: the 3.1.1 body must
 // stay byte-for-byte unchanged, so the version decision made at the preflight
 // dispatches into a whole separate handler rather than threading a codec
 // abstraction through the existing loops.
 //
-// Only CONNECT is parsed here. Everything else is relayed as captured bytes;
-// v5 PUBLISH inspection lands in plan 68-02 and fails closed until it does.
+// Every frame type has a stated outcome: inspected (CONNECT, PUBLISH), refused
+// (the credential/auth-bearing and server-only types), or relayed as captured
+// bytes. Nothing falls through.
+//
+// The PUBLISH posture is FAIL CLOSED, and it is worth stating here because a
+// reader auditing the security model should not have to find it 100 lines down.
+// A PUBLISH the codec cannot parse is hand-parsed and inspected anyway
+// (proxy_v5_rawpublish.go); a PUBLISH nothing can read at all is refused and the
+// connection ends, exactly as the 3.1.1 loop ends a connection on a packet its
+// codec cannot read. Relaying an uninspected PUBLISH was CR-04 -- the retired
+// accepted risk T-68-02-06 -- and it is not the posture any more.
 func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAddr string) {
 	// The preflight peek did not consume anything, so the CONNECT is still
 	// queued on the reader.
@@ -176,22 +198,91 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 				return
 			}
 
-			if pktType == v5.PUBLISH {
+			// EVERY frame refreshes the tracker entry, before any type
+			// dispatch -- the 3.1.1 loop does the same by calling SetConnTrack
+			// in every inspectRawPacket branch, keepalives included. The
+			// reaper purges anything idle for 180s, which is far shorter than
+			// the Meshtastic publish cadence (position is ~15 min), so without
+			// this line a live session loses its entry between publishes and
+			// the next PUBLISH is Blocked with "Username required for MQTT".
+			n.touchConnTrack(socketAddr)
+
+			switch pktType {
+			case v5.PUBLISH:
 				// Inspection, rules, rewrites and forwarding all happen inside;
 				// a false return means the connection must be dropped, exactly
 				// as handleProxy returns on a Block decision.
 				if !n.handleV5PublishUplink(backendConn, socketAddr, frame) {
 					return
 				}
-				continue
-			}
 
-			// Everything else -- SUBSCRIBE, PUBACK, PINGREQ, DISCONNECT, AUTH,
-			// anything carrying an unmodeled property -- goes out exactly as it
-			// came in.
-			if _, err := backendConn.Write(frame); err != nil {
-				n.Config.Log.Errorf("failed to write to backend: %v", err)
+			case v5.SUBSCRIBE:
+				// Parse a COPY of the captured bytes, never the socket. The
+				// parse is READ-ONLY and the CAPTURED frame is what gets
+				// relayed: re-encoding would risk the same
+				// subscription-identifier round-trip hazard that keeps the
+				// downlink path from re-encoding.
+				sp, perr := v5.ReadPacket(bytes.NewReader(frame))
+				if perr != nil {
+					// Relay, do not close. A SUBSCRIBE carries no credentials
+					// and no topic Block rule exists today, so a loud relay
+					// beats tearing down a live session over one unmodelled
+					// property. Accepted risk T-68-06-05.
+					n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, mqtt_type=SUBSCRIBE, reason=%v", socketAddr, perr)
+					if !n.writeToBackend(backendConn, frame) {
+						return
+					}
+					continue
+				}
+
+				ip := n.inspectV5Subscribe(socketAddr, sp)
+				result := n.PacketDecider.Decide(ip)
+				switch result.Decision {
+				case Allow:
+					if n.Config.Server.ShouldLogAllows {
+						ip.WriteDecisionLog(result)
+					}
+				case Block:
+					if n.Config.Server.ShouldLogBlocks {
+						ip.WriteDecisionLog(result)
+					}
+					n.Config.Log.Warnf("[proxy] BLOCK subscribe topics=%v reason=%q user=%s ip=%s",
+						ip.MQTT.Topics, result.Reason, ip.Track.Username, ip.Track.SocketAddress)
+					return
+				default:
+					if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
+						ip.WriteDecisionLog(result)
+					}
+				}
+
+				if !n.writeToBackend(backendConn, frame) {
+					return
+				}
+
+			case v5.CONNECT, v5.AUTH, v5.CONNACK, v5.SUBACK, v5.UNSUBACK, v5.PINGRESP:
+				// Refused, and refused BEFORE anything is written to the
+				// broker. A second CONNECT and an AUTH frame both carry the
+				// client's own credentials or auth state -- relaying either
+				// hands mosquitto exactly what re-encoding the establishing
+				// CONNECT exists to withhold, and inspect_v5.go's enhanced-auth
+				// branch asserts an AUTH packet never enters an authenticated
+				// session. CONNACK/SUBACK/UNSUBACK/PINGRESP are server-to-client
+				// only; a client sending one is broken or probing.
+				n.InspectorLogger.Warnf("action=MQTT5_PROTOCOL_VIOLATION, ip=%s, mqtt_type=%d, reason=illegal_frame_on_established_session",
+					socketAddr, pktType)
+				writeMqtt5Disconnect(conn, v5.DisconnectProtocolError)
 				return
+
+			default:
+				// PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE, UNSUBSCRIBE,
+				// PINGREQ, DISCONNECT -- and any type this codec does not model
+				// -- relay exactly as captured. Forwarding unknown types rather
+				// than dropping them is a locked phase decision; the point of
+				// the switch is that it is now stated rather than a fallthrough.
+				if _, err := backendConn.Write(frame); err != nil {
+					n.Config.Log.Errorf("failed to write to backend: %v", err)
+					return
+				}
 			}
 		}
 	}
@@ -206,14 +297,62 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 	// survives a parse failure.
 	cp, err := v5.ReadPacket(bytes.NewReader(frame))
 	if err != nil {
-		// Relay, do not close. paho.golang hard-errors on any property id
-		// outside its table, and killing a live session over one unmodeled
-		// property would be a worse failure than relaying it: mosquitto's ACL
-		// still constrains the swapped `public` identity, and every occurrence
-		// is greppable. Accepted risk T-68-02-06 -- revisit if this line shows
-		// up at volume in prod.
+		// The parse-fail line stays: it is the signal that tells ops this path
+		// was taken at all, and 68-08 watches its rate in prod.
 		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, mqtt_type=PUBLISH, reason=%v", socketAddr, err)
-		return n.writeToBackend(backendConn, frame)
+
+		// This branch used to relay the frame and return true, which skipped --
+		// in order -- the topic-alias guard, the inspector, PacketDecider.Decide,
+		// RewriteHopLimit, BlockInvalidEncryption and every Block rule. Since
+		// paho.golang hard-errors on ANY property id outside its table, three
+		// client-chosen bytes bought a permanent inspection exemption from the
+		// control that exists to stop fleet-wide RF flood amplification. That was
+		// accepted risk T-68-02-06; verification reproduced it as PROBE-A and it
+		// is now closed by hand-parsing the frame instead.
+		//
+		// PUBLISH is a HANDLED type, so this does not contradict the locked
+		// "unknown packet types forward raw" decision -- that governs the types
+		// the proxy has no reason to inspect, and they still relay in the frame
+		// switch's default arm.
+		rp, perr := parseV5PublishFrame(frame)
+		if perr != nil {
+			// Fail closed. Only a frame whose own length prefixes disagree with
+			// its bytes reaches here, which is a frame mosquitto would refuse
+			// too, and the 3.1.1 loop ends the connection on any packet its
+			// codec cannot read. One line per socket, since the socket closes.
+			n.InspectorLogger.Warnf("action=MQTT5_PUBLISH_HEADER_FAIL, ip=%s, reason=%v", socketAddr, perr)
+			n.Config.Log.Warnf("[proxy] BLOCK from=!%08x to=!%08x reason=%q user=%s ip=%s",
+				0, 0, "unreadable v5 PUBLISH header", "", socketAddr)
+			return false
+		}
+
+		// Same guard, same reason as the parseable path: a blank topic blinds
+		// every topic rule and every msh/... log line while the broker resolves
+		// the alias and fans the packet out perfectly normally.
+		if rp.Topic == "" {
+			n.InspectorLogger.Warnf("action=BLOCK, ip=%s, reason=topic_alias_uplink", socketAddr)
+			return false
+		}
+
+		ip := n.inspectV5RawPublish(socketAddr, rp)
+		if !n.decideV5Publish(ip) {
+			return false
+		}
+
+		// Forward exactly once, same contract as below. The splice preserves the
+		// property bytes the codec refused to parse, which a re-encode could not;
+		// a splice failure Blocks and drops rather than quietly forwarding the
+		// unclamped original.
+		out := frame
+		if ip.WireRewritten {
+			spliced, serr := spliceV5PublishPayload(frame, rp, rp.Payload)
+			if serr != nil {
+				n.Config.Log.Errorf("failed to splice rewritten v5 PUBLISH payload: %v", serr)
+				return false
+			}
+			out = spliced
+		}
+		return n.writeToBackend(backendConn, out)
 	}
 	p, ok := cp.Content.(*v5.Publish)
 	if !ok {
@@ -232,7 +371,35 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 	}
 
 	ip := n.inspectV5Publish(socketAddr, cp)
+	if !n.decideV5Publish(ip) {
+		return false
+	}
 
+	// Forward EXACTLY ONCE, and the choice is explicit. A rule that mutated the
+	// packet set WireRewritten, so the re-encode is what goes out (topic, QoS
+	// bits, packet id and the whole properties block all survive the round
+	// trip). Nothing mutated it, so the captured bytes go out untouched.
+	// Writing both -- or mutating the struct and forwarding the original frame
+	// -- is precisely the silent no-op meshtk#22 shipped.
+	out := frame
+	if ip.WireRewritten {
+		var buf bytes.Buffer
+		if _, err := cp.WriteTo(&buf); err != nil {
+			n.Config.Log.Errorf("failed to serialize v5 PUBLISH: %v", err)
+			return false
+		}
+		out = buf.Bytes()
+	}
+
+	return n.writeToBackend(backendConn, out)
+}
+
+// decideV5Publish runs the decide/log sequence for one v5 uplink PUBLISH and
+// reports whether the connection may continue, mirroring handleProxy's 3.1.1
+// sequence. It is shared by the codec-parsed and hand-parsed paths deliberately:
+// two copies of this switch would be two chances for the exempt path to drift
+// back into a quieter, softer decision than the one the fleet is judged by.
+func (n *ServerCmd) decideV5Publish(ip *InspectorPacket) bool {
 	result := n.PacketDecider.Decide(ip)
 	switch result.Decision {
 	case Allow:
@@ -255,24 +422,7 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 			ip.WriteDecisionLog(result)
 		}
 	}
-
-	// Forward EXACTLY ONCE, and the choice is explicit. A rule that mutated the
-	// packet set WireRewritten, so the re-encode is what goes out (topic, QoS
-	// bits, packet id and the whole properties block all survive the round
-	// trip). Nothing mutated it, so the captured bytes go out untouched.
-	// Writing both -- or mutating the struct and forwarding the original frame
-	// -- is precisely the silent no-op meshtk#22 shipped.
-	out := frame
-	if ip.WireRewritten {
-		var buf bytes.Buffer
-		if _, err := cp.WriteTo(&buf); err != nil {
-			n.Config.Log.Errorf("failed to serialize v5 PUBLISH: %v", err)
-			return false
-		}
-		out = buf.Bytes()
-	}
-
-	return n.writeToBackend(backendConn, out)
+	return true
 }
 
 // writeToBackend relays a frame and reports whether the connection is still

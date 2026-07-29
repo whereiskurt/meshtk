@@ -52,12 +52,19 @@ type InspectorPacket struct {
 }
 type RawPacket struct {
 	MQTT *packets.ControlPacket
-	// MQTT5 carries the packet for MQTT 5.0 connections. Exactly one of MQTT
-	// and MQTT5 is ever non-nil: the two codecs are separate modules with
-	// separate wire formats, and synthesizing a 3.1.1 shim for a v5 packet
-	// would let rules mutate something that never reaches the wire (meshtk#22).
-	// Anything reading Raw.MQTT must nil-guard first.
+	// MQTT5 carries the packet for MQTT 5.0 connections, and MQTT5Raw carries a
+	// hand-parsed view of a v5 PUBLISH the codec refused to read (see
+	// proxy_v5_rawpublish.go). AT MOST ONE of MQTT, MQTT5 and MQTT5Raw is ever
+	// non-nil, and all three may be nil: the codecs are separate modules with
+	// separate wire formats, and synthesizing a 3.1.1 shim for a v5 packet would
+	// let rules mutate something that never reaches the wire (meshtk#22).
+	//
+	// EVERY reader must nil-guard the field it wants -- rules.go's
+	// AllowMQTTControl and inspect.go's setPublishPayload are the two that
+	// dispatch across all of them, and a bare dereference in either takes down
+	// the whole proxy process rather than one connection.
 	MQTT5      *v5.ControlPacket
+	MQTT5Raw   *v5RawPublish
 	Meshtastic *meshtastic.ServiceEnvelope
 }
 
@@ -292,8 +299,9 @@ func (n *ServerCmd) DecryptMeshtastic(id, from uint32, payload []byte) (decoded 
 
 // setPublishPayload writes b into the PUBLISH packet this InspectorPacket
 // actually carries, dispatching on which codec produced it: a 3.1.1 connection
-// fills Raw.MQTT, a v5 connection fills Raw.MQTT5, and exactly one is ever
-// non-nil.
+// fills Raw.MQTT, a v5 connection fills Raw.MQTT5, and a v5 PUBLISH the codec
+// refused to read fills Raw.MQTT5Raw with a hand-parsed view instead. At most
+// one of the three is ever non-nil.
 //
 // Both rewrite paths funnel through here for two reasons. First, the bare
 // `(*ip.Raw.MQTT)` dereference this replaces PANICS on a v5 packet, and a panic
@@ -322,8 +330,15 @@ func (ip *InspectorPacket) setPublishPayload(b []byte) error {
 		}
 		p.Payload = b
 
+	case ip.Raw.MQTT5Raw != nil:
+		// No type assertion to make: parseV5PublishFrame only ever produces a
+		// view of a PUBLISH. The forwarder splices this payload back into the
+		// captured frame, which preserves the very property bytes the codec
+		// refused to parse -- see spliceV5PublishPayload.
+		ip.Raw.MQTT5Raw.Payload = b
+
 	default:
-		return fmt.Errorf("cannot set publish payload: neither Raw.MQTT nor Raw.MQTT5 is set")
+		return fmt.Errorf("cannot set publish payload: none of Raw.MQTT, Raw.MQTT5 or Raw.MQTT5Raw is set")
 	}
 
 	ip.WireRewritten = true
@@ -469,6 +484,24 @@ func (n *ServerCmd) SetConnTrack(ip *InspectorPacket) {
 		connInfo.ConnectTime = time.Now().Unix()
 		n.ConnTrack[ip.Track.SocketAddress] = connInfo
 		ip.Track = connInfo
+	}
+	n.ConnMutex.Unlock()
+}
+
+// touchConnTrack refreshes a connection's idle timer and nothing else. It is the
+// codec-independent half of what SetConnTrack does for the 3.1.1 loop, minus the
+// InspectorPacket -- the v5 relay branch never builds one, but the reaper in
+// SetupTracker deletes any entry with now-ConnectTime > 180 regardless.
+//
+// Update-if-exists ONLY, exactly like SetConnTrack. Creating an entry here would
+// produce a ConnectionInfo with an empty Username, which is precisely what
+// RequireMQTTUserName exists to Block -- a tracker entry must only ever be born
+// from a CONNECT.
+func (n *ServerCmd) touchConnTrack(socketAddr string) {
+	n.ConnMutex.Lock()
+	if connInfo, exists := n.ConnTrack[socketAddr]; exists {
+		connInfo.ConnectTime = time.Now().Unix()
+		n.ConnTrack[socketAddr] = connInfo
 	}
 	n.ConnMutex.Unlock()
 }

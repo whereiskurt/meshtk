@@ -3,6 +3,7 @@ package server
 import (
 	"strings"
 
+	v5 "github.com/eclipse/paho.golang/packets"
 	"github.com/eclipse/paho.mqtt.golang/packets"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 )
@@ -17,24 +18,43 @@ func inspectRules() []Rule {
 			Name:        "AllowMQTTControl",
 			Description: "Allow MQTT control packets (not PUBLISH — those go through meshtastic inspection)",
 			Matcher: func(ip *InspectorPacket) bool {
-				// A v5 packet carries Raw.MQTT5 and leaves Raw.MQTT nil, and the
-				// bare dereference below panics on it -- which takes down the
-				// whole proxy process, not one connection. Raw.MQTT is never nil
-				// on the 3.1.1 path, so this is behavior-preserving for v4.
-				if ip.Raw.MQTT == nil {
-					return false
+				// The 3.1.1 branch is reached FIRST and is unedited, so the
+				// decision sequence proxy_v4_golden_test.go pins cannot move.
+				// A v5 packet carries Raw.MQTT5 and leaves Raw.MQTT nil, and a
+				// bare dereference would panic on it -- which takes down the
+				// whole proxy process, not one connection.
+				if ip.Raw.MQTT != nil {
+					switch (*ip.Raw.MQTT).(type) {
+					case *packets.ConnectPacket,
+						*packets.SubscribePacket,
+						*packets.PubackPacket,
+						*packets.PingreqPacket,
+						*packets.UnsubscribePacket,
+						*packets.DisconnectPacket:
+						return true
+					default:
+						return false
+					}
 				}
-				switch (*ip.Raw.MQTT).(type) {
-				case *packets.ConnectPacket,
-					*packets.SubscribePacket,
-					*packets.PubackPacket,
-					*packets.PingreqPacket,
-					*packets.UnsubscribePacket,
-					*packets.DisconnectPacket:
-					return true
-				default:
-					return false
+				// Same allowlist on the v5 codec, so the control-packet rule
+				// gives identical answers to both. A codec-dependent answer here
+				// is a codec-dependent answer for every rule below it, since
+				// this is the first inspect rule and it short-circuits.
+				if ip.Raw.MQTT5 != nil {
+					switch ip.Raw.MQTT5.Content.(type) {
+					case *v5.Connect,
+						*v5.Subscribe,
+						*v5.Puback,
+						*v5.Pingreq,
+						*v5.Unsubscribe,
+						*v5.Disconnect:
+						return true
+					default:
+						return false
+					}
 				}
+				// Neither codec populated: nothing to allow.
+				return false
 			},
 			Action: Allow,
 			Reason: "MQTT control packets are allowed",

@@ -208,6 +208,49 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 					return
 				}
 
+			case v5.SUBSCRIBE:
+				// Parse a COPY of the captured bytes, never the socket. The
+				// parse is READ-ONLY and the CAPTURED frame is what gets
+				// relayed: re-encoding would risk the same
+				// subscription-identifier round-trip hazard that keeps the
+				// downlink path from re-encoding.
+				sp, perr := v5.ReadPacket(bytes.NewReader(frame))
+				if perr != nil {
+					// Relay, do not close. A SUBSCRIBE carries no credentials
+					// and no topic Block rule exists today, so a loud relay
+					// beats tearing down a live session over one unmodelled
+					// property. Accepted risk T-68-06-05.
+					n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, mqtt_type=SUBSCRIBE, reason=%v", socketAddr, perr)
+					if !n.writeToBackend(backendConn, frame) {
+						return
+					}
+					continue
+				}
+
+				ip := n.inspectV5Subscribe(socketAddr, sp)
+				result := n.PacketDecider.Decide(ip)
+				switch result.Decision {
+				case Allow:
+					if n.Config.Server.ShouldLogAllows {
+						ip.WriteDecisionLog(result)
+					}
+				case Block:
+					if n.Config.Server.ShouldLogBlocks {
+						ip.WriteDecisionLog(result)
+					}
+					n.Config.Log.Warnf("[proxy] BLOCK subscribe topics=%v reason=%q user=%s ip=%s",
+						ip.MQTT.Topics, result.Reason, ip.Track.Username, ip.Track.SocketAddress)
+					return
+				default:
+					if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
+						ip.WriteDecisionLog(result)
+					}
+				}
+
+				if !n.writeToBackend(backendConn, frame) {
+					return
+				}
+
 			case v5.CONNECT, v5.AUTH, v5.CONNACK, v5.SUBACK, v5.UNSUBACK, v5.PINGRESP:
 				// Refused, and refused BEFORE anything is written to the
 				// broker. A second CONNECT and an AUTH frame both carry the

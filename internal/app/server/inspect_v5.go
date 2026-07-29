@@ -122,6 +122,39 @@ func (n *ServerCmd) logDownlinkV5(conn net.Conn, socketAddr string, p *v5.Publis
 	return n.logDownlinkEnvelope(conn, socketAddr, p.Payload, p.Topic)
 }
 
+// inspectV5Subscribe is the v5 mirror of inspectRawPacket's 3.1.1 SUBSCRIBE
+// branch, built exactly like inspectV5Publish. Nothing meshtastic is decoded --
+// a SUBSCRIBE has no payload -- but MQTT.Type and MQTT.Topics are recorded so a
+// topic rule sees the same thing on both codecs. Without this, "topic rules"
+// meant "topic rules for 3.1.1 clients".
+func (n *ServerCmd) inspectV5Subscribe(socketAddr string, cp *v5.ControlPacket) *InspectorPacket {
+	ip := &InspectorPacket{
+		Log:   n.InspectorLogger,
+		Track: &ConnectionInfo{SocketAddress: socketAddr},
+		Raw:   &RawPacket{MQTT5: cp},
+	}
+
+	// Load-bearing for the same reason it is on the PUBLISH path: this swaps in
+	// the tracked ConnectionInfo carrying the ORIGINAL client username, which is
+	// what every rule -- and the decision log line -- keys off. The CONNECT
+	// forwarded to the broker carries the swapped proxy identity instead.
+	n.SetConnTrack(ip)
+
+	s, ok := cp.Content.(*v5.Subscribe)
+	if !ok {
+		return ip
+	}
+
+	ip.MQTT.Type = "SUBSCRIBE"
+	topics := make([]string, 0, len(s.Subscriptions))
+	for _, sub := range s.Subscriptions {
+		topics = append(topics, sub.Topic)
+	}
+	ip.MQTT.Topics = topics
+
+	return ip
+}
+
 // inspectV5Publish is the v5 mirror of inspectRawPacket's 3.1.1 PUBLISH branch.
 // It builds the SAME InspectorPacket the rules engine has always consumed --
 // only Raw.MQTT5 is populated instead of Raw.MQTT, and Raw.Meshtastic, MQTT.Type

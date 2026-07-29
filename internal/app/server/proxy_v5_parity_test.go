@@ -12,6 +12,7 @@ import (
 	"time"
 
 	v5 "github.com/eclipse/paho.golang/packets"
+	"github.com/eclipse/paho.mqtt.golang/packets"
 )
 
 // This file drives the REAL handleProxyV5 read loop end to end -- a client
@@ -455,5 +456,267 @@ func TestV5DisconnectFrameRelayed(t *testing.T) {
 
 	if out := logs.String(); strings.Contains(out, "action=MQTT5_PROTOCOL_VIOLATION") {
 		t.Fatalf("a client DISCONNECT was treated as a protocol violation; log:\n%s", out)
+	}
+}
+
+// --- WR-04: v5 SUBSCRIBE is inspected, judged and codec-independent ---------
+
+const (
+	v5SubTopicA = "msh/US/2/e/dc.run/#"
+	v5SubTopicB = "msh/US/2/e/PKI/#"
+)
+
+// v5SubscribePacket is the two-filter SUBSCRIBE a Meshtastic client sends after
+// CONNECT: the channel tree and the PKI tree.
+func v5SubscribePacket(t *testing.T) *v5.ControlPacket {
+	t.Helper()
+	cp := v5.NewControlPacket(v5.SUBSCRIBE)
+	s := cp.Content.(*v5.Subscribe)
+	s.PacketID = 0x0015
+	s.Subscriptions = []v5.SubOptions{
+		{Topic: v5SubTopicA, QoS: 0},
+		{Topic: v5SubTopicB, QoS: 1},
+	}
+	return cp
+}
+
+// matchingRuleName reproduces RuleBasedDecider.Decide's selection so a test can
+// name the rule that produced a decision. DecisionResult carries only the
+// Decision and the Reason, and "the same Decision" is not the assertion this
+// phase needs: LoadInspectorRules puts AllowMQTTControl first among the inspect
+// rules, so the decider short-circuits before RequireMQTTUserName is consulted
+// and a "not Blocked" check would pass whether or not SetConnTrack ran.
+func matchingRuleName(t *testing.T, d Decider, ip *InspectorPacket) string {
+	t.Helper()
+	rbd, ok := d.(*RuleBasedDecider)
+	if !ok {
+		t.Fatalf("decider is %T, want *RuleBasedDecider", d)
+	}
+	for _, rule := range rbd.Rules {
+		if rule.Matcher(ip) && rule.Action != Rewrote {
+			return rule.Name
+		}
+	}
+	return ""
+}
+
+func allowMQTTControlRule(t *testing.T) Rule {
+	t.Helper()
+	for _, r := range inspectRules() {
+		if r.Name == "AllowMQTTControl" {
+			return r
+		}
+	}
+	t.Fatal("AllowMQTTControl rule not found")
+	return Rule{}
+}
+
+func v5ControlPacketIP(t *testing.T, typ byte) *InspectorPacket {
+	t.Helper()
+	logger, _ := captureLogger()
+	return &InspectorPacket{
+		Log:   logger,
+		Track: &ConnectionInfo{SocketAddress: v5ParityAddr, ProtocolVersion: 5},
+		Raw:   &RawPacket{MQTT5: v5.NewControlPacket(typ)},
+	}
+}
+
+// The 3.1.1 SubscribePacket branch records MQTT.Type and MQTT.Topics so topic
+// rules have something to match on. Without the v5 mirror, topic rules applied
+// to 3.1.1 clients only.
+func TestV5SubscribeReachesDecider(t *testing.T) {
+	n, _ := v5ParityServer(t)
+	n.ConnTrack[v5ParityAddr] = &ConnectionInfo{
+		SocketAddress: v5ParityAddr, Username: v5TestUsername, ProtocolVersion: 5,
+	}
+
+	ip := n.inspectV5Subscribe(v5ParityAddr, v5SubscribePacket(t))
+
+	if ip.MQTT.Type != "SUBSCRIBE" {
+		t.Errorf("MQTT.Type = %q, want SUBSCRIBE", ip.MQTT.Type)
+	}
+	if len(ip.MQTT.Topics) != 2 || ip.MQTT.Topics[0] != v5SubTopicA || ip.MQTT.Topics[1] != v5SubTopicB {
+		t.Fatalf("MQTT.Topics = %v, want [%s %s] in order", ip.MQTT.Topics, v5SubTopicA, v5SubTopicB)
+	}
+	if ip.Raw.MQTT5 == nil {
+		t.Error("Raw.MQTT5 not populated; the rules engine cannot see the packet")
+	}
+}
+
+// SC3 in one assertion: the same rule, by NAME, judges a SUBSCRIBE on both
+// codecs. Asserting only that neither is Blocked would be vacuous.
+func TestV5SubscribeMatchesSameRuleAsV4(t *testing.T) {
+	n, _ := v5ParityServer(t)
+	n.ConnTrack[v5ParityAddr] = &ConnectionInfo{
+		SocketAddress: v5ParityAddr, Username: v5TestUsername, ProtocolVersion: 5,
+	}
+
+	clientConn, peer := net.Pipe()
+	defer clientConn.Close()
+	defer peer.Close()
+
+	v4Sub := packets.NewControlPacket(packets.Subscribe).(*packets.SubscribePacket)
+	v4Sub.MessageID = 0x0015
+	v4Sub.Topics = []string{v5SubTopicA, v5SubTopicB}
+	v4Sub.Qoss = []byte{0, 1}
+	var raw packets.ControlPacket = v4Sub
+	logger, _ := captureLogger()
+	v4IP := &InspectorPacket{
+		Log:   logger,
+		Track: &ConnectionInfo{SocketAddress: v5ParityAddr},
+		Raw:   &RawPacket{MQTT: &raw},
+	}
+	v4IP.inspectRawPacket(n, clientConn)
+
+	v5IP := n.inspectV5Subscribe(v5ParityAddr, v5SubscribePacket(t))
+
+	v4Result := n.PacketDecider.Decide(v4IP)
+	v5Result := n.PacketDecider.Decide(v5IP)
+	if v4Result.Decision != v5Result.Decision {
+		t.Fatalf("decision differs by codec: v4 %v, v5 %v", v4Result.Decision, v5Result.Decision)
+	}
+
+	v4Rule := matchingRuleName(t, n.PacketDecider, v4IP)
+	v5Rule := matchingRuleName(t, n.PacketDecider, v5IP)
+	if v4Rule != v5Rule {
+		t.Fatalf("a SUBSCRIBE matched %q on 3.1.1 but %q on v5; the decider is not codec-independent", v4Rule, v5Rule)
+	}
+	if v5Rule != "AllowMQTTControl" {
+		t.Fatalf("matching rule = %q, want AllowMQTTControl", v5Rule)
+	}
+	if v4IP.MQTT.Type != v5IP.MQTT.Type {
+		t.Errorf("MQTT.Type differs by codec: v4 %q, v5 %q", v4IP.MQTT.Type, v5IP.MQTT.Type)
+	}
+}
+
+// SetConnTrack is the directly observable half of inspectV5Subscribe: the
+// CONNECT forwarded to the broker carries the swapped proxy identity, so without
+// it the tracked ORIGINAL username -- the one every rule and the ALLOW log line
+// key off -- is missing.
+func TestV5SubscribeCarriesTrackedUsername(t *testing.T) {
+	n, _ := v5ParityServer(t)
+
+	clientConn, peer := net.Pipe()
+	defer clientConn.Close()
+	defer peer.Close()
+
+	_, c := mqttasticConnect(t)
+	if !n.inspectV5Connect(clientConn, v5ParityAddr, c) {
+		t.Fatal("valid credentials rejected")
+	}
+	if c.Username != "proxy" {
+		t.Fatalf("credential swap did not happen: %q", c.Username)
+	}
+
+	ip := n.inspectV5Subscribe(v5ParityAddr, v5SubscribePacket(t))
+	if ip.Track.Username != v5TestUsername {
+		t.Fatalf("Track.Username = %q, want the original client username %q", ip.Track.Username, v5TestUsername)
+	}
+}
+
+// An allowed SUBSCRIBE goes out as the CAPTURED frame. The parse is read-only:
+// re-encoding would risk the same subscription-identifier round-trip hazard that
+// keeps the downlink path from re-encoding.
+func TestV5SubscribeRelayedByteIdentical(t *testing.T) {
+	n, _ := v5ParityServer(t)
+	s := startV5Session(t, n)
+
+	subscribe := encodePacket(t, v5SubscribePacket(t))
+	s.send(subscribe)
+	frames := s.waitBackendFrames(2)
+	if !bytes.Equal(frames[1], subscribe) {
+		t.Fatalf("SUBSCRIBE relayed as %x, want the captured frame %x", frames[1], subscribe)
+	}
+	s.finish()
+}
+
+// paho.golang's Properties.Unpack hard-errors on any property id outside its
+// table. A SUBSCRIBE carries no credentials and no topic Block rule exists, so
+// relaying it loudly beats tearing down a live session -- accepted risk
+// T-68-06-05.
+func TestV5SubscribeParseFailureRelaysRaw(t *testing.T) {
+	// 82 09 | 1234 (packet id) | 02 7f00 (property id 0x7f is not modelled)
+	//       | 0001 "a" 00 (one topic filter, QoS 0)
+	const unparseable = "82091234027f0000016100"
+
+	n, logs := v5ParityServer(t)
+	frame := mustHex(t, unparseable)
+	if _, err := v5.ReadPacket(bytes.NewReader(frame)); err == nil {
+		t.Fatal("the fixture parses cleanly; it cannot exercise the parse-failure path")
+	}
+
+	s := startV5Session(t, n)
+	s.send(frame)
+	pingreq := mustHex(t, "c000")
+	s.send(pingreq)
+
+	frames := s.waitBackendFrames(3)
+	if !bytes.Equal(frames[1], frame) {
+		t.Fatalf("unparseable SUBSCRIBE relayed as %x, want the captured %x", frames[1], frame)
+	}
+	// The PINGREQ arriving proves the connection survived the parse failure.
+	if !bytes.Equal(frames[2], pingreq) {
+		t.Fatal("the connection did not survive an unparseable SUBSCRIBE")
+	}
+	s.finish()
+
+	out := logs.String()
+	if !strings.Contains(out, "action=MQTT5_PARSE_FAIL") || !strings.Contains(out, "mqtt_type=SUBSCRIBE") {
+		t.Fatalf("missing the SUBSCRIBE parse-failure log line; got:\n%s", out)
+	}
+}
+
+// The control-packet allowlist is the FIRST inspect rule, so if it answers
+// differently per codec every rule below it is reached differently per codec.
+func TestAllowMQTTControlV5(t *testing.T) {
+	rule := allowMQTTControlRule(t)
+
+	for _, tc := range []struct {
+		desc string
+		typ  byte
+		want bool
+	}{
+		{"SUBSCRIBE", v5.SUBSCRIBE, true},
+		{"PUBACK", v5.PUBACK, true},
+		{"PINGREQ", v5.PINGREQ, true},
+		{"UNSUBSCRIBE", v5.UNSUBSCRIBE, true},
+		{"DISCONNECT", v5.DISCONNECT, true},
+		{"PUBLISH", v5.PUBLISH, false},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			if got := rule.Matcher(v5ControlPacketIP(t, tc.typ)); got != tc.want {
+				t.Fatalf("AllowMQTTControl(v5 %s) = %v, want %v", tc.desc, got, tc.want)
+			}
+		})
+	}
+}
+
+// The 3.1.1 branch is reached first and is unedited. The v4 golden pins the
+// decision sequence for a whole session; this pins the matcher itself.
+func TestAllowMQTTControlV4Unchanged(t *testing.T) {
+	rule := allowMQTTControlRule(t)
+	logger, _ := captureLogger()
+
+	for _, tc := range []struct {
+		desc   string
+		packet packets.ControlPacket
+		want   bool
+	}{
+		{"CONNECT", packets.NewControlPacket(packets.Connect), true},
+		{"SUBSCRIBE", packets.NewControlPacket(packets.Subscribe), true},
+		{"PUBLISH", packets.NewControlPacket(packets.Publish), false},
+		{"PINGREQ", packets.NewControlPacket(packets.Pingreq), true},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			raw := tc.packet
+			ip := &InspectorPacket{
+				Log:   logger,
+				Track: &ConnectionInfo{SocketAddress: v5ParityAddr},
+				Raw:   &RawPacket{MQTT: &raw},
+			}
+			if got := rule.Matcher(ip); got != tc.want {
+				t.Fatalf("AllowMQTTControl(3.1.1 %s) = %v, want %v", tc.desc, got, tc.want)
+			}
+		})
 	}
 }

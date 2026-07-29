@@ -155,6 +155,44 @@ func (n *ServerCmd) inspectV5Subscribe(socketAddr string, cp *v5.ControlPacket) 
 	return ip
 }
 
+// inspectV5RawPublish is inspectV5Publish sourced from a HAND-PARSED view
+// instead of from the codec, for the frames paho.golang refuses to read. It
+// mirrors its sibling decision for decision, because the whole point is that a
+// property id outside the codec's table changes nothing about how the packet is
+// judged (CR-04).
+//
+// The rules engine, the decrypt path and inspectMeshtastic need no branch of
+// their own: they read ip.Raw.Meshtastic, which is filled here identically.
+func (n *ServerCmd) inspectV5RawPublish(socketAddr string, p *v5RawPublish) *InspectorPacket {
+	ip := &InspectorPacket{
+		Log:   n.InspectorLogger,
+		Track: &ConnectionInfo{SocketAddress: socketAddr},
+		Raw:   &RawPacket{MQTT5Raw: p},
+	}
+
+	// Load-bearing for exactly the reason it is in inspectV5Publish: it swaps in
+	// the tracked ConnectionInfo carrying the ORIGINAL client username. The
+	// CONNECT forwarded to the broker carries the swapped proxy identity, so
+	// without this Track.Username is empty and RequireMQTTUserName Blocks every
+	// publish on an already-authenticated connection.
+	n.SetConnTrack(ip)
+
+	ip.MQTT.Type = "PUBLISH"
+	topics := make([]string, 0, 1)
+	ip.MQTT.Topics = append(topics, p.Topic)
+
+	var env meshtastic.ServiceEnvelope
+	if err := proto.Unmarshal(p.Payload, &env); err == nil {
+		ip.Raw.Meshtastic = &env
+		if gw := env.GetGatewayId(); gw != "" {
+			n.rememberGateway(socketAddr, gw)
+		}
+		ip.inspectMeshtastic(n)
+	}
+
+	return ip
+}
+
 // inspectV5Publish is the v5 mirror of inspectRawPacket's 3.1.1 PUBLISH branch.
 // It builds the SAME InspectorPacket the rules engine has always consumed --
 // only Raw.MQTT5 is populated instead of Raw.MQTT, and Raw.Meshtastic, MQTT.Type

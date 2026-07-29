@@ -473,6 +473,24 @@ func (n *ServerCmd) SetConnTrack(ip *InspectorPacket) {
 	n.ConnMutex.Unlock()
 }
 
+// touchConnTrack refreshes a connection's idle timer and nothing else. It is the
+// codec-independent half of what SetConnTrack does for the 3.1.1 loop, minus the
+// InspectorPacket -- the v5 relay branch never builds one, but the reaper in
+// SetupTracker deletes any entry with now-ConnectTime > 180 regardless.
+//
+// Update-if-exists ONLY, exactly like SetConnTrack. Creating an entry here would
+// produce a ConnectionInfo with an empty Username, which is precisely what
+// RequireMQTTUserName exists to Block -- a tracker entry must only ever be born
+// from a CONNECT.
+func (n *ServerCmd) touchConnTrack(socketAddr string) {
+	n.ConnMutex.Lock()
+	if connInfo, exists := n.ConnTrack[socketAddr]; exists {
+		connInfo.ConnectTime = time.Now().Unix()
+		n.ConnTrack[socketAddr] = connInfo
+	}
+	n.ConnMutex.Unlock()
+}
+
 func (n *ServerCmd) SetupTracker() {
 	n.ConnTrack = make(map[string]*ConnectionInfo)
 

@@ -86,14 +86,28 @@ func writeMqtt5Connack(conn net.Conn, reason byte) error {
 	return err
 }
 
+// writeMqtt5Disconnect answers a v5 client with a bare DISCONNECT carrying the
+// given reason code and no properties, shaped exactly like writeMqtt5Connack.
+//
+// DISCONNECT and not a second CONNACK: a CONNACK is only legal in response to a
+// CONNECT on a fresh session (MQTT 5.0 3.2), so the spec-correct way to answer a
+// mid-session protocol violation is to tell the client why and close.
+func writeMqtt5Disconnect(conn net.Conn, reason byte) error {
+	d := v5.NewControlPacket(v5.DISCONNECT)
+	d.Content.(*v5.Disconnect).ReasonCode = reason
+	_, err := d.WriteTo(conn)
+	return err
+}
+
 // handleProxyV5 is the client->backend read loop for MQTT 5.0 connections. It
 // is a sibling of handleProxy, not a modification of it: the 3.1.1 body must
 // stay byte-for-byte unchanged, so the version decision made at the preflight
 // dispatches into a whole separate handler rather than threading a codec
 // abstraction through the existing loops.
 //
-// Only CONNECT is parsed here. Everything else is relayed as captured bytes;
-// v5 PUBLISH inspection lands in plan 68-02 and fails closed until it does.
+// Every frame type has a stated outcome: inspected (CONNECT, PUBLISH), refused
+// (the credential/auth-bearing and server-only types), or relayed as captured
+// bytes. Nothing falls through.
 func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAddr string) {
 	// The preflight peek did not consume anything, so the CONNECT is still
 	// queued on the reader.
@@ -176,22 +190,48 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 				return
 			}
 
-			if pktType == v5.PUBLISH {
+			// EVERY frame refreshes the tracker entry, before any type
+			// dispatch -- the 3.1.1 loop does the same by calling SetConnTrack
+			// in every inspectRawPacket branch, keepalives included. The
+			// reaper purges anything idle for 180s, which is far shorter than
+			// the Meshtastic publish cadence (position is ~15 min), so without
+			// this line a live session loses its entry between publishes and
+			// the next PUBLISH is Blocked with "Username required for MQTT".
+			n.touchConnTrack(socketAddr)
+
+			switch pktType {
+			case v5.PUBLISH:
 				// Inspection, rules, rewrites and forwarding all happen inside;
 				// a false return means the connection must be dropped, exactly
 				// as handleProxy returns on a Block decision.
 				if !n.handleV5PublishUplink(backendConn, socketAddr, frame) {
 					return
 				}
-				continue
-			}
 
-			// Everything else -- SUBSCRIBE, PUBACK, PINGREQ, DISCONNECT, AUTH,
-			// anything carrying an unmodeled property -- goes out exactly as it
-			// came in.
-			if _, err := backendConn.Write(frame); err != nil {
-				n.Config.Log.Errorf("failed to write to backend: %v", err)
+			case v5.CONNECT, v5.AUTH, v5.CONNACK, v5.SUBACK, v5.UNSUBACK, v5.PINGRESP:
+				// Refused, and refused BEFORE anything is written to the
+				// broker. A second CONNECT and an AUTH frame both carry the
+				// client's own credentials or auth state -- relaying either
+				// hands mosquitto exactly what re-encoding the establishing
+				// CONNECT exists to withhold, and inspect_v5.go's enhanced-auth
+				// branch asserts an AUTH packet never enters an authenticated
+				// session. CONNACK/SUBACK/UNSUBACK/PINGRESP are server-to-client
+				// only; a client sending one is broken or probing.
+				n.InspectorLogger.Warnf("action=MQTT5_PROTOCOL_VIOLATION, ip=%s, mqtt_type=%d, reason=illegal_frame_on_established_session",
+					socketAddr, pktType)
+				writeMqtt5Disconnect(conn, v5.DisconnectProtocolError)
 				return
+
+			default:
+				// PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE, UNSUBSCRIBE,
+				// PINGREQ, DISCONNECT -- and any type this codec does not model
+				// -- relay exactly as captured. Forwarding unknown types rather
+				// than dropping them is a locked phase decision; the point of
+				// the switch is that it is now stated rather than a fallthrough.
+				if _, err := backendConn.Write(frame); err != nil {
+					n.Config.Log.Errorf("failed to write to backend: %v", err)
+					return
+				}
 			}
 		}
 	}

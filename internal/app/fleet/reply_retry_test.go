@@ -192,11 +192,16 @@ func calleeNames(fd *ast.FuncDecl) map[string]int {
 
 // ricky's lyrics already emit ~60 messages per request; retrying them 3x would
 // produce ~180 and re-create the channel drowning that this work just fixed.
-func TestLyricsChatDoesNotUseReliableRetry(t *testing.T) {
+// The FINAL line is the one exception: it carries the flag, and a QoS0 publish
+// into an iOS-proxy reconnect gap is silently dropped (observed live 2026-07-29
+// — a full song delivered through line 58, flag line 59 never reached the
+// radio). Exactly one reliable call site: the payoff line. The body stays
+// single-send.
+func TestLyricsChatFinalLineUsesReliableRetry(t *testing.T) {
 	fd, _ := funcBody(t, "handleLyricsChat")
 	calls := calleeNames(fd)
-	if got := calls["sendPKIReplyReliable"]; got != 0 {
-		t.Errorf("handleLyricsChat calls sendPKIReplyReliable %d times; lyrics must stay single-send", got)
+	if got := calls["sendPKIReplyReliable"]; got != 1 {
+		t.Errorf("handleLyricsChat calls sendPKIReplyReliable %d times, want exactly 1 (the final/flag line); lyric body must stay single-send", got)
 	}
 	if calls["sendPKIReply"] == 0 {
 		t.Error("handleLyricsChat no longer calls sendPKIReply at all")

@@ -31,8 +31,11 @@ import (
 	"time"
 
 	v5 "github.com/eclipse/paho.golang/packets"
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 	log "github.com/sirupsen/logrus"
 	"github.com/whereiskurt/meshtk/pkg/config"
+	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -55,6 +58,26 @@ const (
 	//   20 06 | 00 00 | 03 |         | 21 0014   <- client: property gone
 	e2eBrokerConnackHex   = "200900000622000a210014"
 	e2eStrippedConnackHex = "2006000003210014"
+
+	// The two ends of the traffic matrix. They MUST have different gateway ids:
+	// the proxy suppresses a downlink whose gateway matches the connection's own
+	// uplink gateway, so a shared id would make the downlink assertions
+	// unfalsifiable (nothing would ever arrive, and the test would be asserting
+	// self-echo suppression while claiming to assert downlink delivery).
+	e2eTopicFilter = "msh/US/2/e/dc.run/#"
+
+	e2eV5Gateway = "!435990e4"
+	e2eV5Topic   = "msh/US/2/e/dc.run/!435990e4"
+	e2eV5From    = uint32(0x435990e4)
+
+	e2eV4Gateway = "!15550041"
+	e2eV4Topic   = "msh/US/2/e/dc.run/!15550041"
+	e2eV4From    = uint32(0x15550041)
+
+	// Packet id for the QoS1 publish. mosquitto logs it in decimal as m4660,
+	// which is what the log assertion greps for.
+	e2eQoS1PacketID  = uint16(0x1234)
+	e2eQoS1MessageID = "m4660"
 )
 
 // ---------------------------------------------------------------------------
@@ -233,8 +256,16 @@ func startBroker(t *testing.T) *e2eBroker {
 		startLocalBroker(t, bin, dir, port, logs)
 	}
 
+	// Readiness is the BROKER's own "running" line, not a successful TCP
+	// connect. Under docker the published port is served by docker-proxy, which
+	// completes the handshake as soon as the container starts -- while
+	// `apk add mosquitto` is still running inside it. A dial-only probe
+	// therefore returns "ready" against a broker that does not exist yet, and
+	// the first CONNECT vanishes into a broken pipe.
+	waitForLog(t, "mosquitto", logs, 0, "running", 120*time.Second)
+
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	waitForListener(t, addr, 90*time.Second, "mosquitto", logs)
+	waitForListener(t, addr, 30*time.Second, "mosquitto", logs)
 	return &e2eBroker{addr: addr, logs: logs}
 }
 
@@ -295,7 +326,12 @@ func startDockerBroker(t *testing.T, dir string, port int, logs *syncBuffer) {
 	// password_file is resolved INSIDE the container, so it is the mount path.
 	brokerConfig(t, dir, port, "0.0.0.0", "/fixture/passwd")
 
-	cmd := exec.Command("docker", "run", "--rm",
+	// The container is NAMED so teardown can address it directly. Killing the
+	// `docker run` process only kills the local CLI -- the container keeps
+	// running, keeps the published port bound, and survives the test binary.
+	// Three orphans accumulated on this machine before that was caught.
+	name := fmt.Sprintf("meshtk-e2e-%d", port)
+	cmd := exec.Command("docker", "run", "--rm", "--name", name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, port),
 		"-v", dir+":/fixture",
 		"alpine:3.21", "sh", "-c",
@@ -306,6 +342,7 @@ func startDockerBroker(t *testing.T, dir string, port int, logs *syncBuffer) {
 		t.Skipf("docker fallback unusable (broker start): %v", err)
 	}
 	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", name).Run()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
@@ -318,6 +355,11 @@ func startDockerBroker(t *testing.T, dir string, port int, logs *syncBuffer) {
 // e2eHarness is a live proxy in front of a live broker, plus both log streams
 // and the long-lived v5 client the traffic subtests share.
 type e2eHarness struct {
+	// root is the top-level *testing.T. Connections that must survive the
+	// subtest that created them register their teardown here; registering it on
+	// the subtest's t closes them one subtest later.
+	root *testing.T
+
 	n         *ServerCmd
 	proxyAddr string
 	broker    *e2eBroker
@@ -325,6 +367,7 @@ type e2eHarness struct {
 	auth      *pairAuthenticator
 
 	v5c *v5Client
+	v4c *mqtt3Client
 }
 
 // startHarness runs the REAL StartProxyServer -- accept loop, proxyproto
@@ -368,7 +411,20 @@ func startHarness(t *testing.T) *e2eHarness {
 
 	waitForListener(t, n.Config.Server.ProxyListenAddress, 10*time.Second, "proxy", proxyLog)
 
+	// Whole-run capture on a red run. Each subtest already dumps its own tail,
+	// but a failure late in the matrix is usually explained by something the
+	// broker logged earlier -- and re-running an e2e by hand to find out is
+	// exactly the loop this is meant to remove.
+	t.Cleanup(func() {
+		if !t.Failed() && !testing.Verbose() {
+			return
+		}
+		t.Logf("=== FULL mosquitto log ===\n%s", broker.logs.String())
+		t.Logf("=== FULL proxy inspector log ===\n%s", proxyLog.String())
+	})
+
 	return &e2eHarness{
+		root:      t,
 		n:         n,
 		proxyAddr: n.Config.Server.ProxyListenAddress,
 		broker:    broker,
@@ -424,15 +480,23 @@ type v5Client struct {
 	r    *bufio.Reader
 }
 
+// dialV5 deliberately registers NO cleanup of its own. The caller owns the
+// socket's lifetime, because the two lifetimes in this test are different: the
+// throwaway clients in the rejection subtests die with their subtest, while the
+// v5 client used by the traffic matrix has to outlive the subtest that created
+// it. Registering t.Cleanup here silently closed the shared connection the
+// instant the CONNECT subtest returned, and every later subtest failed with
+// "use of closed network connection".
 func dialV5(t *testing.T, addr string) *v5Client {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
 	return &v5Client{conn: conn, r: bufio.NewReader(conn)}
 }
+
+func (c *v5Client) close() { _ = c.conn.Close() }
 
 func (c *v5Client) send(t *testing.T, cp *v5.ControlPacket) {
 	t.Helper()
@@ -490,6 +554,174 @@ func connectPacket(clientID, user, pass string) *v5.ControlPacket {
 	return cp
 }
 
+// expectFrame reads one frame and requires it to be of the wanted type. It is
+// deliberately STRICT rather than "read until you see what you want": an
+// unexpected packet here is itself a finding. The v5 client is subscribed to
+// the topic it publishes on, so if downlink self-echo suppression regressed,
+// the client's own PUBLISH would come back and land in this read -- and the
+// test would report it instead of quietly skipping past it.
+func (c *v5Client) expectFrame(t *testing.T, want byte, timeout time.Duration) []byte {
+	t.Helper()
+	frame, typ := c.mustReadFrame(t, timeout)
+	if typ != want {
+		t.Fatalf("expected packet type %d, got %d (%s)", want, typ, hex.EncodeToString(frame))
+	}
+	return frame
+}
+
+// ---------------------------------------------------------------------------
+// Meshtastic fixtures
+// ---------------------------------------------------------------------------
+
+// e2eEnvelope builds a DECODED NODEINFO ServiceEnvelope. Decoded, not
+// encrypted, for two reasons proven in 68-02: an encrypted payload with no
+// configured cipher trips BlockInvalidEncryption before the forward, and a
+// TEXT_MESSAGE payload reaches RewritePayloadString, which dereferences a nil
+// cipher and panics on a non-encrypted packet. NODEINFO exercises the hop
+// clamp, the decider and the ALLOW path with neither hazard.
+func e2eEnvelope(t *testing.T, gateway string, from, hopLimit, hopStart uint32) []byte {
+	t.Helper()
+	user, err := proto.Marshal(&meshtastic.User{Id: gateway, LongName: "DC34 e2e", ShortName: "E2E"})
+	if err != nil {
+		t.Fatalf("marshal user: %v", err)
+	}
+	payload, err := proto.Marshal(&meshtastic.ServiceEnvelope{
+		Packet: &meshtastic.MeshPacket{
+			From:     from,
+			To:       0xffffffff,
+			Id:       0x1234abcd,
+			HopLimit: hopLimit,
+			HopStart: hopStart,
+			PayloadVariant: &meshtastic.MeshPacket_Decoded{
+				Decoded: &meshtastic.Data{
+					Portnum:  meshtastic.PortNum_NODEINFO_APP,
+					Payload:  user,
+					Bitfield: proto.Uint32(1),
+				},
+			},
+		},
+		GatewayId: gateway,
+		ChannelId: "dc.run",
+	})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	return payload
+}
+
+func e2eDecodeEnvelope(t *testing.T, payload []byte) *meshtastic.ServiceEnvelope {
+	t.Helper()
+	env := new(meshtastic.ServiceEnvelope)
+	if err := proto.Unmarshal(payload, env); err != nil {
+		t.Fatalf("decode ServiceEnvelope off the wire: %v", err)
+	}
+	return env
+}
+
+func e2ePublishPacket(topic string, qos byte, packetID uint16, payload []byte) *v5.ControlPacket {
+	cp := v5.NewControlPacket(v5.PUBLISH)
+	p := cp.Content.(*v5.Publish)
+	p.Topic = topic
+	p.QoS = qos
+	p.PacketID = packetID
+	p.Payload = payload
+	p.Properties = &v5.Properties{User: []v5.User{{Key: "src", Value: "meshtk-e2e"}}}
+	return cp
+}
+
+// ---------------------------------------------------------------------------
+// 3.1.1 client
+// ---------------------------------------------------------------------------
+
+// mqtt3Client is the real paho.mqtt.golang client -- the SAME library the
+// production 3.1.1 fleet effectively speaks -- pointed at the SAME proxy
+// instance as the v5 client. It is the local stand-in for the production
+// requirement that the iOS/firmware fleet keeps flowing while Android v5
+// clients connect.
+type mqtt3Client struct {
+	c        mqtt.Client
+	messages chan mqtt.Message
+}
+
+func dialMQTT3(t *testing.T, addr, clientID string) *mqtt3Client {
+	t.Helper()
+
+	m := &mqtt3Client{messages: make(chan mqtt.Message, 32)}
+
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker("tcp://" + addr)
+	opts.SetClientID(clientID)
+	opts.SetUsername(e2eClientUser)
+	opts.SetPassword(e2eClientPass)
+	opts.SetProtocolVersion(4) // 4 == MQTT 3.1.1; mosquitto logs it as p4
+	opts.SetCleanSession(true)
+	opts.SetAutoReconnect(false)
+	opts.SetConnectTimeout(15 * time.Second)
+	opts.SetKeepAlive(60 * time.Second)
+	opts.SetDefaultPublishHandler(func(_ mqtt.Client, msg mqtt.Message) {
+		select {
+		case m.messages <- msg:
+		default:
+		}
+	})
+
+	m.c = mqtt.NewClient(opts)
+	tok := m.c.Connect()
+	if !tok.WaitTimeout(20 * time.Second) {
+		t.Fatalf("3.1.1 CONNECT timed out")
+	}
+	if err := tok.Error(); err != nil {
+		t.Fatalf("3.1.1 CONNECT failed: %v", err)
+	}
+	// Teardown is the caller's, for the same lifetime reason as dialV5.
+	return m
+}
+
+func (m *mqtt3Client) subscribe(t *testing.T, filter string) {
+	t.Helper()
+	tok := m.c.Subscribe(filter, 0, nil)
+	if !tok.WaitTimeout(10 * time.Second) {
+		t.Fatalf("3.1.1 SUBSCRIBE to %s timed out", filter)
+	}
+	if err := tok.Error(); err != nil {
+		t.Fatalf("3.1.1 SUBSCRIBE to %s failed: %v", filter, err)
+	}
+}
+
+func (m *mqtt3Client) publish(t *testing.T, topic string, payload []byte) {
+	t.Helper()
+	tok := m.c.Publish(topic, 0, false, payload)
+	if !tok.WaitTimeout(10 * time.Second) {
+		t.Fatalf("3.1.1 PUBLISH to %s timed out", topic)
+	}
+	if err := tok.Error(); err != nil {
+		t.Fatalf("3.1.1 PUBLISH to %s failed: %v", topic, err)
+	}
+}
+
+func (m *mqtt3Client) expectMessage(t *testing.T, timeout time.Duration) mqtt.Message {
+	t.Helper()
+	select {
+	case msg := <-m.messages:
+		return msg
+	case <-time.After(timeout):
+		t.Fatalf("3.1.1 client received no downlink within %s", timeout)
+		return nil
+	}
+}
+
+// brokerConnections returns the mosquitto "New client connected" lines, which
+// carry the protocol marker (p4 / p5) and the authenticated identity.
+func brokerConnections(logs string) []string {
+	var out []string
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, "New client connected") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // The test
 // ---------------------------------------------------------------------------
@@ -512,6 +744,7 @@ func TestE2EDualCodec(t *testing.T) {
 		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
 
 		c := dialV5(t, h.proxyAddr)
+		t.Cleanup(c.close)
 		c.send(t, connectPacket("mqttastic-e2e-bad", e2eClientUser, "wrong-password"))
 
 		frame, typ := c.mustReadFrame(t, 10*time.Second)
@@ -535,6 +768,7 @@ func TestE2EDualCodec(t *testing.T) {
 		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
 
 		c := dialV5(t, h.proxyAddr)
+		t.Cleanup(c.close)
 		cp := connectPacket("mqttastic-e2e-auth", e2eClientUser, e2eClientPass)
 		cp.Content.(*v5.Connect).Properties.AuthMethod = "SCRAM-SHA-1"
 		c.send(t, cp)
@@ -565,6 +799,7 @@ func TestE2EDualCodec(t *testing.T) {
 		// subtests below share it, which is what makes the 3.1.1 client
 		// genuinely concurrent rather than merely sequential.
 		h.v5c = dialV5(t, h.proxyAddr)
+		h.root.Cleanup(h.v5c.close)
 		h.v5c.send(t, connectPacket("mqttastic-e2e-v5", e2eClientUser, e2eClientPass))
 
 		frame, typ := h.v5c.mustReadFrame(t, 10*time.Second)
@@ -610,5 +845,209 @@ func TestE2EDualCodec(t *testing.T) {
 		if !strings.Contains(h.proxyLog.since(proxyMark), "action=MQTT5_CONNECT") {
 			t.Fatalf("proxy log missing action=MQTT5_CONNECT.\n--- proxy log ---\n%s", h.proxyLog.since(proxyMark))
 		}
+	})
+
+	// --- The traffic matrix -------------------------------------------------
+	//
+	// From here on the subtests share one long-lived v5 connection and one
+	// long-lived 3.1.1 connection, INTERLEAVED on purpose: the 3.1.1 client
+	// comes up second, receives the v5 client's traffic, publishes traffic the
+	// v5 client receives, and only disconnects at the end. Running the two
+	// protocols back to back instead would prove nothing about coexistence.
+
+	t.Run("mqtt3_client_connects_alongside_the_v5_client", func(t *testing.T) {
+		if h.v5c == nil {
+			t.Skip("v5 connection was not established (run the whole test, not a single subtest)")
+		}
+		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
+
+		h.v4c = dialMQTT3(t, h.proxyAddr, "paho-e2e-v4")
+		h.root.Cleanup(func() { h.v4c.c.Disconnect(250) })
+		h.v4c.subscribe(t, e2eTopicFilter)
+
+		waitForLog(t, "mosquitto", h.broker.logs, brokerMark, "New client connected", 10*time.Second)
+
+		// Scan the WHOLE log, not the tail: the v5 connection was made in the
+		// previous subtest and is still open, so "both protocols alive in the
+		// same run" is a statement about the run, not about this tail.
+		//
+		// The markers are mosquitto's INTERNAL protocol enum, not the wire
+		// protocol level: mosq_p_mqtt311 == 2 and mosq_p_mqtt5 == 5, so a 3.1.1
+		// client logs as p2 even though its CONNECT carries protocol level 4.
+		// Verified on 2.0.22 (Homebrew) and 2.0.20 (alpine:3.21, the prod base).
+		var sawV5, sawV311 bool
+		lines := brokerConnections(h.broker.logs.String())
+		for _, line := range lines {
+			if strings.Contains(line, "p5") {
+				sawV5 = true
+			}
+			if strings.Contains(line, "p2") {
+				sawV311 = true
+			}
+		}
+		if !sawV5 || !sawV311 {
+			h.dump(t, 0, proxyMark)
+			t.Fatalf("expected both a p5 (MQTT 5.0) and a p2 (MQTT 3.1.1) connection in the same run (p5=%v p2=%v).\nconnection lines:\n%s",
+				sawV5, sawV311, strings.Join(lines, "\n"))
+		}
+	})
+
+	t.Run("v5_subscribe_relayed_raw_and_suback_returned", func(t *testing.T) {
+		if h.v5c == nil {
+			t.Skip("v5 connection was not established")
+		}
+		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
+
+		sub := v5.NewControlPacket(v5.SUBSCRIBE)
+		s := sub.Content.(*v5.Subscribe)
+		s.PacketID = 1
+		s.Subscriptions = []v5.SubOptions{{Topic: e2eTopicFilter, QoS: 0}}
+		h.v5c.send(t, sub)
+
+		frame := h.v5c.expectFrame(t, v5.SUBACK, 10*time.Second)
+		if got := hex.EncodeToString(frame); got != "900400010000" {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("SUBACK = %s, want 900400010000 (packet id 1, one granted QoS0 subscription)", got)
+		}
+
+		waitForLog(t, "mosquitto", h.broker.logs, brokerMark, "Received SUBSCRIBE", 10*time.Second)
+	})
+
+	t.Run("v5_qos0_publish_forwarded_and_reaches_the_mqtt3_client", func(t *testing.T) {
+		if h.v5c == nil || h.v4c == nil {
+			t.Skip("both clients are required for the cross-codec assertion")
+		}
+		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
+
+		// Hops already within the clamp, so no rule mutates this packet and the
+		// captured frame is what should be forwarded.
+		h.v5c.send(t, e2ePublishPacket(e2eV5Topic, 0, 0, e2eEnvelope(t, e2eV5Gateway, e2eV5From, 3, 3)))
+
+		tail := waitForLog(t, "mosquitto", h.broker.logs, brokerMark, "Received PUBLISH", 10*time.Second)
+		if !strings.Contains(tail, "q0") || !strings.Contains(tail, e2eV5Topic) {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("mosquitto did not log a q0 PUBLISH on %s.\n--- mosquitto log ---\n%s", e2eV5Topic, tail)
+		}
+
+		// Cross-codec delivery: a v5 uplink fanned out to a 3.1.1 subscriber
+		// through the same proxy.
+		msg := h.v4c.expectMessage(t, 10*time.Second)
+		if msg.Topic() != e2eV5Topic {
+			t.Fatalf("3.1.1 client received topic %q, want %q", msg.Topic(), e2eV5Topic)
+		}
+		if gw := e2eDecodeEnvelope(t, msg.Payload()).GetGatewayId(); gw != e2eV5Gateway {
+			t.Fatalf("3.1.1 client received gateway %q, want %q", gw, e2eV5Gateway)
+		}
+	})
+
+	t.Run("v5_qos1_publish_hop_clamped_pubacked_and_allowed", func(t *testing.T) {
+		if h.v5c == nil || h.v4c == nil {
+			t.Skip("both clients are required for the cross-codec assertion")
+		}
+		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
+
+		// HopLimit 7 / HopStart 9 is over budget, so RewriteHopLimit fires,
+		// RemarshalEnvelope re-encodes and the forwarded frame must differ from
+		// the captured one -- while the packet id survives the round trip.
+		h.v5c.send(t, e2ePublishPacket(e2eV5Topic, 1, e2eQoS1PacketID, e2eEnvelope(t, e2eV5Gateway, e2eV5From, 7, 9)))
+
+		// The broker's view: same QoS, same message id.
+		tail := waitForLog(t, "mosquitto", h.broker.logs, brokerMark, "Received PUBLISH", 10*time.Second)
+		if !strings.Contains(tail, "q1") || !strings.Contains(tail, e2eQoS1MessageID) {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("mosquitto did not log a q1 PUBLISH with %s.\n--- mosquitto log ---\n%s", e2eQoS1MessageID, tail)
+		}
+
+		// The QoS1 acknowledgement has to come back to the RIGHT client, and
+		// with the packet id the client chose -- the frame relay must not
+		// rewrite it (paho.golang would inflate 40021234 to 400412340000 if the
+		// PUBACK were parsed and re-encoded instead of relayed).
+		puback := h.v5c.expectFrame(t, v5.PUBACK, 10*time.Second)
+		if len(puback) < 4 || puback[2] != 0x12 || puback[3] != 0x34 {
+			t.Fatalf("PUBACK = %s, want packet id 0x1234 at bytes 2..3", hex.EncodeToString(puback))
+		}
+
+		if proxyTail := h.proxyLog.since(proxyMark); !strings.Contains(proxyTail, "action=ALLOW") {
+			t.Fatalf("proxy log missing action=ALLOW for the QoS1 publish.\n--- proxy log ---\n%s", proxyTail)
+		}
+
+		// The clamp reached the WIRE, not just the struct: the 3.1.1 subscriber
+		// decodes the envelope the broker actually fanned out. This is the
+		// meshtk#22 assertion, end to end through a real broker.
+		msg := h.v4c.expectMessage(t, 10*time.Second)
+		pkt := e2eDecodeEnvelope(t, msg.Payload()).GetPacket()
+		if pkt.GetHopLimit() != 3 || pkt.GetHopStart() != 7 {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("hop budget delivered as limit=%d start=%d, want 3/7 (clamp did not reach the wire)",
+				pkt.GetHopLimit(), pkt.GetHopStart())
+		}
+	})
+
+	t.Run("v5_downlink_carries_the_full_topic_and_no_alias", func(t *testing.T) {
+		if h.v5c == nil || h.v4c == nil {
+			t.Skip("both clients are required for the downlink assertion")
+		}
+		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
+
+		// Published by the 3.1.1 client under a DIFFERENT gateway id, so the
+		// proxy's self-echo suppression does not (correctly) eat it.
+		h.v4c.publish(t, e2eV4Topic, e2eEnvelope(t, e2eV4Gateway, e2eV4From, 3, 3))
+
+		frame := h.v5c.expectFrame(t, v5.PUBLISH, 10*time.Second)
+		cp, err := v5.ReadPacket(bytes.NewReader(frame))
+		if err != nil {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("parse downlink PUBLISH %s: %v", hex.EncodeToString(frame), err)
+		}
+		p := cp.Content.(*v5.Publish)
+		if p.Topic != e2eV4Topic {
+			t.Fatalf("downlink topic = %q, want the FULL topic %q", p.Topic, e2eV4Topic)
+		}
+		if p.Properties != nil && p.Properties.TopicAlias != nil {
+			t.Fatalf("downlink carried TopicAlias=%d; the alias suppression regressed and topic rules are blind",
+				*p.Properties.TopicAlias)
+		}
+		if gw := e2eDecodeEnvelope(t, p.Payload).GetGatewayId(); gw != e2eV4Gateway {
+			t.Fatalf("downlink gateway = %q, want %q", gw, e2eV4Gateway)
+		}
+	})
+
+	t.Run("v5_pingreq_gets_pingresp", func(t *testing.T) {
+		if h.v5c == nil {
+			t.Skip("v5 connection was not established")
+		}
+		brokerMark := h.broker.logs.Len()
+
+		h.v5c.sendRaw(t, []byte{0xc0, 0x00})
+		frame := h.v5c.expectFrame(t, v5.PINGRESP, 10*time.Second)
+		if got := hex.EncodeToString(frame); got != "d000" {
+			t.Fatalf("PINGRESP = %s, want d000", got)
+		}
+		waitForLog(t, "mosquitto", h.broker.logs, brokerMark, "Received PINGREQ", 10*time.Second)
+	})
+
+	t.Run("mqtt3_client_disconnects_cleanly", func(t *testing.T) {
+		if h.v4c == nil {
+			t.Skip("3.1.1 connection was not established")
+		}
+		brokerMark := h.broker.logs.Len()
+		h.v4c.c.Disconnect(250)
+		waitForLog(t, "mosquitto", h.broker.logs, brokerMark, "Received DISCONNECT", 10*time.Second)
+	})
+
+	t.Run("v5_zero_length_disconnect_is_graceful", func(t *testing.T) {
+		if h.v5c == nil {
+			t.Skip("v5 connection was not established")
+		}
+		brokerMark := h.broker.logs.Len()
+
+		// e000 is a legal v5 DISCONNECT (MQTT 5.0 3.14.2.1: reason code and
+		// properties may both be omitted) and paho.golang returns EOF trying to
+		// parse it. This single assertion is why the whole v5 path captures
+		// frames before it parses: a parse-everything relay would tear the
+		// socket down here and mosquitto would log an abnormal disconnection
+		// instead of receiving the packet.
+		h.v5c.sendRaw(t, []byte{0xe0, 0x00})
+		waitForLog(t, "mosquitto", h.broker.logs, brokerMark, "Received DISCONNECT", 10*time.Second)
 	})
 }

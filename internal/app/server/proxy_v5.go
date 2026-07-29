@@ -310,8 +310,7 @@ func (n *ServerCmd) handleBackendV5(ctx context.Context, conn net.Conn, socketAd
 			// property. mosquitto would resolve the alias and fan the packet out
 			// normally while every topic-based rule and every msh/... log line
 			// in this proxy went blind -- silently, which is what makes it
-			// dangerous. Everything else is relayed as captured bytes; downlink
-			// PUBLISH gains self-echo suppression in plan 68-02.
+			// dangerous.
 			//
 			// On a parse failure the captured frame goes out unchanged:
 			// forwarding a CONNACK the codec cannot model beats closing a
@@ -324,6 +323,30 @@ func (n *ServerCmd) handleBackendV5(ctx context.Context, conn net.Conn, socketAd
 						if _, werr := pk.WriteTo(&out); werr == nil {
 							frame = out.Bytes()
 						}
+					}
+				}
+			}
+
+			// PUBLISH is parsed READ-ONLY and the captured frame is what gets
+			// written. Never re-encode downlink: Properties.SubscriptionIdentifier
+			// is modelled as a single pointer while MQTT 5.0 permits several on
+			// one PUBLISH (overlapping subscriptions), so a round trip would
+			// silently drop all but one. The only fields needed here are the
+			// payload and the topic.
+			if pktType == v5.PUBLISH {
+				pk, perr := v5.ReadPacket(bytes.NewReader(frame))
+				if perr != nil {
+					// Relay, do not close -- same reasoning as the uplink side.
+					n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, mqtt_type=PUBLISH_DOWNLINK, reason=%v",
+						socketAddr, perr)
+				} else if p, ok := pk.Content.(*v5.Publish); ok {
+					// Suppression is simply "do not write the frame": mosquitto
+					// bounces a publish back to any subscriber of its own topic
+					// (there is no no-local here), so a radio's own DMs come
+					// straight back down its BLE pipe -- pure waste on the
+					// flakiest link in the chain, and firmware ignores them.
+					if n.logDownlinkV5(conn, socketAddr, p) {
+						continue
 					}
 				}
 			}

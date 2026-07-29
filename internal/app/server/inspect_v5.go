@@ -114,6 +114,14 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 	return true
 }
 
+// logDownlinkV5 is the v5 adapter onto logDownlinkEnvelope, the codec-independent
+// core of logDownlink. Everything the downlink side decides -- the log level, the
+// gateway-id self-echo comparison -- comes from the payload and the topic, and
+// those are the only two fields either codec has to supply.
+func (n *ServerCmd) logDownlinkV5(conn net.Conn, socketAddr string, p *v5.Publish) bool {
+	return n.logDownlinkEnvelope(conn, socketAddr, p.Payload, p.Topic)
+}
+
 // inspectV5Publish is the v5 mirror of inspectRawPacket's 3.1.1 PUBLISH branch.
 // It builds the SAME InspectorPacket the rules engine has always consumed --
 // only Raw.MQTT5 is populated instead of Raw.MQTT, and Raw.Meshtastic, MQTT.Type

@@ -2,9 +2,12 @@ package server
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	v5 "github.com/eclipse/paho.golang/packets"
+	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 // The whole point of this file is the CONTRAST between two parsers. paho.golang's
@@ -356,4 +359,270 @@ func TestSpliceV5PublishPayloadOversizeRejected(t *testing.T) {
 	if out != nil {
 		t.Fatalf("bytes were returned alongside the error: %d", len(out))
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The uplink path: what the codec refused is still inspected, what nothing can
+// read is refused.
+// ---------------------------------------------------------------------------
+
+// unmodelledPropertyFrame wraps a real payload in a PUBLISH whose property block
+// carries id 0x7f -- outside paho.golang's table, so v5.ReadPacket refuses the
+// frame while mosquitto would accept and route it perfectly normally. That
+// asymmetry IS CR-04, so every fixture built here asserts the codec really does
+// refuse it; otherwise the test would silently exercise the parseable path.
+func unmodelledPropertyFrame(t *testing.T, topic string, payload []byte) []byte {
+	t.Helper()
+
+	varHeader := []byte{byte(len(topic) >> 8), byte(len(topic))}
+	varHeader = append(varHeader, []byte(topic)...)
+	varHeader = append(varHeader, 0x02, 0x7f, 0x00) // property block: 2 bytes, id 0x7f
+
+	body := append(append([]byte{}, varHeader...), payload...)
+
+	frame := []byte{0x30} // PUBLISH, QoS 0
+	frame = append(frame, encodeV5Varint(len(body))...)
+	frame = append(frame, body...)
+
+	if _, err := v5.ReadPacket(bytes.NewReader(frame)); err == nil {
+		t.Fatal("the fixture parses cleanly; it cannot exercise the CR-04 path")
+	}
+	return frame
+}
+
+// variableHeader returns the bytes between the fixed header and the payload --
+// topic, optional packet id and the WHOLE property block. Every one of them must
+// survive a rewrite verbatim, which is the property a codec round trip cannot
+// offer for a frame the codec refused to parse.
+func variableHeader(t *testing.T, frame []byte) []byte {
+	t.Helper()
+	p, err := parseV5PublishFrame(frame)
+	if err != nil {
+		t.Fatalf("parseV5PublishFrame: %v", err)
+	}
+	return frame[p.VarHeaderOffset:p.PayloadOffset]
+}
+
+func marshalEnvelope(t *testing.T, env *meshtastic.ServiceEnvelope) []byte {
+	t.Helper()
+	raw, err := proto.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	return raw
+}
+
+// PROBE-A inverted. The verifier published exactly this shape and watched an
+// unclamped hop_limit=7 envelope reach the backend byte-identical while the same
+// envelope in a parseable frame was clamped. An unmodelled property must buy
+// nothing.
+func TestV5UnmodelledPropertyPublishIsClamped(t *testing.T) {
+	n, _ := v5PublishServer(t, "publisher")
+	payload := marshalEnvelope(t, nodeInfoEnvelope(t, 7, 9))
+	frame := unmodelledPropertyFrame(t, v5PubTopic, payload)
+
+	var backend bytes.Buffer
+	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		t.Fatal("connection dropped for a packet the rules allow")
+	}
+
+	out := backend.Bytes()
+	if bytes.Equal(out, frame) {
+		t.Fatal("the captured frame was forwarded verbatim; the clamp never reached the wire (CR-04)")
+	}
+
+	// Locate the payload with the hand parser, never by assuming an offset --
+	// the codec cannot read this frame, and neither may the assertion.
+	view, err := parseV5PublishFrame(out)
+	if err != nil {
+		t.Fatalf("the forwarded frame does not parse: %v", err)
+	}
+	var env meshtastic.ServiceEnvelope
+	if err := proto.Unmarshal(view.Payload, &env); err != nil {
+		t.Fatalf("forwarded payload is not a ServiceEnvelope: %v", err)
+	}
+
+	if got := env.GetPacket().GetHopLimit(); got != 3 {
+		t.Errorf("wire hop_limit = %d, want 3", got)
+	}
+	if got := env.GetPacket().GetHopStart(); got != 7 {
+		t.Errorf("wire hop_start = %d, want 7 (HOP_MAX clamp)", got)
+	}
+	if env.GetPacket().GetDecoded().Bitfield == nil {
+		t.Error("Data.bitfield lost in the remarshal; 2.8 radios would drop the packet")
+	}
+
+	if view.Topic != v5PubTopic {
+		t.Errorf("forwarded topic = %q, want %q", view.Topic, v5PubTopic)
+	}
+	// Every unmodelled property byte survives, verbatim.
+	if in, gotVH := variableHeader(t, frame), out[view.VarHeaderOffset:view.PayloadOffset]; !bytes.Equal(in, gotVH) {
+		t.Errorf("variable header changed across the rewrite:\n in  %x\n out %x", in, gotVH)
+	}
+	if !bytes.Contains(out, []byte{0x02, 0x7f, 0x00}) {
+		t.Errorf("the unmodelled property block is gone from the forwarded frame: %x", out)
+	}
+}
+
+// A Block rule must fire on a frame the codec refused. An undecryptable
+// encrypted payload trips BlockInvalidEncryption; before this fix the same
+// envelope wrapped in an unmodelled property was relayed to the broker.
+func TestV5UnmodelledPropertyPublishBlockRuleFires(t *testing.T) {
+	n, logs := v5PublishServer(t, "publisher")
+	payload := marshalEnvelope(t, &meshtastic.ServiceEnvelope{
+		Packet: &meshtastic.MeshPacket{
+			From:     0x435990e4,
+			To:       0xffffffff,
+			Id:       0x1234abcd,
+			HopLimit: 3,
+			HopStart: 3,
+			PayloadVariant: &meshtastic.MeshPacket_Encrypted{
+				Encrypted: []byte{0x0b, 0x16, 0x21, 0x2c, 0x37, 0x42, 0x4d, 0x58},
+			},
+		},
+		GatewayId: v5PubGw,
+		ChannelId: "dc.run",
+	})
+	frame := unmodelledPropertyFrame(t, v5PubTopic, payload)
+
+	var backend bytes.Buffer
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		t.Fatal("an undecryptable envelope in an unmodelled-property frame was allowed through")
+	}
+	if backend.Len() != 0 {
+		t.Fatalf("%d bytes of a Blocked publish reached the broker", backend.Len())
+	}
+	if got := logs.String(); !strings.Contains(got, "BLOCK") {
+		t.Fatalf("no BLOCK line was logged; got:\n%s", got)
+	}
+}
+
+// A blank topic blinds every topic rule and every msh/... log line while the
+// broker resolves the alias normally -- which is what makes it the dangerous
+// case, and why the hand-parsed path Blocks it exactly as the parseable one does.
+func TestV5UnmodelledPropertyPublishEmptyTopicBlocked(t *testing.T) {
+	n, logs := v5PublishServer(t, "publisher")
+	frame := unmodelledPropertyFrame(t, "", marshalEnvelope(t, nodeInfoEnvelope(t, 3, 3)))
+
+	var backend bytes.Buffer
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		t.Fatal("an empty-topic PUBLISH was allowed through")
+	}
+	if backend.Len() != 0 {
+		t.Fatalf("%d bytes of an empty-topic publish reached the broker", backend.Len())
+	}
+	got := logs.String()
+	if !strings.Contains(got, "action=BLOCK") || !strings.Contains(got, "reason=topic_alias_uplink") {
+		t.Fatalf("missing the alias BLOCK log line; got:\n%s", got)
+	}
+}
+
+// Inspecting a frame is not licence to churn it. A frame no rule mutated goes out
+// as the bytes that came in, splicer untouched.
+func TestV5UnmodelledPropertyPublishUnchangedIsByteIdentical(t *testing.T) {
+	n, _ := v5PublishServer(t, "publisher")
+	frame := unmodelledPropertyFrame(t, v5PubTopic, marshalEnvelope(t, nodeInfoEnvelope(t, 3, 3)))
+
+	var backend bytes.Buffer
+	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		t.Fatal("connection dropped for a packet the rules allow")
+	}
+	if !bytes.Equal(backend.Bytes(), frame) {
+		t.Fatalf("forwarded bytes drifted:\n in  %x\n out %x", frame, backend.Bytes())
+	}
+}
+
+// Fail CLOSED. A PUBLISH whose own length prefixes contradict its bytes is one
+// mosquitto would refuse too, and the 3.1.1 loop ends the connection on any
+// packet its codec cannot read.
+func TestV5MalformedPublishFailsClosed(t *testing.T) {
+	// 30 06 | 0003 "abc" | 80  -- a property-length varint that never terminates
+	frame := mustHex(t, "3006"+"0003616263"+"80")
+	if _, err := v5.ReadPacket(bytes.NewReader(frame)); err == nil {
+		t.Fatal("the fixture parses cleanly; it cannot exercise the hand-parse failure path")
+	}
+	if _, err := parseV5PublishFrame(frame); err == nil {
+		t.Fatal("the fixture hand-parses cleanly; it cannot exercise the fail-closed path")
+	}
+
+	n, logs := v5PublishServer(t, "publisher")
+	var backend bytes.Buffer
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		t.Fatal("an unreadable PUBLISH was relayed instead of refused")
+	}
+	if backend.Len() != 0 {
+		t.Fatalf("%d bytes of an unreadable publish reached the broker", backend.Len())
+	}
+	got := logs.String()
+	if !strings.Contains(got, "action=MQTT5_PUBLISH_HEADER_FAIL") {
+		t.Fatalf("missing the header-fail log line; got:\n%s", got)
+	}
+	if !strings.Contains(got, "BLOCK") {
+		t.Fatalf("no BLOCK line was logged for a refused frame; got:\n%s", got)
+	}
+}
+
+// The parseable path is the one 68-02 shipped and the one the live fleet uses;
+// the new fallback must not have moved it. Codec-encoded frames still go through
+// the codec on the way out (re-encode on rewrite, captured bytes otherwise).
+func TestV5ParseablePublishPathUnchanged(t *testing.T) {
+	t.Run("clamped and re-encoded by the codec", func(t *testing.T) {
+		n, _ := v5PublishServer(t, "publisher")
+		frame := v5PublishFrame(t, nodeInfoEnvelope(t, 7, 9))
+
+		var backend bytes.Buffer
+		if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+			t.Fatal("connection dropped for a packet the rules allow")
+		}
+		out := backend.Bytes()
+		if bytes.Equal(out, frame) {
+			t.Fatal("the clamp never reached the wire on the parseable path")
+		}
+
+		p, env := wireEnvelope(t, out)
+		if got := env.GetPacket().GetHopLimit(); got != 3 {
+			t.Errorf("wire hop_limit = %d, want 3", got)
+		}
+		if got := env.GetPacket().GetHopStart(); got != 7 {
+			t.Errorf("wire hop_start = %d, want 7", got)
+		}
+		if out[0] != 0x32 {
+			t.Errorf("first wire byte = %#02x, want 0x32 (PUBLISH, QoS1)", out[0])
+		}
+		if p.PacketID != 0x1234 {
+			t.Errorf("packet id = %#04x, want 0x1234", p.PacketID)
+		}
+		if p.Properties == nil || p.Properties.MessageExpiry == nil || *p.Properties.MessageExpiry != 300 {
+			t.Error("MessageExpiry property did not survive the rewrite")
+		}
+	})
+
+	t.Run("unmutated is byte-identical", func(t *testing.T) {
+		n, _ := v5PublishServer(t, "publisher")
+		frame := v5PublishFrame(t, nodeInfoEnvelope(t, 3, 3))
+
+		var backend bytes.Buffer
+		if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+			t.Fatal("connection dropped for a packet the rules allow")
+		}
+		if !bytes.Equal(backend.Bytes(), frame) {
+			t.Fatalf("forwarded bytes drifted:\n in  %x\n out %x", frame, backend.Bytes())
+		}
+	})
+
+	t.Run("topic alias still blocked", func(t *testing.T) {
+		n, logs := v5PublishServer(t, "publisher")
+		frame := mustHex(t, "300b00000323000368656c6c6f")
+
+		var backend bytes.Buffer
+		if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+			t.Fatal("an aliased PUBLISH was allowed through")
+		}
+		if backend.Len() != 0 {
+			t.Fatalf("%d bytes of an aliased PUBLISH reached the broker", backend.Len())
+		}
+		if got := logs.String(); !strings.Contains(got, "reason=topic_alias_uplink") {
+			t.Fatalf("missing the alias BLOCK log line; got:\n%s", got)
+		}
+	})
 }

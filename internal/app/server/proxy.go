@@ -295,9 +295,24 @@ const meshBroadcast = 0xffffffff
 // 3.1.1 has no no-local), so a radio's own DMs come straight back down its BLE
 // pipe -- wasted bandwidth on the flakiest link in the chain, and firmware
 // would ignore them anyway.
+//
+// It is a thin wrapper over logDownlinkEnvelope, which holds the body: the v5
+// downlink loop carries a paho.golang *Publish rather than this 3.1.1 type, and
+// the only two fields either codec needs are the payload and the topic. Keeping
+// this signature and this call site byte-unchanged (TestSelfEchoSuppression
+// calls it directly and was not edited) is what makes the extraction provably
+// behavior-preserving.
 func (n *ServerCmd) logDownlink(conn net.Conn, socketAddr string, pub *packets.PublishPacket) (suppress bool) {
+	return n.logDownlinkEnvelope(conn, socketAddr, pub.Payload, pub.TopicName)
+}
+
+// logDownlinkEnvelope is the codec-independent core of logDownlink: everything
+// it decides comes from the raw PUBLISH payload and topic, so both the 3.1.1
+// and the v5 downlink loops can call it. Returning true means "do not forward
+// this packet to the client".
+func (n *ServerCmd) logDownlinkEnvelope(conn net.Conn, socketAddr string, payload []byte, topic string) (suppress bool) {
 	envelope := new(meshtastic.ServiceEnvelope)
-	if err := proto.Unmarshal(pub.Payload, envelope); err != nil {
+	if err := proto.Unmarshal(payload, envelope); err != nil {
 		return false
 	}
 	packet := envelope.GetPacket()
@@ -309,13 +324,13 @@ func (n *ServerCmd) logDownlink(conn net.Conn, socketAddr string, pub *packets.P
 
 	if gw := envelope.GetGatewayId(); gw != "" && gw == n.gatewayFor(socketAddr) {
 		n.Config.Log.Debugf("[proxy] DOWNLINK self-echo suppressed gw=%s from=!%08x to=!%08x id=%08x topic=%s client=%s",
-			gw, from, to, id, pub.TopicName, conn.RemoteAddr())
+			gw, from, to, id, topic, conn.RemoteAddr())
 		return true
 	}
 
 	if to == meshBroadcast {
 		n.Config.Log.Debugf("[proxy] DOWNLINK bcast from=!%08x id=%08x topic=%s client=%s",
-			from, id, pub.TopicName, conn.RemoteAddr())
+			from, id, topic, conn.RemoteAddr())
 		return false
 	}
 
@@ -324,6 +339,6 @@ func (n *ServerCmd) logDownlink(conn net.Conn, socketAddr string, pub *packets.P
 		kind = "pki"
 	}
 	n.Config.Log.Infof("[proxy] DOWNLINK %s from=!%08x to=!%08x id=%08x topic=%s client=%s",
-		kind, from, to, id, pub.TopicName, conn.RemoteAddr())
+		kind, from, to, id, topic, conn.RemoteAddr())
 	return false
 }

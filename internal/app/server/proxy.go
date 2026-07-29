@@ -114,13 +114,18 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 	// version byte, so a v5 CONNECT's properties block bleeds into the
 	// credential fields and valid creds get rejected as "check credentials"
 	// (Meshtastic-Android 2.8.0's mqttastic client speaks v5 — upstream
-	// Meshtastic-Android#6505). Until the proxy grows a real v5 codec, reject
+	// Meshtastic-Android#6505). Levels ABOVE 5 the proxy cannot speak: reject
 	// honestly with a version-correct CONNACK before dialing the backend.
+	// Level 5 itself now has a real codec and dispatches into its own handler
+	// (proxy_v5.go) -- one branch, so the 3.1.1 body below is untouched.
 	conn.SetReadDeadline(time.Now().Add(defaultProxyReadTimeout))
-	if ver, ok := peekConnectProtocolVersion(request); ok && ver >= 5 {
+	if ver, ok := peekConnectProtocolVersion(request); ok && ver > 5 {
 		n.InspectorLogger.Warnf("action=MQTT5_REJECT, ip=%s, protocol_version=%d, reason=unsupported_protocol_version",
 			socketAddr, ver)
 		writeMqtt5UnsupportedConnack(conn)
+		return
+	} else if ok && ver == 5 {
+		n.handleProxyV5(conn, request, socketAddr)
 		return
 	}
 

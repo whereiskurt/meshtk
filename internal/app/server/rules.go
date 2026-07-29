@@ -17,6 +17,13 @@ func inspectRules() []Rule {
 			Name:        "AllowMQTTControl",
 			Description: "Allow MQTT control packets (not PUBLISH — those go through meshtastic inspection)",
 			Matcher: func(ip *InspectorPacket) bool {
+				// A v5 packet carries Raw.MQTT5 and leaves Raw.MQTT nil, and the
+				// bare dereference below panics on it -- which takes down the
+				// whole proxy process, not one connection. Raw.MQTT is never nil
+				// on the 3.1.1 path, so this is behavior-preserving for v4.
+				if ip.Raw.MQTT == nil {
+					return false
+				}
 				switch (*ip.Raw.MQTT).(type) {
 				case *packets.ConnectPacket,
 					*packets.SubscribePacket,

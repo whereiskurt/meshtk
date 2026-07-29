@@ -1,10 +1,15 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	v5 "github.com/eclipse/paho.golang/packets"
 	log "github.com/sirupsen/logrus"
@@ -319,5 +324,175 @@ func TestV5PublishParseFailureForwardsRaw(t *testing.T) {
 	got := logs.String()
 	if !strings.Contains(got, "action=MQTT5_PARSE_FAIL") || !strings.Contains(got, "mqtt_type=PUBLISH") {
 		t.Fatalf("missing the parse-failure log line; got:\n%s", got)
+	}
+}
+
+// --- v5 downlink: logging, self-echo suppression, no re-encode --------------
+
+// deadlineConn records SetReadDeadline calls so a test can prove WHICH socket
+// the downlink loop deadlines. handleBackend once deadlined the CLIENT socket
+// from the downlink side, racing the uplink loop on the same socket and tearing
+// down live radios at unpredictable intervals; that must not come back on v5.
+type deadlineConn struct {
+	net.Conn
+	mu    sync.Mutex
+	calls int
+}
+
+func (d *deadlineConn) SetReadDeadline(t time.Time) error {
+	d.mu.Lock()
+	d.calls++
+	d.mu.Unlock()
+	return d.Conn.SetReadDeadline(t)
+}
+
+func (d *deadlineConn) deadlineCalls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
+// v5DownlinkFrame is a broker PUBLISH carrying a ServiceEnvelope gatewayed by
+// the given node.
+func v5DownlinkFrame(t *testing.T, gateway string) []byte {
+	t.Helper()
+	env := nodeInfoEnvelope(t, 3, 3)
+	env.GatewayId = gateway
+	return v5PublishFrame(t, env)
+}
+
+// runBackendV5 drives the real downlink loop over a scripted backend stream and
+// returns everything it wrote to the client.
+//
+// io.ReadFull under a deadline, never a single Read: net.Pipe is unbuffered and
+// a frame can arrive as several Writes, so a lone Read consumes the first chunk
+// and the writer blocks forever.
+func runBackendV5(t *testing.T, n *ServerCmd, socketAddr string, stream []byte, wantBytes int) []byte {
+	t.Helper()
+	clientConn, peer := net.Pipe()
+	defer clientConn.Close()
+	defer peer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.handleBackendV5(ctx, clientConn, socketAddr,
+			writerConn{&bytes.Buffer{}}, bufio.NewReader(bytes.NewReader(stream)))
+	}()
+
+	got := make([]byte, wantBytes)
+	if err := peer.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if wantBytes > 0 {
+		if _, err := io.ReadFull(peer, got); err != nil {
+			t.Fatalf("read downlink: %v", err)
+		}
+	}
+	return got
+}
+
+// A radio's own DMs bouncing back down its BLE pipe is pure waste on the
+// flakiest link in the chain -- mosquitto has no no-local, so it echoes every
+// publish back to a subscriber of the same topic.
+func TestV5DownlinkSelfEchoSuppressed(t *testing.T) {
+	n, _ := v5PublishServer(t, "publisher")
+	n.ConnTrack[v5PubAddr].GatewayID = v5PubGw
+
+	selfEcho := v5DownlinkFrame(t, v5PubGw)  // suppressed
+	other := v5DownlinkFrame(t, "!1555f041") // forwarded
+
+	var stream bytes.Buffer
+	stream.Write(selfEcho)
+	stream.Write(other)
+
+	got := runBackendV5(t, n, v5PubAddr, stream.Bytes(), len(other))
+	if !bytes.Equal(got, other) {
+		t.Fatalf("client received %x, want only the other gateway's frame %x", got, other)
+	}
+}
+
+// A forwarded downlink must be the CAPTURED bytes. Properties.SubscriptionIdentifier
+// is modelled as a single pointer while MQTT 5.0 permits several on one PUBLISH
+// (overlapping subscriptions), so re-encoding would silently drop all but one.
+// The downlink path needs nothing from the packet except Payload and Topic.
+func TestV5DownlinkForwardsCapturedFrame(t *testing.T) {
+	n, _ := v5PublishServer(t, "publisher")
+	n.ConnTrack[v5PubAddr].GatewayID = v5PubGw
+
+	frame := v5DownlinkFrame(t, "!1555f041")
+	got := runBackendV5(t, n, v5PubAddr, frame, len(frame))
+	if !bytes.Equal(got, frame) {
+		t.Fatalf("downlink drifted:\n in  %x\n out %x", frame, got)
+	}
+}
+
+// An unparseable downlink PUBLISH is forwarded and the connection stays open --
+// proven by the PINGRESP that follows it arriving too.
+func TestV5DownlinkParseFailureForwardsRaw(t *testing.T) {
+	n, logs := v5PublishServer(t, "publisher")
+
+	bad := mustHex(t, "300a0003616263027f006869")
+	if _, err := v5.ReadPacket(bytes.NewReader(bad)); err == nil {
+		t.Fatal("the fixture parses cleanly; it cannot exercise the parse-failure path")
+	}
+	pingresp := mustHex(t, "d000")
+
+	var stream bytes.Buffer
+	stream.Write(bad)
+	stream.Write(pingresp)
+
+	got := runBackendV5(t, n, v5PubAddr, stream.Bytes(), len(bad)+len(pingresp))
+	if !bytes.Equal(got[:len(bad)], bad) {
+		t.Fatalf("unparseable downlink = %x, want it forwarded verbatim as %x", got[:len(bad)], bad)
+	}
+	if !bytes.Equal(got[len(bad):], pingresp) {
+		t.Fatal("the connection did not survive an unparseable downlink PUBLISH")
+	}
+
+	if out := logs.String(); !strings.Contains(out, "action=MQTT5_PARSE_FAIL") ||
+		!strings.Contains(out, "mqtt_type=PUBLISH_DOWNLINK") {
+		t.Fatalf("missing the downlink parse-failure log line; got:\n%s", out)
+	}
+}
+
+// The deadline belongs on the socket being READ. handleBackendV5 must touch
+// backendConn's deadline and never conn's -- the uplink loop owns that one.
+func TestV5DownlinkDeadlineOnBackendSocket(t *testing.T) {
+	n, _ := v5PublishServer(t, "publisher")
+
+	clientConn, peer := net.Pipe()
+	defer clientConn.Close()
+	defer peer.Close()
+
+	client := &deadlineConn{Conn: clientConn}
+	backend := &deadlineConn{Conn: writerConn{&bytes.Buffer{}}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.handleBackendV5(ctx, client, v5PubAddr, backend,
+			bufio.NewReader(bytes.NewReader(mustHex(t, "d000"))))
+	}()
+
+	if err := peer.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(peer, make([]byte, 2)); err != nil {
+		t.Fatalf("read PINGRESP: %v", err)
+	}
+	<-done // the stream is exhausted, so the loop exits on its own
+
+	if got := client.deadlineCalls(); got != 0 {
+		t.Fatalf("handleBackendV5 set the CLIENT socket's read deadline %d times; that races the uplink loop and tore down live radios", got)
+	}
+	if got := backend.deadlineCalls(); got == 0 {
+		t.Fatal("handleBackendV5 never deadlined the backend socket; a silent broker would hang the loop forever")
 	}
 }

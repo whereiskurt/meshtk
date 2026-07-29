@@ -198,11 +198,22 @@ func (c *MqttClient) dispatcher(_ mqtt.Client, msg mqtt.Message) {
 			// PKI Decryption using firmware2-exact implementation
 			pkiDecrypted, pkiErr := c.decryptPKI(packet, encrypted)
 			if pkiErr != nil {
-				c.log.Warnf("PKI decrypt failed for packet from %v on %v: %v", from, topic, pkiErr)
-				// Send NACK to tell sender to initiate nodeinfo message
-				if c.nackHandler != nil {
-					c.log.Debugf("Sending NACK for PKI message from %v to %v (request_id: %v)", from, to, packet.GetId())
-					c.nackHandler(to, from, packet.GetId())
+				// Only the DM's true recipient may send a routing response. Every
+				// fleet client sees every PKI publish, so without this ownership
+				// gate a single DM drew a NACK from each client that (correctly)
+				// couldn't decrypt it -- ~70 NACKs racing the one real ACK, and
+				// the sender's app marked delivered DMs as failed. A real radio
+				// stays silent on DMs it cannot decrypt; the NACK's purpose
+				// (nodeinfo-retransmit clue when WE own the recipient but can't
+				// resolve the sender's key) survives behind the gate.
+				if _, owns := (*c.nodes)[to]; owns {
+					c.log.Warnf("PKI decrypt failed for packet from %v on %v: %v", from, topic, pkiErr)
+					if c.nackHandler != nil {
+						c.log.Debugf("Sending NACK for PKI message from %v to %v (request_id: %v)", from, to, packet.GetId())
+						c.nackHandler(to, from, packet.GetId())
+					}
+				} else {
+					c.log.Tracef("PKI packet from %v to %v not for our nodes; staying silent", from, to)
 				}
 				return
 			}

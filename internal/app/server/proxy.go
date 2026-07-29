@@ -53,6 +53,51 @@ func proxyReadTimeout(keepaliveSecs uint16) time.Duration {
 	return d
 }
 
+// peekConnectProtocolVersion peeks at the first client packet without
+// consuming it and, when it is a CONNECT with protocol name "MQTT", returns
+// the protocol-level byte (4 = 3.1.1, 5 = v5). ok is false for anything it
+// cannot positively identify — non-CONNECT first packets, the legacy
+// "MQIsdp" 3.1 name, or short/garbage streams — which all fall through to
+// the normal 3.1.1 codec path unchanged.
+//
+// Peek (not Read) matters: a 3.1.1 CONNECT must still be fully readable by
+// packets.ReadPacket afterwards.
+func peekConnectProtocolVersion(r *bufio.Reader) (byte, bool) {
+	// 1 type byte + up to 4 remaining-length varint bytes + 2-byte name
+	// length + "MQTT" + version byte = 12 bytes max.
+	hdr, err := r.Peek(12)
+	if err != nil || len(hdr) < 12 {
+		return 0, false
+	}
+	if hdr[0]&0xF0 != 0x10 { // not CONNECT
+		return 0, false
+	}
+	i := 1 // skip the remaining-length varint (1-4 bytes)
+	for ; i <= 4; i++ {
+		if hdr[i]&0x80 == 0 {
+			break
+		}
+	}
+	i++ // first byte of the variable header
+	if i+7 > len(hdr) {
+		return 0, false
+	}
+	if hdr[i] != 0x00 || hdr[i+1] != 0x04 || string(hdr[i+2:i+6]) != "MQTT" {
+		return 0, false
+	}
+	return hdr[i+6], true
+}
+
+// writeMqtt5UnsupportedConnack answers a v5 client in its own dialect:
+// CONNACK with ack-flags 0x00, reason code 0x84 (Unsupported Protocol
+// Version), empty properties. The 3.1.1 codepath's 0x05 rejection is
+// meaningless in v5 and renders in the Meshtastic app as a bogus
+// "check credentials" error.
+func writeMqtt5UnsupportedConnack(conn net.Conn) error {
+	_, err := conn.Write([]byte{0x20, 0x03, 0x00, 0x84, 0x00})
+	return err
+}
+
 func (n *ServerCmd) handleProxy(conn net.Conn) {
 	socketAddr := n.TrackConnection(conn)
 
@@ -63,14 +108,28 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 		conn.Close()
 	}(conn, socketAddr)
 
+	request := bufio.NewReader(conn)
+
+	// MQTT v5 preflight: the paho 3.1.1 codec used below never checks the
+	// version byte, so a v5 CONNECT's properties block bleeds into the
+	// credential fields and valid creds get rejected as "check credentials"
+	// (Meshtastic-Android 2.8.0's mqttastic client speaks v5 — upstream
+	// Meshtastic-Android#6505). Until the proxy grows a real v5 codec, reject
+	// honestly with a version-correct CONNACK before dialing the backend.
+	conn.SetReadDeadline(time.Now().Add(defaultProxyReadTimeout))
+	if ver, ok := peekConnectProtocolVersion(request); ok && ver >= 5 {
+		n.InspectorLogger.Warnf("action=MQTT5_REJECT, ip=%s, protocol_version=%d, reason=unsupported_protocol_version",
+			socketAddr, ver)
+		writeMqtt5UnsupportedConnack(conn)
+		return
+	}
+
 	backendConn, err := net.DialTimeout("tcp", n.Config.Server.ProxyForwardAddress, 10*time.Second)
 	if err != nil {
 		n.Config.Log.Errorf("failed to connect to backend: %v", err)
 		return
 	}
 	defer backendConn.Close()
-
-	request := bufio.NewReader(conn)
 	backendReader := bufio.NewReader(backendConn)
 
 	ctx, cancel := context.WithCancel(context.Background())

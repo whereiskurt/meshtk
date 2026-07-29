@@ -913,6 +913,98 @@ func TestE2EDualCodec(t *testing.T) {
 		waitForLog(t, "mosquitto", h.broker.logs, brokerMark, "Received SUBSCRIBE", 10*time.Second)
 	})
 
+	// WR-04's observability half. The subtest above only ever checked the
+	// BROKER's side, and a SUBACK comes back whether or not the proxy ever
+	// looked at the SUBSCRIBE -- which is exactly how "topic rules" quietly
+	// meant "topic rules for 3.1.1 clients" for a whole release.
+	t.Run("v5_subscribe_is_logged_by_the_proxy", func(t *testing.T) {
+		if h.v5c == nil {
+			t.Skip("v5 connection was not established")
+		}
+		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
+
+		// A filter nothing else in the run uses, so the assertion is falsifiable
+		// rather than satisfied by an earlier subtest's line.
+		const observabilityFilter = "msh/US/2/e/dc.run/observability/#"
+
+		sub := v5.NewControlPacket(v5.SUBSCRIBE)
+		s := sub.Content.(*v5.Subscribe)
+		s.PacketID = 2
+		s.Subscriptions = []v5.SubOptions{{Topic: observabilityFilter, QoS: 0}}
+		h.v5c.send(t, sub)
+
+		// The decision log is written before the frame is relayed, so the SUBACK
+		// coming back is a happens-after edge for it. No sleep required.
+		h.v5c.expectFrame(t, v5.SUBACK, 10*time.Second)
+
+		tail := h.proxyLog.since(proxyMark)
+		if !strings.Contains(tail, "mqtt_type=SUBSCRIBE") {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("the proxy never recorded the SUBSCRIBE.\n--- proxy log ---\n%s", tail)
+		}
+		if !strings.Contains(tail, observabilityFilter) {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("the proxy recorded a SUBSCRIBE without its topic filter %q.\n--- proxy log ---\n%s",
+				observabilityFilter, tail)
+		}
+	})
+
+	// CR-03 against a live broker. The unit test proves zero bytes reach a
+	// recording writer; this proves mosquitto never opens a session for -- and
+	// never even sees -- the second CONNECT's identity, which is the claim SC3
+	// actually makes.
+	t.Run("v5_second_connect_refused_and_broker_never_sees_it", func(t *testing.T) {
+		const (
+			secondConnectID  = "mqttastic-e2e-second-connect"
+			attackerClientID = "mqttastic-e2e-attacker"
+			attackerUser     = "attacker-username"
+			attackerPass     = "attacker-plaintext-password"
+		)
+		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
+
+		// Its own connection: sending a second CONNECT correctly ends the
+		// session, and the shared v5 client is still needed below.
+		c := dialV5(t, h.proxyAddr)
+		defer c.close()
+
+		c.send(t, connectPacket(secondConnectID, e2eClientUser, e2eClientPass))
+		if frame := c.expectFrame(t, v5.CONNACK, 10*time.Second); hex.EncodeToString(frame) != e2eStrippedConnackHex {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("establishing CONNACK = %s, want %s", hex.EncodeToString(frame), e2eStrippedConnackHex)
+		}
+		// POLL for the positive broker-side signal that this session landed --
+		// never a fixed sleep.
+		waitForLog(t, "mosquitto", h.broker.logs, brokerMark, secondConnectID, 10*time.Second)
+
+		violationMark := h.broker.logs.Len()
+		c.send(t, connectPacket(attackerClientID, attackerUser, attackerPass))
+
+		frame := c.expectFrame(t, v5.DISCONNECT, 10*time.Second)
+		if got := hex.EncodeToString(frame); got != "e0028200" {
+			t.Fatalf("answer to a second CONNECT = %s, want e0028200 (DISCONNECT, protocol error 0x82)", got)
+		}
+		// A CONNACK would be illegal here (MQTT 5.0 3.2), and the socket must
+		// then close rather than carry on serving a client that just violated
+		// the protocol.
+		if _, _, err := c.readFrame(5 * time.Second); err == nil {
+			t.Fatal("the proxy kept the session open after answering a protocol violation")
+		}
+
+		// Reading that DISCONNECT is a happens-after edge for everything the
+		// proxy did with the frame, and the refusal happens before ANY write to
+		// the broker -- so this needs no settle sleep either.
+		tail := h.broker.logs.since(violationMark)
+		for _, secret := range []string{attackerClientID, attackerUser, attackerPass} {
+			if strings.Contains(tail, secret) {
+				h.dump(t, violationMark, proxyMark)
+				t.Fatalf("the second CONNECT's %q reached mosquitto.\n--- mosquitto log ---\n%s", secret, tail)
+			}
+		}
+		if proxyTail := h.proxyLog.since(proxyMark); !strings.Contains(proxyTail, "action=MQTT5_PROTOCOL_VIOLATION") {
+			t.Fatalf("proxy log missing action=MQTT5_PROTOCOL_VIOLATION.\n--- proxy log ---\n%s", proxyTail)
+		}
+	})
+
 	t.Run("v5_qos0_publish_forwarded_and_reaches_the_mqtt3_client", func(t *testing.T) {
 		if h.v5c == nil || h.v4c == nil {
 			t.Skip("both clients are required for the cross-codec assertion")
@@ -1009,6 +1101,126 @@ func TestE2EDualCodec(t *testing.T) {
 		}
 		if gw := e2eDecodeEnvelope(t, p.Payload).GetGatewayId(); gw != e2eV4Gateway {
 			t.Fatalf("downlink gateway = %q, want %q", gw, e2eV4Gateway)
+		}
+	})
+
+	// PROBE-A end to end. The verifier reproduced CR-04 by wrapping an unclamped
+	// hop_limit=7 envelope in a property id paho.golang does not model and
+	// watching it sail past the topic guard, the inspector, the decider, the hop
+	// clamp and every Block rule.
+	//
+	// MEASURED, and it corrects this plan's assumption: mosquitto 2.0.22 answers
+	// a client-chosen UNKNOWN property id with a malformed-packet disconnect,
+	// because MQTT 5.0 2.2.2 makes an unrecognised property exactly that. No
+	// spec-conformant broker will route this frame, so its hop values cannot be
+	// read off a 3.1.1 subscriber -- that is the BROKER enforcing the spec on the
+	// client, not the proxy failing, and it is why this subtest runs on its own
+	// connection instead of killing the shared one.
+	//
+	// What CR-04 made impossible and what is proven live here is everything up to
+	// that point: the proxy decoded the ServiceEnvelope inside a frame its codec
+	// refused, ran it through the rules engine, logged the decision with the
+	// right topic and the right mesh type, and relayed it only afterwards. The
+	// clamped BYTES on the same frame are pinned by
+	// TestV5UnmodelledPropertyPublishIsClamped, which reads the forwarded frame
+	// directly -- the one assertion a spec-conformant broker cannot host.
+	t.Run("v5_unmodelled_property_publish_is_clamped_end_to_end", func(t *testing.T) {
+		const rawPublishClientID = "mqttastic-e2e-unmodelled-property"
+		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
+
+		c := dialV5(t, h.proxyAddr)
+		defer c.close()
+		c.send(t, connectPacket(rawPublishClientID, e2eClientUser, e2eClientPass))
+		c.expectFrame(t, v5.CONNACK, 10*time.Second)
+		waitForLog(t, "mosquitto", h.broker.logs, brokerMark, rawPublishClientID, 10*time.Second)
+
+		publishMark := h.proxyLog.Len()
+		frame := unmodelledPropertyFrame(t, e2eV5Topic, e2eEnvelope(t, e2eV5Gateway, e2eV5From, 7, 9))
+		c.sendRaw(t, frame)
+
+		// 1. The CR-04 trigger really fired: paho.golang refused the frame.
+		waitForLog(t, "proxy", h.proxyLog, publishMark, "action=MQTT5_PARSE_FAIL", 10*time.Second)
+
+		// 2. ...and the hand parser read it anyway, so nothing was refused for
+		//    being unreadable.
+		if tail := h.proxyLog.since(publishMark); strings.Contains(tail, "MQTT5_PUBLISH_HEADER_FAIL") {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("the hand parser could not read a frame the wire format permits.\n--- proxy log ---\n%s", tail)
+		}
+
+		// 3. The entire inspection chain CR-04 skipped, running live: topic
+		//    recorded, envelope decoded, packet judged.
+		tail := waitForLog(t, "proxy", h.proxyLog, publishMark, "action=ALLOW", 10*time.Second)
+		for _, want := range []string{"mqtt_type=PUBLISH", e2eV5Topic, "mesh_type=NODEINFO_APP", "mesh_from=435990e4"} {
+			if !strings.Contains(tail, want) {
+				h.dump(t, brokerMark, proxyMark)
+				t.Fatalf("the decision log for a codec-refused PUBLISH is missing %q.\n--- proxy log ---\n%s", want, tail)
+			}
+		}
+
+		// 4. The forwarded bytes reached mosquitto -- the frame was relayed after
+		//    inspection, not dropped -- and mosquitto answered the client's own
+		//    unknown property as MQTT 5.0 requires.
+		waitForLog(t, "mosquitto", h.broker.logs, brokerMark,
+			"Client "+rawPublishClientID+" disconnected due to malformed packet", 15*time.Second)
+	})
+
+	// CR-02 end to end. The reaper deletes any ConnTrack entry idle for 180s
+	// while the Meshtastic publish cadence is far longer than that, so before
+	// touchConnTrack a keepalive-only session lost its entry and its next
+	// PUBLISH was Blocked with "Username required for MQTT" and the socket torn
+	// down. Backdating the entry is the honest way to test it: the reaper's
+	// predicate is the thing that matters, and a real 180s sleep does not belong
+	// in a test.
+	t.Run("v5_idle_session_survives_and_publishes", func(t *testing.T) {
+		if h.v5c == nil || h.v4c == nil {
+			t.Skip("both clients are required for the cross-codec assertion")
+		}
+		brokerMark, proxyMark := h.broker.logs.Len(), h.proxyLog.Len()
+
+		// The proxy keys ConnTrack on conn.RemoteAddr(), which from the client's
+		// side is its own local address.
+		addr := h.v5c.conn.LocalAddr().String()
+
+		h.n.ConnMutex.Lock()
+		entry, ok := h.n.ConnTrack[addr]
+		if ok {
+			entry.ConnectTime = time.Now().Unix() - 200
+		}
+		h.n.ConnMutex.Unlock()
+		if !ok {
+			t.Fatalf("no ConnTrack entry for %s; the harness cannot age a session it cannot find", addr)
+		}
+
+		// Keepalives only -- exactly what a phone sends between position reports.
+		h.v5c.sendRaw(t, []byte{0xc0, 0x00})
+		h.v5c.expectFrame(t, v5.PINGRESP, 10*time.Second)
+
+		// The reaper's OWN predicate, verbatim from SetupTracker.
+		h.n.ConnMutex.Lock()
+		refreshed, stillThere := h.n.ConnTrack[addr]
+		var age int64
+		if stillThere {
+			age = time.Now().Unix() - refreshed.ConnectTime
+		}
+		h.n.ConnMutex.Unlock()
+		if !stillThere {
+			t.Fatalf("the ConnTrack entry for %s vanished across a keepalive", addr)
+		}
+		if age > 180 {
+			t.Fatalf("the reaper would purge this entry (age %ds > 180) despite a keepalive", age)
+		}
+
+		h.v5c.send(t, e2ePublishPacket(e2eV5Topic, 0, 0, e2eEnvelope(t, e2eV5Gateway, e2eV5From, 3, 3)))
+
+		msg := h.v4c.expectMessage(t, 10*time.Second)
+		if gw := e2eDecodeEnvelope(t, msg.Payload()).GetGatewayId(); gw != e2eV5Gateway {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("3.1.1 client received gateway %q, want %q", gw, e2eV5Gateway)
+		}
+		if tail := h.proxyLog.since(proxyMark); strings.Contains(tail, "Username required for MQTT") {
+			h.dump(t, brokerMark, proxyMark)
+			t.Fatalf("an aged-but-live session was Blocked for a missing username (CR-02).\n--- proxy log ---\n%s", tail)
 		}
 	})
 

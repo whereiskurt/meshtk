@@ -208,14 +208,36 @@ func (n *ServerCmd) handleBackendV5(ctx context.Context, conn net.Conn, socketAd
 		default:
 			backendConn.SetReadDeadline(time.Now().Add(defaultProxyReadTimeout))
 
-			frame, _, err := readFrame(backendReader)
+			frame, pktType, err := readFrame(backendReader)
 			if err != nil {
 				return
 			}
 
-			// Raw relay in both directions for now. CONNACK gains a
-			// topic-alias strip in the next commit; downlink PUBLISH gains
-			// self-echo suppression in plan 68-02.
+			// CONNACK is the ONLY downlink packet parsed here, and only to strip
+			// the broker's topic-alias budget: mosquitto 2.0 advertises
+			// TopicAliasMaximum=10 by default, and a client holding a non-zero
+			// budget may publish with an EMPTY topic plus a Topic Alias
+			// property. mosquitto would resolve the alias and fan the packet out
+			// normally while every topic-based rule and every msh/... log line
+			// in this proxy went blind -- silently, which is what makes it
+			// dangerous. Everything else is relayed as captured bytes; downlink
+			// PUBLISH gains self-echo suppression in plan 68-02.
+			//
+			// On a parse failure the captured frame goes out unchanged:
+			// forwarding a CONNACK the codec cannot model beats closing a
+			// connection the broker just accepted.
+			if pktType == v5.CONNACK {
+				if pk, perr := v5.ReadPacket(bytes.NewReader(frame)); perr == nil {
+					if ca, ok := pk.Content.(*v5.Connack); ok && ca.Properties != nil {
+						ca.Properties.TopicAliasMaximum = nil
+						var out bytes.Buffer
+						if _, werr := pk.WriteTo(&out); werr == nil {
+							frame = out.Bytes()
+						}
+					}
+				}
+			}
+
 			if _, err := conn.Write(frame); err != nil {
 				n.Config.Log.Errorf("failed to write backend response packet: %v", err)
 				return

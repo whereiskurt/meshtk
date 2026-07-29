@@ -7,6 +7,8 @@ import (
 	"time"
 
 	v5 "github.com/eclipse/paho.golang/packets"
+	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 // inspectV5Connect is the v5 mirror of inspectRawPacket's 3.1.1 CONNECT branch,
@@ -110,4 +112,49 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 	n.InspectorLogger.Infof("action=MQTT5_CONNECT, ip=%s, username=%s, client_id=%s",
 		socketAddr, connInfo.Username, connInfo.ClientID)
 	return true
+}
+
+// inspectV5Publish is the v5 mirror of inspectRawPacket's 3.1.1 PUBLISH branch.
+// It builds the SAME InspectorPacket the rules engine has always consumed --
+// only Raw.MQTT5 is populated instead of Raw.MQTT, and Raw.Meshtastic, MQTT.Type
+// and MQTT.Topics are filled identically. The decrypt path, inspectMeshtastic
+// and every rule are therefore reached with no v5 branch of their own: they
+// operate on ip.Raw.Meshtastic, not on MQTT types.
+//
+// The deliberately rejected alternative is synthesizing a fake 3.1.1
+// PublishPacket so the rules see a familiar type. That reintroduces meshtk#22:
+// rules would mutate the shim and the mutation would never reach the v5 wire.
+func (n *ServerCmd) inspectV5Publish(socketAddr string, cp *v5.ControlPacket) *InspectorPacket {
+	ip := &InspectorPacket{
+		Log:   n.InspectorLogger,
+		Track: &ConnectionInfo{SocketAddress: socketAddr},
+		Raw:   &RawPacket{MQTT5: cp},
+	}
+
+	// Load-bearing, not cosmetic: SetConnTrack swaps in the tracked
+	// ConnectionInfo carrying the ORIGINAL client username (the CONNECT
+	// forwarded to the broker carries the swapped proxy identity). The
+	// RequireMQTTUserName rule Blocks on an empty Track.Username, so skipping
+	// this would Block every publish on an already-authenticated connection.
+	n.SetConnTrack(ip)
+
+	p, ok := cp.Content.(*v5.Publish)
+	if !ok {
+		return ip
+	}
+
+	ip.MQTT.Type = "PUBLISH"
+	topics := make([]string, 0, 1)
+	ip.MQTT.Topics = append(topics, p.Topic)
+
+	var env meshtastic.ServiceEnvelope
+	if err := proto.Unmarshal(p.Payload, &env); err == nil {
+		ip.Raw.Meshtastic = &env
+		if gw := env.GetGatewayId(); gw != "" {
+			n.rememberGateway(socketAddr, gw)
+		}
+		ip.inspectMeshtastic(n)
+	}
+
+	return ip
 }

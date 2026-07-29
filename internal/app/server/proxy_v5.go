@@ -177,12 +177,13 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 			}
 
 			if pktType == v5.PUBLISH {
-				// Fail closed until plan 68-02 wires the v5 envelope inspection:
-				// an uninspected PUBLISH must not reach the broker, because the
-				// hop clamp, the rules engine and the payload rewrites all hang
-				// off that path.
-				n.InspectorLogger.Warnf("action=BLOCK, ip=%s, reason=v5_publish_inspection_pending", socketAddr)
-				return
+				// Inspection, rules, rewrites and forwarding all happen inside;
+				// a false return means the connection must be dropped, exactly
+				// as handleProxy returns on a Block decision.
+				if !n.handleV5PublishUplink(backendConn, socketAddr, frame) {
+					return
+				}
+				continue
 			}
 
 			// Everything else -- SUBSCRIBE, PUBACK, PINGREQ, DISCONNECT, AUTH,
@@ -194,6 +195,95 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 			}
 		}
 	}
+}
+
+// handleV5PublishUplink inspects one captured v5 PUBLISH frame and forwards it
+// to the broker, mirroring handleProxy's decide/forward sequence. It returns
+// false when the connection must be dropped -- a Block decision or a dead
+// backend -- which is what handleProxy's `return` does on the 3.1.1 path.
+func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr string, frame []byte) bool {
+	// Parse a COPY of the captured bytes, never the socket, so the raw frame
+	// survives a parse failure.
+	cp, err := v5.ReadPacket(bytes.NewReader(frame))
+	if err != nil {
+		// Relay, do not close. paho.golang hard-errors on any property id
+		// outside its table, and killing a live session over one unmodeled
+		// property would be a worse failure than relaying it: mosquitto's ACL
+		// still constrains the swapped `public` identity, and every occurrence
+		// is greppable. Accepted risk T-68-02-06 -- revisit if this line shows
+		// up at volume in prod.
+		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, mqtt_type=PUBLISH, reason=%v", socketAddr, err)
+		return n.writeToBackend(backendConn, frame)
+	}
+	p, ok := cp.Content.(*v5.Publish)
+	if !ok {
+		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, mqtt_type=PUBLISH, reason=PUBLISH frame parsed as %T", socketAddr, cp.Content)
+		return n.writeToBackend(backendConn, frame)
+	}
+
+	// Topic-alias guard. 68-01 already makes aliasing impossible by stripping
+	// TopicAliasMaximum from both the CONNECT and the CONNACK, so reaching here
+	// means a spec-violating client. Refuse loudly: a blank topic would blind
+	// every topic rule and every msh/... log line while mosquitto resolved the
+	// alias and fanned the packet out perfectly normally.
+	if (p.Properties != nil && p.Properties.TopicAlias != nil) || p.Topic == "" {
+		n.InspectorLogger.Warnf("action=BLOCK, ip=%s, reason=topic_alias_uplink", socketAddr)
+		return false
+	}
+
+	ip := n.inspectV5Publish(socketAddr, cp)
+
+	result := n.PacketDecider.Decide(ip)
+	switch result.Decision {
+	case Allow:
+		if n.Config.Server.ShouldLogAllows {
+			ip.WriteDecisionLog(result)
+		}
+		if ip.Meshtastic.WasUnmarshalled {
+			n.Config.Log.Infof("[proxy] ALLOW from=!%08x to=!%08x type=%s topic=%v user=%s",
+				ip.Meshtastic.From, ip.Meshtastic.To, ip.Meshtastic.PortNum.String(), ip.MQTT.Topics, ip.Track.Username)
+		}
+	case Block:
+		if n.Config.Server.ShouldLogBlocks {
+			ip.WriteDecisionLog(result)
+		}
+		n.Config.Log.Warnf("[proxy] BLOCK from=!%08x to=!%08x reason=%q user=%s ip=%s",
+			ip.Meshtastic.From, ip.Meshtastic.To, result.Reason, ip.Track.Username, ip.Track.SocketAddress)
+		return false
+	default:
+		if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
+			ip.WriteDecisionLog(result)
+		}
+	}
+
+	// Forward EXACTLY ONCE, and the choice is explicit. A rule that mutated the
+	// packet set WireRewritten, so the re-encode is what goes out (topic, QoS
+	// bits, packet id and the whole properties block all survive the round
+	// trip). Nothing mutated it, so the captured bytes go out untouched.
+	// Writing both -- or mutating the struct and forwarding the original frame
+	// -- is precisely the silent no-op meshtk#22 shipped.
+	out := frame
+	if ip.WireRewritten {
+		var buf bytes.Buffer
+		if _, err := cp.WriteTo(&buf); err != nil {
+			n.Config.Log.Errorf("failed to serialize v5 PUBLISH: %v", err)
+			return false
+		}
+		out = buf.Bytes()
+	}
+
+	return n.writeToBackend(backendConn, out)
+}
+
+// writeToBackend relays a frame and reports whether the connection is still
+// usable, so callers can `return false` on a dead backend without repeating the
+// error-log boilerplate.
+func (n *ServerCmd) writeToBackend(backendConn net.Conn, frame []byte) bool {
+	if _, err := backendConn.Write(frame); err != nil {
+		n.Config.Log.Errorf("failed to write to backend: %v", err)
+		return false
+	}
+	return true
 }
 
 // handleBackendV5 is the backend->client read loop for MQTT 5.0 connections,

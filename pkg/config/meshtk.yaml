@@ -37,7 +37,11 @@ NodeInfo:
 
   BroadcastToAll: true
   BroadcastOnLoad: true
-  BroadcastMessage: "Hello from MeshTK!"
+  # Empty = the beacon carries NodeInfo + Position only and says nothing in
+  # chat. Set a string here to ALSO broadcast it as a channel text message on
+  # every BroadcastIntervalSec tick -- opt in deliberately, it reaches every
+  # radio on the channel.
+  BroadcastMessage: ""
   BroadcastIntervalSec: 60
   BroadcastNodes:
     - "!5678DEFA"

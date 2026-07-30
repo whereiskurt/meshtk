@@ -36,7 +36,7 @@ NodeInfo:
 
   BroadcastToAll: true
   BroadcastOnLoad: true
-  BroadcastMessage: "Hello from MeshTK!"
+  BroadcastMessage: ""
   BroadcastIntervalSec: 60
   BroadcastNodes:
     - "!5678DEFA"

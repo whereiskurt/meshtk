@@ -207,13 +207,30 @@ func (n *ServerCmd) inspectV5Subscribe(socketAddr string, cp *v5.ControlPacket) 
 }
 
 // inspectV5RawPublish is inspectV5Publish sourced from a HAND-PARSED view
-// instead of from the codec, for the frames paho.golang refuses to read. It
-// mirrors its sibling decision for decision, because the whole point is that a
-// property id outside the codec's table changes nothing about how the packet is
-// judged (CR-04).
+// instead of from the codec, for the frames paho.golang refuses to read. A
+// property id outside the codec's table must change nothing about how the packet
+// is judged (CR-04), so this builds the identical InspectorPacket and its caller
+// applies the identical guards.
 //
-// The rules engine, the decrypt path and inspectMeshtastic need no branch of
-// their own: they read ip.Raw.Meshtastic, which is filled here identically.
+// WHAT IS MIRRORED, precisely, rather than a bare claim of parity -- the bare
+// claim was WRONG for a whole release (68-REVIEW WR-01) and a precise list is
+// what makes the next omission visible:
+//
+//   - the empty-topic Block, with the same action and reason strings;
+//   - the Topic Alias Block, with the same action and reason strings (69-04);
+//   - PacketDecider.Decide via the SHARED decideV5Publish, so the Allow/Block
+//     switch cannot drift between the two paths at all;
+//   - Track, MQTT.Type, MQTT.Topics and Raw.Meshtastic, filled identically, so
+//     the rules engine, the decrypt path and inspectMeshtastic need no branch of
+//     their own -- they read ip.Raw.Meshtastic.
+//
+// THE ONE RESIDUAL, stated rather than hidden: the alias guard here rests on a
+// walk that gives up when it meets a property id it does not model, so an alias
+// hidden BEHIND such an id is not detected. That is reported as
+// action=MQTT5_ALIAS_SCAN_INDETERMINATE and never silently swallowed, and it is
+// bounded by 68-01 stripping TopicAliasMaximum in both directions -- the broker
+// grants no alias budget, so it would refuse the frame as a protocol error. The
+// residual costs one refinement; it never costs an inspection.
 func (n *ServerCmd) inspectV5RawPublish(socketAddr string, p *v5RawPublish) *InspectorPacket {
 	ip := &InspectorPacket{
 		Log:   n.InspectorLogger,

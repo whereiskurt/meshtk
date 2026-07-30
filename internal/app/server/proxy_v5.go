@@ -334,15 +334,53 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 			return false
 		}
 
-		// Same guard, same reason as the parseable path: a blank topic blinds
-		// every topic rule and every msh/... log line while the broker resolves
-		// the alias and fans the packet out perfectly normally.
-		if rp.Topic == "" {
+		// The SAME guard as the parseable path below, and it has to be the same
+		// or a client picks which inspection judges it by choosing property
+		// bytes. A blank topic blinds every topic rule and every msh/... log
+		// line while the broker resolves the alias and fans the packet out
+		// perfectly normally; an explicit Topic Alias property is the other half
+		// of the same trick, and until 69-04 this arm could not see it because
+		// the hand parser skipped the property block whole. That asymmetry was
+		// PROVEN (68-REVIEW WR-01): a PUBLISH carrying TopicAlias=7 behind an
+		// unmodelled id was ALLOWED here while the codec path Blocked it.
+		//
+		// Deliberately the SAME action and reason strings as the codec path, so
+		// production greps and every piece of prior evidence keep working.
+		if rp.Topic == "" || rp.HasTopicAlias {
 			n.InspectorLogger.Warnf("action=BLOCK, ip=%s, reason=topic_alias_uplink", socketAddr)
 			return false
 		}
 
 		ip := n.inspectV5RawPublish(socketAddr, rp)
+
+		// An alias walk that met an id it does not model is INDETERMINATE, not a
+		// Block: it means "no alias found SO FAR", and acting on it would let a
+		// property table decide a packet -- CR-04 with the sign flipped. So the
+		// gap is logged and the frame CONTINUES into the decider, the hop clamp
+		// and every Block rule, exactly as it would have without the walk.
+		//
+		// The residual is bounded and observable rather than unknown: 68-01
+		// strips TopicAliasMaximum from both the CONNECT and the CONNACK, so the
+		// broker grants a zero alias budget and would treat any alias as a
+		// protocol error anyway. This line is what makes the gap countable in
+		// production instead of invisible.
+		//
+		// SANITIZED AT BIRTH. 69-03 closed WR-05 by routing every
+		// client-controlled string through logSafe at every InspectorLogger
+		// boundary; that sweep is only worth anything if lines added AFTER it
+		// obey the same rule, because SimpleFormatter does no quoting and one
+		// unsanitized value reopens the whole finding. Both strings here are
+		// client-controlled (the tracked client id, the recovered topic) and both
+		// go through logSafe; the offset is client-controlled too and uses a
+		// numeric verb, which cannot carry a newline.
+		if !rp.AliasScanComplete {
+			n.InspectorLogger.Warnf("action=MQTT5_ALIAS_SCAN_INDETERMINATE, ip=%s, client_id=%s, mqtt_topic=%s, prop_offset=%d",
+				socketAddr,
+				logSafe(ip.Track.ClientID),
+				logSafe(rp.Topic),
+				rp.AliasScanStop)
+		}
+
 		if !n.decideV5Publish(ip) {
 			return false
 		}

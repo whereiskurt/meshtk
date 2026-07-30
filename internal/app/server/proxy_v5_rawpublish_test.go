@@ -245,6 +245,244 @@ func TestParseV5PublishFrameOversizeRejected(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The topic-alias walk (68-REVIEW WR-01).
+//
+// Every case below is built so that a WRONG SKIP WIDTH is caught rather than
+// tolerated: each modelled property's value is padded with 0x7f -- an id the
+// walk deliberately does not model -- and a real Topic Alias follows it. Skip
+// one byte too few or too many and the walk lands on a 0x7f, gives up, and
+// reports not-found-and-incomplete instead of found-and-complete. So "the alias
+// was found" is itself the proof that the preceding value was skipped by exactly
+// its own width.
+// ---------------------------------------------------------------------------
+
+// aliasProp is a real Topic Alias property (id 0x23, two-byte value).
+var aliasProp = []byte{0x23, 0x00, 0x07}
+
+func propBlock(parts ...[]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+func TestV5AliasScanWireShapes(t *testing.T) {
+	cases := []struct {
+		name         string
+		block        []byte
+		wantFound    bool
+		wantComplete bool
+	}{
+		{
+			name:         "payload format indicator (one byte)",
+			block:        propBlock([]byte{propPayloadFormatIndicator, 0x7f}, aliasProp),
+			wantFound:    true,
+			wantComplete: true,
+		},
+		{
+			name:         "message expiry interval (four bytes)",
+			block:        propBlock([]byte{propMessageExpiryInterval, 0x7f, 0x7f, 0x7f, 0x7f}, aliasProp),
+			wantFound:    true,
+			wantComplete: true,
+		},
+		{
+			name:         "content type (length-prefixed string)",
+			block:        propBlock([]byte{propContentType, 0x00, 0x03, 0x7f, 0x7f, 0x7f}, aliasProp),
+			wantFound:    true,
+			wantComplete: true,
+		},
+		{
+			name:         "response topic (length-prefixed string)",
+			block:        propBlock([]byte{propResponseTopic, 0x00, 0x02, 0x7f, 0x7f}, aliasProp),
+			wantFound:    true,
+			wantComplete: true,
+		},
+		{
+			name:         "correlation data (length-prefixed binary)",
+			block:        propBlock([]byte{propCorrelationData, 0x00, 0x04, 0x7f, 0x7f, 0x7f, 0x7f}, aliasProp),
+			wantFound:    true,
+			wantComplete: true,
+		},
+		{
+			// 0xff 0x7f is a TWO-byte varint (the 0x80 continuation bit is set on
+			// the first byte). Consume only one and the walk lands on 0x7f.
+			name:         "subscription identifier (variable byte integer)",
+			block:        propBlock([]byte{propSubscriptionIdentifier, 0xff, 0x7f}, aliasProp),
+			wantFound:    true,
+			wantComplete: true,
+		},
+		{
+			// The two-byte shape is the alias itself. It is DETECTED rather than
+			// skipped -- the walk returns the moment it sees the id, because
+			// presence is the only fact the caller needs -- so this case pins the
+			// detection and the immediate return, and the trailing 0x7f proves the
+			// walk really did stop there instead of reading on.
+			name:         "topic alias (two bytes)",
+			block:        propBlock(aliasProp, []byte{0x7f}),
+			wantFound:    true,
+			wantComplete: true,
+		},
+		{
+			name:         "user property (two length-prefixed strings)",
+			block:        propBlock([]byte{propUserProperty, 0x00, 0x01, 0x7f, 0x00, 0x02, 0x7f, 0x7f}, aliasProp),
+			wantFound:    true,
+			wantComplete: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			found, complete, stop := scanV5PublishAlias(tc.block)
+			if found != tc.wantFound || complete != tc.wantComplete {
+				t.Fatalf("scan(%x) = found %v, complete %v (stopped at %d); want found %v, complete %v -- the preceding value was not skipped by its own width",
+					tc.block, found, complete, stop, tc.wantFound, tc.wantComplete)
+			}
+		})
+	}
+}
+
+// A block of modelled, alias-free properties must come back not-found and
+// COMPLETE -- that is the answer the caller acts on, and the one that must not
+// be confused with "the walk gave up".
+func TestV5AliasScanModelledAliasFreeBlockIsComplete(t *testing.T) {
+	block := propBlock(
+		[]byte{propPayloadFormatIndicator, 0x01},
+		[]byte{propMessageExpiryInterval, 0x00, 0x00, 0x01, 0x2c},
+		[]byte{propContentType, 0x00, 0x04, 'j', 's', 'o', 'n'},
+		[]byte{propResponseTopic, 0x00, 0x03, 'a', '/', 'b'},
+		[]byte{propCorrelationData, 0x00, 0x02, 0xde, 0xad},
+		[]byte{propSubscriptionIdentifier, 0x81, 0x01},
+		[]byte{propUserProperty, 0x00, 0x03, 's', 'r', 'c', 0x00, 0x07, 'a', 'n', 'd', 'r', 'o', 'i', 'd'},
+	)
+
+	found, complete, stop := scanV5PublishAlias(block)
+	if found {
+		t.Errorf("an alias-free block reported an alias (stopped at %d)", stop)
+	}
+	if !complete {
+		t.Errorf("a wholly modelled block reported an incomplete walk at offset %d of %d", stop, len(block))
+	}
+	if stop != len(block) {
+		t.Errorf("stop = %d, want the block end %d", stop, len(block))
+	}
+}
+
+func TestV5AliasScanEmptyBlockIsComplete(t *testing.T) {
+	found, complete, stop := scanV5PublishAlias(nil)
+	if found || !complete || stop != 0 {
+		t.Fatalf("scan(empty) = found %v, complete %v, stop %d; want false, true, 0", found, complete, stop)
+	}
+}
+
+// The CR-04 shape, and the reason this function returns two booleans instead of
+// an error: an id the walk does not model must yield not-found-and-INCOMPLETE
+// with no error and no partial claim, because the CALLER must still inspect the
+// frame. An error here would be a decision, and this walk does not get to make
+// decisions.
+func TestV5AliasScanUnmodelledIDIsIncompleteNotAnError(t *testing.T) {
+	block := propBlock([]byte{propPayloadFormatIndicator, 0x01}, []byte{0x7f, 0x00}, aliasProp)
+
+	found, complete, stop := scanV5PublishAlias(block)
+	if found {
+		t.Error("the walk claimed to have found an alias it could not have reached")
+	}
+	if complete {
+		t.Error("the walk claimed completeness after meeting an id it does not model")
+	}
+	// The unmodelled id sits directly after the two-byte payload-format property.
+	if stop != 2 {
+		t.Errorf("stop = %d, want 2 (the offset of the unmodelled id byte)", stop)
+	}
+}
+
+// A length prefix pointing past the end of the block is the truncated-value case.
+// It must behave exactly like an unmodelled id -- incomplete, no error, and
+// emphatically no slice out of range.
+func TestV5AliasScanTruncatedValueIsIncompleteNotAnError(t *testing.T) {
+	cases := []struct {
+		name  string
+		block []byte
+	}{
+		{"string length runs past the block end", []byte{propContentType, 0x00, 0x40, 'a', 'b'}},
+		{"string length prefix itself is truncated", []byte{propResponseTopic, 0x00}},
+		{"binary length runs past the block end", []byte{propCorrelationData, 0xff, 0xff, 0x01}},
+		{"second string of a user property runs past the end", []byte{propUserProperty, 0x00, 0x01, 'k', 0x00, 0x09, 'v'}},
+		{"fixed-width value is cut short", []byte{propMessageExpiryInterval, 0x00, 0x00}},
+		{"one-byte value is missing entirely", []byte{propPayloadFormatIndicator}},
+		{"subscription identifier varint never terminates", []byte{propSubscriptionIdentifier, 0x80}},
+		{"the alias id is the last byte, value missing", []byte{propPayloadFormatIndicator, 0x01, propTopicAlias, 0x00}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			found, complete, stop := scanV5PublishAlias(tc.block)
+			if complete {
+				t.Fatalf("scan(%x) reported a complete walk over a truncated block", tc.block)
+			}
+			if found && tc.name != "the alias id is the last byte, value missing" {
+				t.Fatalf("scan(%x) reported an alias it never reached", tc.block)
+			}
+			if stop < 0 || stop > len(tc.block) {
+				t.Fatalf("stop = %d, outside the %d byte block", stop, len(tc.block))
+			}
+		})
+	}
+}
+
+// parseV5PublishFrame must REPORT the walk's answers, and callers must read them
+// off the parse result rather than re-deriving them from the frame.
+func TestV5AliasScanReportedByParseV5PublishFrame(t *testing.T) {
+	build := func(props []byte) []byte {
+		varHeader := []byte{0x00, 0x03, 'a', 'b', 'c'}
+		varHeader = append(varHeader, byte(len(props)))
+		varHeader = append(varHeader, props...)
+		body := append(append([]byte{}, varHeader...), []byte("hi")...)
+		frame := []byte{0x30}
+		frame = append(frame, encodeV5Varint(len(body))...)
+		return append(frame, body...)
+	}
+
+	cases := []struct {
+		name         string
+		props        []byte
+		wantFound    bool
+		wantComplete bool
+	}{
+		{"alias before an unmodelled id", propBlock(aliasProp, []byte{0x7f, 0x00}), true, true},
+		{"unmodelled id before the alias", propBlock([]byte{0x7f, 0x00}, aliasProp), false, false},
+		{"modelled and alias-free", []byte{propPayloadFormatIndicator, 0x01}, false, true},
+		{"no properties at all", nil, false, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := build(tc.props)
+			got, err := parseV5PublishFrame(frame)
+			if err != nil {
+				t.Fatalf("parseV5PublishFrame: %v", err)
+			}
+			if got.HasTopicAlias != tc.wantFound {
+				t.Errorf("HasTopicAlias = %v, want %v", got.HasTopicAlias, tc.wantFound)
+			}
+			if got.AliasScanComplete != tc.wantComplete {
+				t.Errorf("AliasScanComplete = %v, want %v", got.AliasScanComplete, tc.wantComplete)
+			}
+			// The walk must never disturb the framing it rides along with.
+			if got.Topic != "abc" {
+				t.Errorf("topic = %q, want %q", got.Topic, "abc")
+			}
+			if string(got.Payload) != "hi" {
+				t.Errorf("payload = %q, want %q", got.Payload, "hi")
+			}
+			if got.PayloadOffset+len(got.Payload) != len(frame) {
+				t.Errorf("payload offset %d + len %d != frame len %d", got.PayloadOffset, len(got.Payload), len(frame))
+			}
+		})
+	}
+}
+
 func TestSpliceV5PublishPayloadIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

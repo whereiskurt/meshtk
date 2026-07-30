@@ -99,6 +99,11 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 		c.Password = []byte(n.Config.Server.ProxyPassword)
 	}
 
+	// The next two blocks exist for the SAME reason: something the client fully
+	// controls would otherwise ride the CONNECT into mosquitto and bypass
+	// proxy-side inspection entirely. One blinds the topic rules; the other
+	// bypasses every rule there is.
+	//
 	// Uplink half of topic-alias suppression: telling the BROKER the client
 	// grants it no alias budget means downlink PUBLISHes always carry a real
 	// topic, so logDownlink and every topic-based rule can see it. (The
@@ -107,6 +112,43 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 	// and mean the same thing, nil just produces the smaller packet.
 	if c.Properties != nil {
 		c.Properties.TopicAliasMaximum = nil
+	}
+
+	// Last Will strip (68-REVIEW CR-02). A Will topic and payload were
+	// re-encoded into the CONNECT and handed to mosquitto untouched; the BROKER
+	// publishes them on disconnect, so the payload never traverses
+	// handleV5PublishUplink, never reaches inspectV5Publish, never reaches
+	// PacketDecider.Decide, and is never seen by RewriteHopLimit,
+	// BlockInvalidEncryption or the payload censor. It is a client-chosen,
+	// uninspected uplink on any topic, replayable by reconnect-and-drop. It was
+	// PROVEN: a Will ServiceEnvelope with HopLimit 7 / HopStart 9 reached the
+	// broker inside a 140-byte forwarded CONNECT -- defeating the exact RF
+	// flood-radius control RewriteHopLimit's own comment says it exists for.
+	//
+	// STRIP RATHER THAN INSPECT, deliberately. A Will is published by the broker
+	// on disconnect, so its payload can NEVER traverse the uplink inspection
+	// chain no matter what is done at CONNECT time. Meshtastic firmware and
+	// mqttastic do not use MQTT Wills, so nothing the fleet does is lost. The
+	// alternative -- routing WillMessage through inspectMeshtastic plus
+	// PacketDecider -- would build a second, quieter inspection path, which is
+	// the defect class this whole change exists to close. The log line is what
+	// makes a real Will user visible rather than mysteriously broken.
+	//
+	// The log carries the payload LENGTH, never its content: the payload is
+	// client-controlled binary and belongs nowhere near a log line.
+	if c.WillFlag {
+		n.InspectorLogger.Warnf("action=WILL_STRIPPED, ip=%s, protocol_version=5, username=%s, will_topic=%s, will_bytes=%d",
+			socketAddr,
+			logSafe(connInfo.Username),
+			logSafe(c.WillTopic),
+			len(c.WillMessage))
+
+		// Cleared in ONE assignment so the packet is never observable with
+		// WillFlag true and a nil WillProperties -- the vendored v5 Pack
+		// dereferences WillProperties unconditionally inside its `if c.WillFlag`
+		// branch, so that intermediate state is a panic waiting to happen.
+		c.WillFlag, c.WillTopic, c.WillMessage, c.WillProperties, c.WillQOS, c.WillRetain =
+			false, "", nil, nil, 0, false
 	}
 
 	// Logged with the ORIGINAL username from connInfo, not the swapped broker

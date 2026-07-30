@@ -53,7 +53,29 @@ func inspectRules() []Rule {
 						return false
 					}
 				}
-				// Neither codec populated: nothing to allow.
+				// Third branch, reached ONLY for a v5 SUBSCRIBE the codec
+				// refused to parse (proxy_v5_rawsubscribe.go). Before it, such
+				// a frame never reached the decider at all: it was relayed
+				// without an InspectorPacket, so MQTT.Topics was empty and the
+				// first topic Block rule anyone added silently would not apply
+				// to it -- the same client-chosen property bytes as CR-04
+				// buying an exemption one layer up (68-REVIEW WR-04).
+				//
+				// A SUBSCRIBE is a control packet, so the answer is the same
+				// `true` the other two branches give it. Answering differently
+				// here would make the FIRST inspect rule codec-dependent, and
+				// since it short-circuits, every rule below it too.
+				//
+				// The rejected alternative was synthesizing a v5.Subscribe so
+				// the branch above would match unchanged. That makes Raw.MQTT5
+				// lie about where the data came from, and RawPacket's
+				// never-synthesize invariant exists because a synthesized
+				// packet is one a rule can mutate without the mutation ever
+				// reaching the wire (meshtk#22).
+				if ip.Raw.MQTT5RawSub != nil {
+					return true
+				}
+				// No codec populated: nothing to allow.
 				return false
 			},
 			Action: Allow,

@@ -52,20 +52,24 @@ type InspectorPacket struct {
 }
 type RawPacket struct {
 	MQTT *packets.ControlPacket
-	// MQTT5 carries the packet for MQTT 5.0 connections, and MQTT5Raw carries a
+	// MQTT5 carries the packet for MQTT 5.0 connections; MQTT5Raw carries a
 	// hand-parsed view of a v5 PUBLISH the codec refused to read (see
-	// proxy_v5_rawpublish.go). AT MOST ONE of MQTT, MQTT5 and MQTT5Raw is ever
-	// non-nil, and all three may be nil: the codecs are separate modules with
-	// separate wire formats, and synthesizing a 3.1.1 shim for a v5 packet would
-	// let rules mutate something that never reaches the wire (meshtk#22).
+	// proxy_v5_rawpublish.go); MQTT5RawSub carries a hand-parsed view of a v5
+	// SUBSCRIBE the codec refused to read (see proxy_v5_rawsubscribe.go).
+	// AT MOST ONE of MQTT, MQTT5, MQTT5Raw and MQTT5RawSub is ever non-nil --
+	// FOUR fields now, not three -- and all four may be nil: the codecs are
+	// separate modules with separate wire formats, and synthesizing a 3.1.1
+	// shim (or a v5.Subscribe) for a packet the codec never produced would let
+	// rules mutate something that never reaches the wire (meshtk#22).
 	//
 	// EVERY reader must nil-guard the field it wants -- rules.go's
 	// AllowMQTTControl and inspect.go's setPublishPayload are the two that
 	// dispatch across all of them, and a bare dereference in either takes down
 	// the whole proxy process rather than one connection.
-	MQTT5      *v5.ControlPacket
-	MQTT5Raw   *v5RawPublish
-	Meshtastic *meshtastic.ServiceEnvelope
+	MQTT5       *v5.ControlPacket
+	MQTT5Raw    *v5RawPublish
+	MQTT5RawSub *v5RawSubscribe
+	Meshtastic  *meshtastic.ServiceEnvelope
 }
 
 type ConnectionInfo struct {
@@ -370,8 +374,15 @@ func (ip *InspectorPacket) setPublishPayload(b []byte) error {
 		// refused to parse -- see spliceV5PublishPayload.
 		ip.Raw.MQTT5Raw.Payload = b
 
+	case ip.Raw.MQTT5RawSub != nil:
+		// A hand-parsed v5 SUBSCRIBE has no payload to set -- a SUBSCRIBE has
+		// none at all. Saying so explicitly rather than falling into the tail
+		// below keeps this switch a real dispatch across every RawPacket member,
+		// which is what the struct's doc comment promises its readers.
+		return fmt.Errorf("cannot set publish payload: the packet is a hand-parsed v5 SUBSCRIBE, not a PUBLISH")
+
 	default:
-		return fmt.Errorf("cannot set publish payload: none of Raw.MQTT, Raw.MQTT5 or Raw.MQTT5Raw is set")
+		return fmt.Errorf("cannot set publish payload: no RawPacket member is set")
 	}
 
 	ip.WireRewritten = true

@@ -225,45 +225,10 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 				}
 
 			case v5.SUBSCRIBE:
-				// Parse a COPY of the captured bytes, never the socket. The
-				// parse is READ-ONLY and the CAPTURED frame is what gets
-				// relayed: re-encoding would risk the same
-				// subscription-identifier round-trip hazard that keeps the
-				// downlink path from re-encoding.
-				sp, perr := v5.ReadPacket(bytes.NewReader(frame))
-				if perr != nil {
-					// Relay, do not close. A SUBSCRIBE carries no credentials
-					// and no topic Block rule exists today, so a loud relay
-					// beats tearing down a live session over one unmodelled
-					// property. Accepted risk T-68-06-05.
-					n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, mqtt_type=SUBSCRIBE, reason=%v", socketAddr, perr)
-					if !n.writeToBackend(backendConn, frame) {
-						return
-					}
-					continue
-				}
-
-				ip := n.inspectV5Subscribe(socketAddr, sp)
-				result := n.PacketDecider.Decide(ip)
-				switch result.Decision {
-				case Allow:
-					if n.Config.Server.ShouldLogAllows {
-						ip.WriteDecisionLog(result)
-					}
-				case Block:
-					if n.Config.Server.ShouldLogBlocks {
-						ip.WriteDecisionLog(result)
-					}
-					n.Config.Log.Warnf("[proxy] BLOCK subscribe topics=%v reason=%q user=%s ip=%s",
-						ip.MQTT.Topics, result.Reason, ip.Track.Username, ip.Track.SocketAddress)
-					return
-				default:
-					if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
-						ip.WriteDecisionLog(result)
-					}
-				}
-
-				if !n.writeToBackend(backendConn, frame) {
+				// Inspection, rules and forwarding all happen inside; a false
+				// return means the connection must be dropped, exactly as the
+				// PUBLISH arm above and as handleProxy's 3.1.1 loop do.
+				if !n.handleV5SubscribeUplink(conn, backendConn, socketAddr, frame) {
 					return
 				}
 
@@ -438,6 +403,104 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 	}
 
 	return n.writeToBackend(backendConn, out)
+}
+
+// handleV5SubscribeUplink inspects one captured v5 SUBSCRIBE frame and relays it
+// to the broker, mirroring handleV5PublishUplink's shape. It returns false when
+// the connection must be dropped -- a Block decision, an unreadable header or a
+// dead backend.
+//
+// INSPECTION HERE IS INDEPENDENT OF WHICH PARSER SUCCEEDED, and that is the
+// whole point of the function. Until 69-05 a SUBSCRIBE the codec refused to
+// parse was relayed WITHOUT an InspectorPacket: it never reached PacketDecider,
+// MQTT.Topics was never recorded, and the first topic Block rule anyone added
+// would silently not apply to it. The exemption was bought with the same three
+// client-chosen property bytes as CR-04, one layer up (68-REVIEW WR-04).
+//
+// The parse -- either parse -- is READ-ONLY, and the CAPTURED frame is what gets
+// relayed on both paths. Re-encoding would risk the same
+// subscription-identifier round-trip hazard that keeps the downlink path from
+// re-encoding, and on the hand-parsed path it could not preserve the very
+// property bytes the codec refused to read.
+func (n *ServerCmd) handleV5SubscribeUplink(conn net.Conn, backendConn net.Conn, socketAddr string, frame []byte) bool {
+	// Parse a COPY of the captured bytes, never the socket, so the raw frame
+	// survives a parse failure.
+	sp, perr := v5.ReadPacket(bytes.NewReader(frame))
+	if perr != nil {
+		// The parse-fail line stays: it is the signal that tells ops this path
+		// was taken at all, and 69-07 watches its rate in prod.
+		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, mqtt_type=SUBSCRIBE, reason=%v", socketAddr, perr)
+
+		rs, herr := parseV5SubscribeFrame(frame)
+		if herr != nil {
+			// FAIL CLOSED, which RETIRES accepted risk T-68-06-05 ("relay, do
+			// not close"). Two things changed since that risk was accepted and
+			// both matter. First, the frames that now fail closed are ONLY
+			// those whose own length prefixes contradict their bytes -- an
+			// unmodelled property id is handled above, by the hand parser,
+			// without closing anything -- and mosquitto refuses exactly those
+			// frames too, so the session was doomed regardless. Second, the
+			// client now receives a REASON CODE instead of a silent close, so
+			// it can distinguish a refusal from a network fault instead of
+			// hot-retrying. Same bar as action=MQTT5_PUBLISH_HEADER_FAIL.
+			//
+			// SANITIZED AT BIRTH. 69-03 closed WR-05 by routing every
+			// client-controlled string through logSafe at every InspectorLogger
+			// boundary; that sweep is only worth anything if lines added AFTER
+			// it obey the same rule, because SimpleFormatter does no quoting and
+			// one unsanitized value reopens the whole finding. The client id is
+			// client-controlled and goes through logSafe; the byte count uses a
+			// numeric verb, which cannot carry a newline; the reason comes from
+			// this package's own parser and interpolates only integers.
+			n.InspectorLogger.Warnf("action=MQTT5_SUBSCRIBE_HEADER_FAIL, ip=%s, client_id=%s, frame_bytes=%d, reason=%v",
+				socketAddr,
+				logSafe(n.trackedClientID(socketAddr)),
+				len(frame),
+				herr)
+			writeMqtt5Disconnect(conn, v5.DisconnectMalformedPacket)
+			return false
+		}
+
+		// The SAME decide/log switch the parseable path runs, not a second
+		// softer one -- two copies would be two chances for the exempt path to
+		// drift into a quieter decision than the one the fleet is judged by.
+		if !n.decideV5Subscribe(n.inspectV5RawSubscribe(socketAddr, rs)) {
+			return false
+		}
+		return n.writeToBackend(backendConn, frame)
+	}
+
+	if !n.decideV5Subscribe(n.inspectV5Subscribe(socketAddr, sp)) {
+		return false
+	}
+	return n.writeToBackend(backendConn, frame)
+}
+
+// decideV5Subscribe runs the decide/log sequence for one v5 uplink SUBSCRIBE and
+// reports whether the connection may continue. It is shared by the codec-parsed
+// and hand-parsed paths for exactly the reason decideV5Publish is: two copies of
+// this switch would be two chances for the hand-parsed path to drift back into a
+// quieter, softer decision than the one the fleet is judged by.
+func (n *ServerCmd) decideV5Subscribe(ip *InspectorPacket) bool {
+	result := n.PacketDecider.Decide(ip)
+	switch result.Decision {
+	case Allow:
+		if n.Config.Server.ShouldLogAllows {
+			ip.WriteDecisionLog(result)
+		}
+	case Block:
+		if n.Config.Server.ShouldLogBlocks {
+			ip.WriteDecisionLog(result)
+		}
+		n.Config.Log.Warnf("[proxy] BLOCK subscribe topics=%v reason=%q user=%s ip=%s",
+			ip.MQTT.Topics, result.Reason, ip.Track.Username, ip.Track.SocketAddress)
+		return false
+	default:
+		if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
+			ip.WriteDecisionLog(result)
+		}
+	}
+	return true
 }
 
 // decideV5Publish runs the decide/log sequence for one v5 uplink PUBLISH and

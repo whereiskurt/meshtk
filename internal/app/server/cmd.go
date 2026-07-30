@@ -150,7 +150,13 @@ func (n *ServerCmd) StartProtobufServer() error {
 		for {
 			conn, err := ln.Accept()
 			if err == nil {
-				go n.handleProtobuf(conn)
+				go func(c net.Conn) {
+					// Same class of backstop as the proxy accept loop below,
+					// and on the same process: an unrecovered panic here takes
+					// the proxy down with the inspector.
+					defer n.recoverConn(labelAcceptProtobuf, c)
+					n.handleProtobuf(c)
+				}(conn)
 			}
 		}
 	}()
@@ -206,6 +212,12 @@ func (n *ServerCmd) StartProxyServer() error {
 			}
 
 			go func(c net.Conn) {
+				// The outermost backstop. handleProxy and handleProxyV5 each
+				// recover at their own entry, so reaching this one means a
+				// panic escaped a handler -- which is precisely the case a
+				// backstop is for, and the only remaining path from one
+				// connection to a process exit.
+				defer n.recoverConn(labelAcceptProxy, c)
 				n.handleProxy(c)
 			}(conn)
 		}

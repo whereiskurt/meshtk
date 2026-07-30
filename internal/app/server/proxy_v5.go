@@ -117,6 +117,14 @@ func writeMqtt5Disconnect(conn net.Conn, reason byte) error {
 // codec cannot read. Relaying an uninspected PUBLISH was CR-04 -- the retired
 // accepted risk T-68-02-06 -- and it is not the posture any more.
 func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAddr string) {
+	// handleProxy dispatches here on the SAME goroutine, so its recover would
+	// already contain a panic raised below -- but it would report it under the
+	// 3.1.1 uplink label. Recovering at this frame instead means the innermost
+	// recover wins and v5 crashes are attributable to the v5 codec, which is
+	// the whole point of having a label. It is also what keeps the containment
+	// true if this handler is ever spawned rather than called.
+	defer n.recoverConn(labelProxyUplinkV5, conn)
+
 	// The preflight peek did not consume anything, so the CONNECT is still
 	// queued on the reader.
 	conn.SetReadDeadline(time.Now().Add(defaultProxyReadTimeout))
@@ -441,6 +449,10 @@ func (n *ServerCmd) writeToBackend(backendConn net.Conn, frame []byte) bool {
 // (backendConn) and never on conn -- deadlining the client socket from here is
 // the exact bug the comments in handleBackend record.
 func (n *ServerCmd) handleBackendV5(ctx context.Context, conn net.Conn, socketAddr string, backendConn net.Conn, backendReader *bufio.Reader) {
+	// Spawned as its own goroutine by handleProxyV5, so the uplink recover
+	// cannot reach a panic raised here -- same reasoning as handleBackend.
+	defer n.recoverConn(labelProxyDownlinkV5, conn)
+
 	for {
 		select {
 		case <-ctx.Done():

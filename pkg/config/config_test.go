@@ -56,3 +56,16 @@ func TestAdminListenAddressDefault(t *testing.T) {
 		t.Errorf("Server.AdminListenAddress = %q, want %q", c.Server.AdminListenAddress, "localhost:9090")
 	}
 }
+
+// A configured node beacons on the Announce ticker forever (default 300s).
+// Anything in BroadcastMessage rides along as a channel-wide TEXT_MESSAGE_APP
+// to 0xffffffff, so silence must be what you get for free -- speaking on a mesh
+// is opt-in, never a default.
+func TestBroadcastMessageDefaultsToSilence(t *testing.T) {
+	c := NewConfig()
+
+	if c.NodeInfo.BroadcastMessage != "" {
+		t.Errorf("NodeInfo.BroadcastMessage = %q, want %q (unconfigured nodes must not chat on the mesh)",
+			c.NodeInfo.BroadcastMessage, "")
+	}
+}

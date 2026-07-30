@@ -30,7 +30,10 @@ NodeInfo:
 
   BroadcastToAll: true
   BroadcastOnLoad: true
-  BroadcastMessage: "Hello from MeshTK!"
+  # Set a string to broadcast it as channel chat on every tick. Empty = beacon
+  # NodeInfo/Position only. Deliberately empty here: this config points at a
+  # PUBLIC broker, and repeating chat to everyone on it is not a default.
+  BroadcastMessage: ""
   BroadcastIntervalSec: 60
   BroadcastNodes:
     - "!5678DEFA"

@@ -194,7 +194,7 @@ type NodeInfo struct {
 	LongName             string   `default:"KPH MeshTK#1"`
 	SubscribedTopics     []string `default:"['msh/US/LongFast']"`
 	BroadcastToAll       bool     `default:"true"`
-	BroadcastMessage     string   `default:"hello world"`
+	BroadcastMessage     string   `default:""`
 	BroadcastNodes       []string `default:"[]"`
 	BroadcastOnLoad      bool     `default:"false"`
 	BroadcastIntervalSec int      `default:"300"`

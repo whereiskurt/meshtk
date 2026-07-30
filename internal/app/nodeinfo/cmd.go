@@ -130,7 +130,13 @@ func (n *NodeInfoCmd) DoBroadcast() {
 	n.MqttClient.PublishNodeInfo(from, ALL, whoamiTopic, n.Config.NodeInfo.LongName, n.Config.NodeInfo.ShortName, pk, meshtastic.HardwareModel(n.Config.NodeInfo.HWModelId), meshtastic.Config_DeviceConfig_CLIENT)
 	n.MqttClient.PublishPosition(from, ALL, whoamiTopic, lat, lng, alt, prec)
 
-	n.MqttClient.PublishMessageEncrypted(from, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, []byte{'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'})
+	// Chat is opt-in. This runs on the Announce ticker (every
+	// BroadcastIntervalSec, forever), so an unconditional text publish is a
+	// channel-wide message repeated to every radio holding the key for as long
+	// as the process lives -- exactly what the old hardcoded "hello world" did.
+	if payload, ok := broadcastText(n.Config); ok {
+		n.MqttClient.PublishMessageEncrypted(from, ALL, whoamiTopic, meshtastic.PortNum_TEXT_MESSAGE_APP, payload)
+	}
 
 	// NOTE: We don't want to publish the map report here, as it is not needed and unencrypted
 	mapTopic := n.Config.NodeInfo.MapTopic

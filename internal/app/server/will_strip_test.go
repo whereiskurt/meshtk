@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	v5 "github.com/eclipse/paho.golang/packets"
+	"github.com/eclipse/paho.mqtt.golang/packets"
 	meshtastic "github.com/whereiskurt/meshtk/protos/meshtastic/generated"
 	"google.golang.org/protobuf/proto"
 )
@@ -165,6 +166,208 @@ func TestV5ConnectWithoutWillIsUnchanged(t *testing.T) {
 	if got.WillFlag || got.WillTopic != "" || len(got.WillMessage) != 0 {
 		t.Error("a Will-less CONNECT gained Will state")
 	}
+}
+
+// TestWillStrippedFromV4Connect is the 3.1.1 half of ROADMAP Success Criterion 3.
+func TestWillStrippedFromV4Connect(t *testing.T) {
+	buf, n := simpleFormatterServer(t)
+
+	clientConn, peer := net.Pipe()
+	defer clientConn.Close()
+	defer peer.Close()
+	drain(t, peer)
+
+	will := willFloodEnvelope(t)
+	ip := v4ConnectInspectorPacket("ed270dbe5d1e", "meshtastic-will")
+	ip.Log = n.InspectorLogger
+	p := (*ip.Raw.MQTT).(*packets.ConnectPacket)
+	p.WillFlag = true
+	p.WillQos = 1
+	p.WillRetain = true
+	p.WillTopic = willFloodTopic
+	p.WillMessage = will
+
+	ip.inspectRawPacket(n, clientConn)
+	if ip.AuthRejected {
+		t.Fatal("valid credentials rejected")
+	}
+
+	forwarded, got := reserializeV4Connect(t, p)
+
+	if bytes.Contains(forwarded, will) {
+		t.Fatalf("the Will ServiceEnvelope (hop_limit=7/hop_start=9) reached the broker inside the CONNECT (%d bytes forwarded)", len(forwarded))
+	}
+	if bytes.Contains(forwarded, []byte("FLOOD-VIA-WILL")) {
+		t.Fatal("the Will payload text reached the broker inside the CONNECT")
+	}
+	if bytes.Contains(forwarded, []byte(willFloodTopic)) {
+		t.Fatal("the Will topic reached the broker inside the CONNECT")
+	}
+
+	if got.WillFlag {
+		t.Error("forwarded CONNECT still sets WillFlag")
+	}
+	if got.WillTopic != "" {
+		t.Errorf("forwarded CONNECT still carries WillTopic %q", got.WillTopic)
+	}
+	if len(got.WillMessage) != 0 {
+		t.Errorf("forwarded CONNECT still carries a %d-byte WillMessage", len(got.WillMessage))
+	}
+	if got.WillQos != 0 {
+		t.Errorf("forwarded CONNECT still carries WillQos %d", got.WillQos)
+	}
+	if got.WillRetain {
+		t.Error("forwarded CONNECT still sets WillRetain")
+	}
+
+	assertWillStrippedLine(t, buf.String(), 4, len(will))
+}
+
+// TestWillStripAppliesToV4Passthrough covers the branch that forwards the
+// client's own credentials by design. It must not also forward a Will.
+func TestWillStripAppliesToV4Passthrough(t *testing.T) {
+	buf, n := simpleFormatterServer(t)
+
+	clientConn, peer := net.Pipe()
+	defer clientConn.Close()
+	defer peer.Close()
+	drain(t, peer)
+
+	// "ghosts" is the passthrough identity newTestServerCmd configures.
+	ip := v4ConnectInspectorPacket("ghosts", "ghost-will")
+	ip.Log = n.InspectorLogger
+	p := (*ip.Raw.MQTT).(*packets.ConnectPacket)
+	p.WillFlag = true
+	p.WillTopic = willFloodTopic
+	p.WillMessage = willFloodEnvelope(t)
+
+	ip.inspectRawPacket(n, clientConn)
+
+	if p.Username != "ghosts" {
+		t.Fatalf("passthrough credential was swapped to %q -- wrong branch under test", p.Username)
+	}
+	if p.WillFlag || p.WillTopic != "" || len(p.WillMessage) != 0 {
+		t.Fatal("passthrough CONNECT forwarded an uninspected Will")
+	}
+	if !strings.Contains(buf.String(), "action=WILL_STRIPPED") {
+		t.Fatalf("passthrough Will strip was not logged:\n%s", buf.String())
+	}
+}
+
+// TestV4ConnectWithoutWillIsUnchanged mirrors the v5 no-Will contract. The
+// byte-level guarantee for the 3.1.1 forwarded stream is the golden
+// (TestV4SessionForwardBytesGolden), whose fixture is Will-less.
+func TestV4ConnectWithoutWillIsUnchanged(t *testing.T) {
+	buf, n := simpleFormatterServer(t)
+
+	clientConn, peer := net.Pipe()
+	defer clientConn.Close()
+	defer peer.Close()
+	drain(t, peer)
+
+	ip := v4ConnectInspectorPacket("ed270dbe5d1e", "meshtastic-golden")
+	ip.Log = n.InspectorLogger
+	p := (*ip.Raw.MQTT).(*packets.ConnectPacket)
+	before, _ := reserializeV4Connect(t, p)
+
+	ip.inspectRawPacket(n, clientConn)
+
+	if strings.Contains(buf.String(), "WILL_STRIPPED") {
+		t.Fatalf("a Will-less CONNECT emitted a strip line:\n%s", buf.String())
+	}
+	after, got := reserializeV4Connect(t, p)
+	if got.WillFlag || got.WillTopic != "" || len(got.WillMessage) != 0 {
+		t.Error("a Will-less CONNECT gained Will state")
+	}
+	// The credential swap is the ONLY intended mutation, so the byte streams
+	// differ -- but only in the credential region. Length is the cheap proxy:
+	// "proxy"/"proxypass" vs "ed270dbe5d1e"/"hunter2".
+	if len(before) == 0 || len(after) == 0 {
+		t.Fatal("re-serialization produced nothing")
+	}
+}
+
+// TestUnclampedHopWillNeverReachesBackendOnEitherCodec is ROADMAP Success
+// Criterion 3 stated as a test: a CONNECT carrying a Will cannot deliver an
+// unclamped hop_limit broadcast to the broker on EITHER codec. One envelope,
+// both codecs, one assertion -- so the two paths cannot drift into disagreeing
+// about the threat.
+func TestUnclampedHopWillNeverReachesBackendOnEitherCodec(t *testing.T) {
+	will := willFloodEnvelope(t)
+
+	t.Run("v5", func(t *testing.T) {
+		_, n := simpleFormatterServer(t)
+		clientConn, peer := net.Pipe()
+		defer clientConn.Close()
+		defer peer.Close()
+		drain(t, peer)
+
+		cp, c := mqttasticConnect(t)
+		c.WillFlag = true
+		c.WillTopic = willFloodTopic
+		c.WillMessage = will
+		c.WillProperties = &v5.Properties{}
+
+		if !n.inspectV5Connect(clientConn, "203.0.113.7:50000", c) {
+			t.Fatal("valid credentials rejected")
+		}
+		forwarded, _ := reparseConnect(t, cp)
+		assertNoWillEnvelope(t, forwarded, will)
+	})
+
+	t.Run("3.1.1", func(t *testing.T) {
+		_, n := simpleFormatterServer(t)
+		clientConn, peer := net.Pipe()
+		defer clientConn.Close()
+		defer peer.Close()
+		drain(t, peer)
+
+		ip := v4ConnectInspectorPacket("ed270dbe5d1e", "meshtastic-will")
+		ip.Log = n.InspectorLogger
+		p := (*ip.Raw.MQTT).(*packets.ConnectPacket)
+		p.WillFlag = true
+		p.WillTopic = willFloodTopic
+		p.WillMessage = will
+
+		ip.inspectRawPacket(n, clientConn)
+		if ip.AuthRejected {
+			t.Fatal("valid credentials rejected")
+		}
+		forwarded, _ := reserializeV4Connect(t, p)
+		assertNoWillEnvelope(t, forwarded, will)
+	})
+}
+
+func assertNoWillEnvelope(t *testing.T, forwarded, will []byte) {
+	t.Helper()
+	if bytes.Contains(forwarded, will) {
+		t.Fatalf("an unclamped-hop Will ServiceEnvelope reached the backend (%d bytes forwarded)", len(forwarded))
+	}
+	// Also assert on a distinctive fragment, so a re-encoding that reorders
+	// protobuf fields could not smuggle the payload past a whole-slice match.
+	if bytes.Contains(forwarded, []byte("FLOOD-VIA-WILL")) {
+		t.Fatal("the Will payload text reached the backend")
+	}
+}
+
+// reserializeV4Connect writes the (possibly mutated) CONNECT exactly as
+// handleProxy does -- (*ip.Raw.MQTT).Write(&buf) -- and re-reads it, so the
+// assertions are on the bytes the backend would actually receive.
+func reserializeV4Connect(t *testing.T, p *packets.ConnectPacket) ([]byte, *packets.ConnectPacket) {
+	t.Helper()
+	var out bytes.Buffer
+	if err := p.Write(&out); err != nil {
+		t.Fatalf("encode CONNECT: %v", err)
+	}
+	round, err := packets.ReadPacket(bytes.NewReader(out.Bytes()))
+	if err != nil {
+		t.Fatalf("re-parse CONNECT: %v", err)
+	}
+	got, ok := round.(*packets.ConnectPacket)
+	if !ok {
+		t.Fatalf("re-parsed as %T, want *packets.ConnectPacket", round)
+	}
+	return out.Bytes(), got
 }
 
 // assertWillStrippedLine pins the PRODUCTION log contract in ONE place, so the

@@ -148,6 +148,39 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd, clientConn net.Conn) {
 			}
 		}
 
+		// Last Will strip -- the 3.1.1 mirror of inspectV5Connect's. Same
+		// action name, same field names, same field order, so ONE production
+		// grep for the WILL_STRIPPED action returns both codecs and the codec
+		// is distinguishable by protocol_version alone. See inspect_v5.go for
+		// the full reasoning: the BROKER publishes a Will on disconnect, so its
+		// payload can never traverse the uplink inspection chain, which makes
+		// it a client-chosen uninspected uplink on any topic that defeats
+		// RewriteHopLimit's fleet-wide RF flood-radius control (68-REVIEW
+		// CR-02).
+		//
+		// Placed after the whole passthrough/credential chain and gated on
+		// NOTHING: passthrough forwards the client's own credentials by design,
+		// but it must not also forward an uninspected Will, and unlike the v5
+		// inspector -- which returns early on every rejection -- this branch
+		// falls through to a caller that decides whether to forward. An
+		// unconditional strip cannot be bypassed by any future edit to that
+		// decision.
+		//
+		// Note WillQos, lowercase -- the 3.1.1 codec spells it differently from
+		// v5's WillQOS. The log carries the payload LENGTH, never its content,
+		// and the ORIGINAL client username from connInfo, not the swapped
+		// proxy identity.
+		if p.WillFlag {
+			n.InspectorLogger.Warnf("action=WILL_STRIPPED, ip=%s, protocol_version=4, username=%s, will_topic=%s, will_bytes=%d",
+				ip.Track.SocketAddress,
+				logSafe(connInfo.Username),
+				logSafe(p.WillTopic),
+				len(p.WillMessage))
+
+			p.WillFlag, p.WillTopic, p.WillMessage, p.WillQos, p.WillRetain =
+				false, "", nil, 0, false
+		}
+
 	case *packets.PublishPacket:
 		n.SetConnTrack(ip)
 		ip.MQTT.Type = "PUBLISH"

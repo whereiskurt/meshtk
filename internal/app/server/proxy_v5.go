@@ -127,14 +127,38 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 
 	// The preflight peek did not consume anything, so the CONNECT is still
 	// queued on the reader.
+	// EVERY CONNECT FAILURE BELOW ANSWERS BEFORE IT RETURNS. Each of these
+	// branches used to log and return, leaving handleProxy's deferred
+	// conn.Close() to drop the socket with nothing written -- so the client
+	// could not distinguish a refusal from a network fault and hot-retried
+	// against a mute socket. That is the 0x84 retry loop Phase 68 existed to
+	// remove, reintroduced one layer down (68-REVIEW WR-02).
+	//
+	// The answer is the MALFORMED PACKET reason code on all four, and the
+	// choice is not arbitrary. The proxy DOES speak level 5 -- it routed the
+	// connection here precisely because peekConnectProtocolVersion read a 5 --
+	// so the honest complaint is about the FRAME, not the version. Answering
+	// the unsupported-protocol-version code instead would tell a level-5 client
+	// its version is unsupported, which is the exact lie that made mqttastic
+	// retry-loop. The bad-credentials, enhanced-auth and level-above-5 answers
+	// are pinned by test AND by the committed mqtt5_probe.py regression check
+	// and are deliberately untouched here.
+	//
+	// The write error is ignored on every branch, exactly as the existing
+	// rejection paths do: the socket is about to close either way, and a client
+	// that already vanished needs no answer.
 	conn.SetReadDeadline(time.Now().Add(defaultProxyReadTimeout))
 	frame, pktType, err := readFrame(request)
 	if err != nil {
-		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, reason=%v", socketAddr, err)
+		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, answered=%#02x, reason=%v",
+			socketAddr, v5.ConnackMalformedPacket, err)
+		writeMqtt5Connack(conn, v5.ConnackMalformedPacket)
 		return
 	}
 	if pktType != v5.CONNECT {
-		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, reason=first packet is type %d, not CONNECT", socketAddr, pktType)
+		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, answered=%#02x, reason=first packet is type %d, not CONNECT",
+			socketAddr, v5.ConnackMalformedPacket, pktType)
+		writeMqtt5Connack(conn, v5.ConnackMalformedPacket)
 		return
 	}
 
@@ -143,13 +167,17 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 	cp, err := v5.ReadPacket(bytes.NewReader(frame))
 	if err != nil {
 		// Fail closed: an unparseable CONNECT cannot be authenticated, so the
-		// backend is never dialed.
-		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, reason=%v", socketAddr, err)
+		// backend is never dialed. PROVEN REACHABLE, not theoretical:
+		// peekConnectProtocolVersion reads level 5 off the very bytes
+		// v5.ReadPacket then rejects, so a client sending one unmodelled
+		// CONNECT property landed here and got silence.
+		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, answered=%#02x, reason=%v",
+			socketAddr, v5.ConnackMalformedPacket, err)
+		writeMqtt5Connack(conn, v5.ConnackMalformedPacket)
 		return
 	}
-	c, ok := cp.Content.(*v5.Connect)
+	c, ok := n.connectFromV5Packet(conn, socketAddr, cp)
 	if !ok {
-		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, reason=CONNECT frame parsed as %T", socketAddr, cp.Content)
 		return
 	}
 
@@ -403,6 +431,32 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 	}
 
 	return n.writeToBackend(backendConn, out)
+}
+
+// connectFromV5Packet asserts that a packet the codec parsed off a CONNECT
+// fixed header really is a CONNECT, and answers the client with the
+// malformed-packet CONNACK when it is not. It is the fourth and last of
+// handleProxyV5's CONNECT failure branches.
+//
+// UNREACHABLE THROUGH THE SOCKET TODAY, and worth saying so plainly:
+// v5.ReadPacket switches on the same fixed-header nibble readFrame already
+// checked, so a 0x1_ frame always yields a *v5.Connect. The branch is defence in
+// depth against that dispatch changing under a vendor bump.
+//
+// It lives in its own function for one reason: a defensive branch nobody can
+// execute is a branch nobody knows works. Extracted, it is reachable by a test
+// that asserts the same client-bound BYTES its three siblings are asserted on --
+// which is what keeps "no CONNECT failure ends in silence" a measured claim
+// across all four rather than three measured and one hoped.
+func (n *ServerCmd) connectFromV5Packet(conn net.Conn, socketAddr string, cp *v5.ControlPacket) (*v5.Connect, bool) {
+	c, ok := cp.Content.(*v5.Connect)
+	if !ok {
+		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, answered=%#02x, reason=CONNECT frame parsed as %T",
+			socketAddr, v5.ConnackMalformedPacket, cp.Content)
+		writeMqtt5Connack(conn, v5.ConnackMalformedPacket)
+		return nil, false
+	}
+	return c, true
 }
 
 // handleV5SubscribeUplink inspects one captured v5 SUBSCRIBE frame and relays it

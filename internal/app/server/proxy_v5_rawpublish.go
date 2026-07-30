@@ -34,6 +34,161 @@ type v5RawPublish struct {
 	PayloadOffset int
 	// Payload aliases frame[PayloadOffset:]; it is not a copy.
 	Payload []byte
+	// HasTopicAlias reports that the property block carries a Topic Alias
+	// property (MQTT 5.0 id 0x23). REPORTED, never judged -- exactly like
+	// Topic. handleV5PublishUplink Blocks on it, with the same reason string
+	// its codec-parsed sibling uses (68-REVIEW WR-01).
+	HasTopicAlias bool
+	// AliasScanComplete reports whether the alias walk saw the whole property
+	// block. False means the walk gave up early, so HasTopicAlias is a
+	// "not found SO FAR" and not a "not present". A false here is a reason to
+	// LOG, never a reason to skip inspection -- see scanV5PublishAlias.
+	AliasScanComplete bool
+	// AliasScanStop is the offset WITHIN the property block at which the walk
+	// stopped. It is only meaningful when AliasScanComplete is false, where it
+	// names the byte that defeated the walk so ops can extend the modelled id
+	// set instead of guessing. It is client-controlled, so it is logged with a
+	// numeric verb and never with %v.
+	AliasScanStop int
+}
+
+// The PUBLISH property ids this walk models, with their MQTT 5.0 §2.2.2 wire
+// shapes. This is the COMPLETE set the spec permits on a PUBLISH; any other id
+// is either a server-to-client property on the wrong packet type or something
+// no version of the spec defines, and either way the walk declines to guess.
+const (
+	propPayloadFormatIndicator byte = 0x01 // one byte
+	propMessageExpiryInterval  byte = 0x02 // four bytes
+	propContentType            byte = 0x03 // length-prefixed string
+	propResponseTopic          byte = 0x08 // length-prefixed string
+	propCorrelationData        byte = 0x09 // length-prefixed binary
+	propSubscriptionIdentifier byte = 0x0b // variable byte integer
+	propTopicAlias             byte = 0x23 // two bytes
+	propUserProperty           byte = 0x26 // two length-prefixed strings
+)
+
+// scanV5PublishAlias walks a PUBLISH property block looking for one thing: a
+// Topic Alias property. It returns whether an alias was found, whether the walk
+// saw the whole block, and where it stopped. It NEVER returns an error, and its
+// caller never gets a reason to withhold a parse result because of it.
+//
+// WHY THIS IS NOT THE CR-04 DEFECT, EVEN THOUGH IT READS PROPERTY IDS. The
+// distinction is the whole point of this function and is worth being explicit
+// about, because a reader who remembers CR-04 will reasonably flinch at an id
+// table appearing in this file.
+//
+// CR-04 was that an unmodelled property id GATED INSPECTION: paho.golang's
+// Properties.Unpack hard-errors on any id outside its table, the error made
+// handleV5PublishUplink relay the frame untouched, and three client-chosen bytes
+// therefore bought a permanent exemption from the hop clamp, the decider and
+// every Block rule. The id table was load-bearing for a decision it had no
+// business making.
+//
+// Here an unmodelled id costs ONE OPTIONAL REFINEMENT and nothing else. The
+// frame is still hand-parsed, the topic is still recovered, the ServiceEnvelope
+// is still decoded, PacketDecider still runs, RewriteHopLimit still clamps and
+// every Block rule still fires. The walk stops, says so
+// (action=MQTT5_ALIAS_SCAN_INDETERMINATE), and the packet is judged exactly as
+// it would have been without the walk. An id table is acceptable ONLY because of
+// that property -- if a future edit ever makes an incomplete walk change a
+// decision, the CR-04 defect is back and this comment is the warning.
+//
+// The residual is bounded and stated: 68-01 strips TopicAliasMaximum from both
+// the CONNECT and the CONNACK, so the broker grants a zero alias budget and would
+// treat any alias as a protocol error anyway. An alias hidden behind an
+// unmodelled id is therefore a frame mosquitto refuses, not a frame that gets
+// fanned out unseen.
+//
+// "complete" means the walk reached a CONCLUSIVE answer, which is either "no
+// alias anywhere in this block" (walked to the end) or "an alias is here"
+// (found it, stopped). It does not mean "read every byte": once the alias id is
+// seen there is nothing left to learn, because the caller Blocks on presence and
+// never reads the value.
+func scanV5PublishAlias(block []byte) (hasAlias bool, complete bool, stop int) {
+	i := 0
+	for i < len(block) {
+		idAt := i
+		id := block[i]
+		i++
+
+		switch id {
+		case propTopicAlias:
+			// Presence is established by the id byte alone. A value that does
+			// not fit still means an alias was declared -- so report it, and
+			// report the walk as inconclusive, because a truncated property
+			// block is not a block anyone can claim to have read.
+			if i+2 > len(block) {
+				return true, false, idAt
+			}
+			return true, true, idAt
+
+		case propPayloadFormatIndicator:
+			i++
+		case propMessageExpiryInterval:
+			i += 4
+
+		case propContentType, propResponseTopic, propCorrelationData:
+			next, ok := skipV5PropStringOrBinary(block, i)
+			if !ok {
+				return false, false, idAt
+			}
+			i = next
+
+		case propUserProperty:
+			// A key/value pair -- two length-prefixed strings, and BOTH have to
+			// fit or the walk has lost its place.
+			next, ok := skipV5PropStringOrBinary(block, i)
+			if !ok {
+				return false, false, idAt
+			}
+			next, ok = skipV5PropStringOrBinary(block, next)
+			if !ok {
+				return false, false, idAt
+			}
+			i = next
+
+		case propSubscriptionIdentifier:
+			_, consumed, err := decodeV5Varint(block[i:])
+			if err != nil {
+				// A varint that never terminates is a truncated value, handled
+				// exactly like every other one: stop, say so, inspect anyway.
+				return false, false, idAt
+			}
+			i += consumed
+
+		default:
+			// The one line that matters. An id outside the modelled set costs
+			// the refinement and NOTHING ELSE -- no error, no partial claim, and
+			// above all no reason for the caller to skip inspection.
+			return false, false, idAt
+		}
+
+		// A fixed-width value that ran off the end of the block. Same outcome as
+		// every other truncation, and checking it here keeps the two fixed-width
+		// arms above free of duplicated bounds arithmetic.
+		if i > len(block) {
+			return false, false, idAt
+		}
+	}
+
+	return false, true, i
+}
+
+// skipV5PropStringOrBinary skips one length-prefixed property value (a UTF-8
+// string or binary data -- identical on the wire) starting at pos, returning the
+// offset just past it. ok is false when the declared length runs past the block
+// end, which is the truncated-value case: not an error, just a walk that cannot
+// honestly continue.
+func skipV5PropStringOrBinary(block []byte, pos int) (next int, ok bool) {
+	if pos+2 > len(block) {
+		return 0, false
+	}
+	n := int(binary.BigEndian.Uint16(block[pos : pos+2]))
+	end := pos + 2 + n
+	if end > len(block) {
+		return 0, false
+	}
+	return end, true
 }
 
 // parseV5PublishFrame reads the topic, the QoS and the payload out of a captured
@@ -45,11 +200,14 @@ type v5RawPublish struct {
 //	uint16 + n bytes  : topic name
 //	uint16            : packet identifier -- PRESENT ONLY WHEN QoS > 0
 //	varint            : property block length in bytes
-//	n bytes           : property block -- SKIPPED WHOLE, never interpreted
+//	n bytes           : property block -- SKIPPED WHOLE for framing purposes
 //	remainder         : payload
 //
 // Every field before the payload is length-prefixed, which is exactly why the
-// payload boundary is computable without a property table.
+// payload boundary is computable without a property table. That remains true:
+// the block is skipped as a unit, and scanV5PublishAlias' optional walk over the
+// same bytes cannot change where the payload starts, whether the frame parses,
+// or what this function returns.
 //
 // It returns an error and NO partial view on any inconsistency: a length prefix
 // that does not fit, a remaining length that disagrees with the bytes actually
@@ -115,16 +273,24 @@ func parseV5PublishFrame(frame []byte) (*v5RawPublish, error) {
 	if pos+propLen > end {
 		return nil, fmt.Errorf("property block declares %d bytes, %d present", propLen, end-pos)
 	}
-	// The property block is skipped WHOLE. Reading one id here would put a
-	// property table back in the inspection path, which is the defect.
+	// The property block is skipped WHOLE for framing: the payload boundary is
+	// computed from the declared length and never from what the properties mean.
+	// The alias walk below reads the SAME bytes purely to refine what gets
+	// REPORTED, and it cannot fail this parse -- it returns no error, and both of
+	// its answers are recorded rather than acted on here. See scanV5PublishAlias
+	// for why that separation is what keeps CR-04 closed.
+	hasAlias, scanComplete, scanStop := scanV5PublishAlias(frame[pos : pos+propLen])
 	pos += propLen
 
 	return &v5RawPublish{
-		QoS:             qos,
-		Topic:           topic,
-		VarHeaderOffset: varHeaderOffset,
-		PayloadOffset:   pos,
-		Payload:         frame[pos:end],
+		QoS:               qos,
+		Topic:             topic,
+		VarHeaderOffset:   varHeaderOffset,
+		PayloadOffset:     pos,
+		Payload:           frame[pos:end],
+		HasTopicAlias:     hasAlias,
+		AliasScanComplete: scanComplete,
+		AliasScanStop:     scanStop,
 	}, nil
 }
 

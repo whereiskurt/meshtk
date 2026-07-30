@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -98,6 +99,71 @@ func writeMqtt5UnsupportedConnack(conn net.Conn) error {
 	return err
 }
 
+// Labels naming each per-connection goroutine recoverConn guards. They are
+// constants so a test asserting "the DOWNLINK recover fired" cannot silently
+// pass on an uplink recovery, and so production greps have a fixed vocabulary
+// rather than six string literals that can drift apart.
+const (
+	labelProxyUplink     = "proxy_uplink_v4"
+	labelProxyDownlink   = "proxy_downlink_v4"
+	labelProxyUplinkV5   = "proxy_uplink_v5"
+	labelProxyDownlinkV5 = "proxy_downlink_v5"
+	labelAcceptProxy     = "accept_proxy"
+	labelAcceptProtobuf  = "accept_protobuf"
+)
+
+// recoverConn contains a panic to the ONE connection that raised it.
+//
+// One process serves the whole fleet, so before this existed any panic in a
+// connection goroutine was a fleet-wide outage: every connected radio dropped
+// because one client sent one frame that reached one nil dereference. 68-REVIEW
+// CR-01 found no recover() anywhere in the proxy path. 69-01 closed the
+// specific nil-cipher crash at two layers; this is the third layer, and it is
+// deliberately independent of that bug so it holds for the NEXT one.
+//
+// Deferred at the entry of each per-connection goroutine, it converts "one
+// crafted frame kills the fleet" into "one crafted frame kills one connection,
+// loudly". Passing conn is what makes the second half true -- a recovered
+// connection whose socket stayed open would be a connection nobody is reading.
+//
+// DELIBERATELY NOT PER ITERATION. There is no recover inside the frame loops,
+// and that is the contract: a panic means an invariant this connection depends
+// on just broke, so continuing to serve it would be serving a session whose
+// state is unknown. The blast radius is one connection, never one packet.
+//
+// The stack goes through Config.Log -- logrus TextFormatter, which QUOTES field
+// values -- and never through InspectorLogger, whose SimpleFormatter emits the
+// message verbatim with no quoting. A panic value can embed client-controlled
+// bytes including newlines, so a multi-line stack written through the inspector
+// logger would let a client forge ALLOW/AUTH_REJECT lines in the security log
+// that is rotated to S3 (68-REVIEW WR-05).
+func (n *ServerCmd) recoverConn(label string, conn net.Conn) {
+	r := recover()
+	if r == nil {
+		return
+	}
+
+	// Nothing below may panic. A second panic raised inside a deferred recover
+	// handler cannot be recovered by this frame and would kill the process --
+	// reintroducing exactly the failure this function exists to prevent -- so
+	// every dereference here is guarded even where a nil looks impossible.
+	remote := "unknown"
+	if conn != nil {
+		if addr := conn.RemoteAddr(); addr != nil {
+			remote = addr.String()
+		}
+	}
+
+	if n != nil && n.Config != nil && n.Config.Log != nil {
+		n.Config.Log.Errorf("action=PANIC_RECOVERED, label=%s, remote=%s, panic=%v, stack=%s",
+			label, remote, r, debug.Stack())
+	}
+
+	if conn != nil {
+		conn.Close()
+	}
+}
+
 func (n *ServerCmd) handleProxy(conn net.Conn) {
 	socketAddr := n.TrackConnection(conn)
 
@@ -107,6 +173,12 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 		n.ConnMutex.Unlock()
 		conn.Close()
 	}(conn, socketAddr)
+
+	// Registered AFTER the cleanup closure above, so LIFO runs the recover
+	// FIRST and the ConnTrack delete + conn.Close() still run afterwards on a
+	// non-panicking goroutine. The ConnTrack delete is NOT duplicated here --
+	// the closure above owns it on both the normal and the recovered path.
+	defer n.recoverConn(labelProxyUplink, conn)
 
 	request := bufio.NewReader(conn)
 
@@ -240,6 +312,13 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 }
 
 func (n *ServerCmd) handleBackend(ctx context.Context, conn net.Conn, socketAddr string, backendConn net.Conn, backendReader *bufio.Reader) {
+	// The downlink runs in its OWN goroutine (spawned by handleProxy), so
+	// handleProxy's recover cannot contain a panic raised here -- a recover
+	// only ever catches panics from its own goroutine's stack. It needs its
+	// own. The deferred recover also ends this loop by construction, since the
+	// panic has already unwound it.
+	defer n.recoverConn(labelProxyDownlink, conn)
+
 	for {
 		select {
 		case <-ctx.Done():

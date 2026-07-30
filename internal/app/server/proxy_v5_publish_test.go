@@ -65,8 +65,13 @@ func v5PublishServer(t *testing.T, username string) (*ServerCmd, *bytes.Buffer) 
 }
 
 // nodeInfoEnvelope is a decoded NODEINFO ServiceEnvelope -- the highest-volume
-// uplink on the real fleet and, unlike a TEXT_MESSAGE, one the rules engine
-// judges without needing a channel cipher.
+// uplink on the real fleet, and one the rules engine judges without any
+// channel-key setup in the fixture.
+//
+// That is now a convenience, not a hazard. This comment used to say a
+// TEXT_MESSAGE could not be used here because it reached RewritePayloadString
+// and dereferenced a nil cipher; that crash (68-REVIEW CR-01) is closed by
+// 69-01 and is covered on BOTH codecs in rules_rewrite_test.go.
 func nodeInfoEnvelope(t *testing.T, hopLimit, hopStart uint32) *meshtastic.ServiceEnvelope {
 	t.Helper()
 	user, err := proto.Marshal(&meshtastic.User{
@@ -299,11 +304,204 @@ func TestV5PublishRemembersGateway(t *testing.T) {
 	}
 }
 
+// --- the topic-alias guard on the hand-parsed path (68-REVIEW WR-01) --------
+
+// propertyPublishFrame builds a QoS0 PUBLISH with a caller-chosen property
+// block, and ASSERTS the codec refuses it -- otherwise the test would silently
+// exercise the parseable path and prove nothing about the hand-parse arm.
+func propertyPublishFrame(t *testing.T, topic string, props, payload []byte) []byte {
+	t.Helper()
+
+	varHeader := []byte{byte(len(topic) >> 8), byte(len(topic))}
+	varHeader = append(varHeader, []byte(topic)...)
+	varHeader = append(varHeader, encodeV5Varint(len(props))...)
+	varHeader = append(varHeader, props...)
+
+	body := append(append([]byte{}, varHeader...), payload...)
+	frame := []byte{0x30} // PUBLISH, QoS 0
+	frame = append(frame, encodeV5Varint(len(body))...)
+	frame = append(frame, body...)
+
+	if _, err := v5.ReadPacket(bytes.NewReader(frame)); err == nil {
+		t.Fatal("the fixture parses cleanly; it cannot exercise the hand-parse arm")
+	}
+	return frame
+}
+
+// aliasThenUnknown and unknownThenAlias are the SAME two properties in the two
+// possible orders, and the order is the whole experiment: the walk reads left to
+// right, so one ordering is detectable and the other is not.
+var (
+	aliasThenUnknown = []byte{0x23, 0x00, 0x07, 0x7f, 0x00}
+	unknownThenAlias = []byte{0x7f, 0x00, 0x23, 0x00, 0x07}
+)
+
+// WR-01, closed. The codec path Blocks on Properties.TopicAlias != nil; the
+// hand-parse path skipped the property block whole and could not see it, so a
+// client picked which inspection judged it by choosing property bytes. Same
+// reason string on both paths, so production greps and prior evidence keep
+// working.
+func TestV5TopicAliasBlockedOnHandParsedPath(t *testing.T) {
+	n, logs := v5PublishServer(t, "publisher")
+	frame := propertyPublishFrame(t, v5PubTopic, aliasThenUnknown,
+		marshalEnvelope(t, nodeInfoEnvelope(t, 3, 3)))
+
+	var backend bytes.Buffer
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		t.Fatal("a PUBLISH carrying a Topic Alias was allowed on the hand-parsed path (WR-01)")
+	}
+	if backend.Len() != 0 {
+		t.Fatalf("%d bytes of an aliased PUBLISH reached the broker", backend.Len())
+	}
+
+	got := logs.String()
+	if !strings.Contains(got, "action=BLOCK") || !strings.Contains(got, "reason=topic_alias_uplink") {
+		t.Fatalf("missing the alias BLOCK line the codec path also emits; got:\n%s", got)
+	}
+	// A Block is the outcome, not an indeterminate walk: the alias came FIRST,
+	// so the walk reached a conclusive answer before meeting the unmodelled id.
+	if strings.Contains(got, "MQTT5_ALIAS_SCAN_INDETERMINATE") {
+		t.Fatalf("a conclusive walk was reported as indeterminate; got:\n%s", got)
+	}
+}
+
+// The other ordering, and the case that must NOT become a Block. An unmodelled
+// id ahead of the alias defeats the walk -- so the result is honestly reported
+// as indeterminate and the frame is inspected, decided and clamped exactly as it
+// would have been without the walk. Degrading to a Block here would reintroduce
+// CR-04's defect class with the sign flipped: a property table deciding a packet.
+func TestV5AliasIndeterminateStillFullyInspected(t *testing.T) {
+	n, logs := v5PublishServer(t, "publisher")
+	frame := propertyPublishFrame(t, v5PubTopic, unknownThenAlias,
+		marshalEnvelope(t, nodeInfoEnvelope(t, 7, 9)))
+
+	var backend bytes.Buffer
+	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		t.Fatal("an indeterminate alias walk Blocked the connection; the walk must never decide")
+	}
+
+	out := backend.Bytes()
+	if bytes.Equal(out, frame) {
+		t.Fatal("the captured frame was forwarded verbatim; the clamp never reached the wire")
+	}
+
+	// Locate the payload with the hand parser: the codec cannot read this frame,
+	// and neither may the assertion.
+	view, err := parseV5PublishFrame(out)
+	if err != nil {
+		t.Fatalf("the forwarded frame does not parse: %v", err)
+	}
+	if view.Topic != v5PubTopic {
+		t.Errorf("forwarded topic = %q, want %q", view.Topic, v5PubTopic)
+	}
+	var env meshtastic.ServiceEnvelope
+	if err := proto.Unmarshal(view.Payload, &env); err != nil {
+		t.Fatalf("forwarded payload is not a ServiceEnvelope: %v", err)
+	}
+	if got := env.GetPacket().GetHopLimit(); got != 3 {
+		t.Errorf("wire hop_limit = %d, want 3 -- the clamp did not run", got)
+	}
+	if got := env.GetPacket().GetHopStart(); got != 7 {
+		t.Errorf("wire hop_start = %d, want 7 (HOP_MAX clamp)", got)
+	}
+
+	// Every unmodelled property byte still survives the rewrite verbatim.
+	if !bytes.Contains(out, unknownThenAlias) {
+		t.Errorf("the property block was lost from the forwarded frame: %x", out)
+	}
+
+	got := logs.String()
+	if n := strings.Count(got, "action=MQTT5_ALIAS_SCAN_INDETERMINATE"); n != 1 {
+		t.Fatalf("one frame produced %d indeterminate lines (want exactly 1); got:\n%s", n, got)
+	}
+	if strings.Contains(got, "reason=topic_alias_uplink") {
+		t.Fatalf("an indeterminate walk Blocked for an alias it never saw; got:\n%s", got)
+	}
+}
+
+// v5PublishServerSimpleFormatter wires the InspectorLogger to the REAL
+// production formatter and to its OWN buffer.
+//
+// Both halves matter. SimpleFormatter is a bare fmt.Sprintf("%s %s\n", ...) with
+// no quoting -- logrus' TextFormatter, which every other harness in this file
+// uses, quotes, and that is precisely why WR-05 shipped undetected. And
+// Config.Log gets a separate logger because the "[proxy] ALLOW" line is written
+// there: counting PHYSICAL LINES in the inspector log is only meaningful if the
+// inspector log is the only thing in the buffer.
+func v5PublishServerSimpleFormatter(t *testing.T, clientID string) (*ServerCmd, *bytes.Buffer) {
+	t.Helper()
+	n := newTestServerCmd(&mockAuthenticator{valid: true})
+	quiet, _ := captureLogger()
+	n.Config.Log = quiet
+
+	buf := &bytes.Buffer{}
+	inspector := log.New()
+	inspector.SetOutput(buf)
+	inspector.SetLevel(log.DebugLevel)
+	inspector.SetFormatter(&SimpleFormatter{TimestampFormat: "2006-01-02 15:04:05.000"})
+	n.InspectorLogger = inspector
+
+	n.LoadInspectorRules()
+	n.ConnTrack[v5PubAddr] = &ConnectionInfo{
+		SocketAddress:   v5PubAddr,
+		Username:        "publisher",
+		ClientID:        clientID,
+		ProtocolVersion: 5,
+	}
+	return n, buf
+}
+
+// 69-03 closed WR-05 by sanitizing every client-controlled string at every
+// InspectorLogger boundary. A line ADDED after that sweep reopens it unless it
+// obeys the same rule, so the rule is tested rather than trusted: the client id
+// carries a newline plus a fully-formed forged BLOCK record, and the new line
+// must still be exactly one physical line.
+func TestV5AliasIndeterminateLogCannotBeForged(t *testing.T) {
+	const forged = "evil\n2026-07-29 00:00:00.000 action=BLOCK, ip=10.0.0.1, reason=topic_alias_uplink"
+
+	n, buf := v5PublishServerSimpleFormatter(t, forged)
+	frame := propertyPublishFrame(t, v5PubTopic, unknownThenAlias,
+		marshalEnvelope(t, nodeInfoEnvelope(t, 7, 9)))
+
+	var backend bytes.Buffer
+	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		t.Fatal("connection dropped for a packet the rules allow")
+	}
+
+	out := buf.String()
+	idx := strings.Index(out, "action=MQTT5_ALIAS_SCAN_INDETERMINATE")
+	if idx < 0 {
+		t.Fatalf("the indeterminate line was never emitted; got:\n%s", out)
+	}
+	// Everything from the new line to the end of the log: exactly ONE newline,
+	// which is the new line's own terminator. Two means the client id opened a
+	// second record -- WR-05, reopened.
+	if got := strings.Count(out[idx:], "\n"); got != 1 {
+		t.Fatalf("the new line spans %d physical lines (want exactly 1):\n%s", got, out[idx:])
+	}
+	// The forged text must SURVIVE inside the single record -- evidence of the
+	// attempt is the point; it just must not be its own line.
+	if !strings.Contains(out, "action=BLOCK") {
+		t.Fatalf("the forged text was dropped rather than contained; got:\n%s", out)
+	}
+	// And the whole frame is still exactly two records: the pre-existing
+	// MQTT5_PARSE_FAIL that marks the hand-parse arm, plus the new line. A
+	// hostile client id adds nothing.
+	if got := strings.Count(out, "\n"); got != 2 {
+		t.Fatalf("one frame produced %d log lines (want 2: MQTT5_PARSE_FAIL + the new line):\n%s", got, out)
+	}
+}
+
 // paho.golang's Properties.Unpack hard-errors on any property id outside its
-// table. Killing a live session over one unmodeled property would be a worse
-// failure than relaying it: mosquitto's ACL still constrains the swapped
-// identity, and every occurrence is greppable as action=MQTT5_PARSE_FAIL.
-func TestV5PublishParseFailureForwardsRaw(t *testing.T) {
+// table, so this frame reaches the hand-parse arm. It is then INSPECTED -- topic
+// recovered, envelope decoded, PacketDecider run -- and forwarded byte-identically
+// only because no rule mutated it, which is a very different thing from the
+// fail-open relay this test used to be named for.
+//
+// Formerly TestV5PublishParseFailureForwardsRaw, which advertised the posture
+// 68-02 retired when it closed CR-04. Every assertion below is unchanged; only
+// the name and this comment moved.
+func TestV5PublishInspectedThenForwardedByteIdentical(t *testing.T) {
 	// 30 0a | 0003 "abc" | 02 7f00 (property id 0x7f is not modelled) | "hi"
 	const unparseable = "300a0003616263027f006869"
 

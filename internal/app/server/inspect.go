@@ -52,20 +52,24 @@ type InspectorPacket struct {
 }
 type RawPacket struct {
 	MQTT *packets.ControlPacket
-	// MQTT5 carries the packet for MQTT 5.0 connections, and MQTT5Raw carries a
+	// MQTT5 carries the packet for MQTT 5.0 connections; MQTT5Raw carries a
 	// hand-parsed view of a v5 PUBLISH the codec refused to read (see
-	// proxy_v5_rawpublish.go). AT MOST ONE of MQTT, MQTT5 and MQTT5Raw is ever
-	// non-nil, and all three may be nil: the codecs are separate modules with
-	// separate wire formats, and synthesizing a 3.1.1 shim for a v5 packet would
-	// let rules mutate something that never reaches the wire (meshtk#22).
+	// proxy_v5_rawpublish.go); MQTT5RawSub carries a hand-parsed view of a v5
+	// SUBSCRIBE the codec refused to read (see proxy_v5_rawsubscribe.go).
+	// AT MOST ONE of MQTT, MQTT5, MQTT5Raw and MQTT5RawSub is ever non-nil --
+	// FOUR fields now, not three -- and all four may be nil: the codecs are
+	// separate modules with separate wire formats, and synthesizing a 3.1.1
+	// shim (or a v5.Subscribe) for a packet the codec never produced would let
+	// rules mutate something that never reaches the wire (meshtk#22).
 	//
 	// EVERY reader must nil-guard the field it wants -- rules.go's
 	// AllowMQTTControl and inspect.go's setPublishPayload are the two that
 	// dispatch across all of them, and a bare dereference in either takes down
 	// the whole proxy process rather than one connection.
-	MQTT5      *v5.ControlPacket
-	MQTT5Raw   *v5RawPublish
-	Meshtastic *meshtastic.ServiceEnvelope
+	MQTT5       *v5.ControlPacket
+	MQTT5Raw    *v5RawPublish
+	MQTT5RawSub *v5RawSubscribe
+	Meshtastic  *meshtastic.ServiceEnvelope
 }
 
 type ConnectionInfo struct {
@@ -133,12 +137,12 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd, clientConn net.Conn) {
 			valid, err := n.Authenticator.Verify(ctx, p.Username, p.Password)
 			if err != nil {
 				n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=error, err=%v",
-					ip.Track.SocketAddress, p.Username, err)
+					ip.Track.SocketAddress, logSafe(p.Username), err)
 				writeConnackRejection(clientConn)
 				ip.AuthRejected = true
 			} else if !valid {
 				n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=invalid",
-					ip.Track.SocketAddress, p.Username)
+					ip.Track.SocketAddress, logSafe(p.Username))
 				writeConnackRejection(clientConn)
 				ip.AuthRejected = true
 			} else {
@@ -146,6 +150,39 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd, clientConn net.Conn) {
 				p.Username = n.Config.Server.ProxyUsername
 				p.Password = []byte(n.Config.Server.ProxyPassword)
 			}
+		}
+
+		// Last Will strip -- the 3.1.1 mirror of inspectV5Connect's. Same
+		// action name, same field names, same field order, so ONE production
+		// grep for the WILL_STRIPPED action returns both codecs and the codec
+		// is distinguishable by protocol_version alone. See inspect_v5.go for
+		// the full reasoning: the BROKER publishes a Will on disconnect, so its
+		// payload can never traverse the uplink inspection chain, which makes
+		// it a client-chosen uninspected uplink on any topic that defeats
+		// RewriteHopLimit's fleet-wide RF flood-radius control (68-REVIEW
+		// CR-02).
+		//
+		// Placed after the whole passthrough/credential chain and gated on
+		// NOTHING: passthrough forwards the client's own credentials by design,
+		// but it must not also forward an uninspected Will, and unlike the v5
+		// inspector -- which returns early on every rejection -- this branch
+		// falls through to a caller that decides whether to forward. An
+		// unconditional strip cannot be bypassed by any future edit to that
+		// decision.
+		//
+		// Note WillQos, lowercase -- the 3.1.1 codec spells it differently from
+		// v5's WillQOS. The log carries the payload LENGTH, never its content,
+		// and the ORIGINAL client username from connInfo, not the swapped
+		// proxy identity.
+		if p.WillFlag {
+			n.InspectorLogger.Warnf("action=WILL_STRIPPED, ip=%s, protocol_version=4, username=%s, will_topic=%s, will_bytes=%d",
+				ip.Track.SocketAddress,
+				logSafe(connInfo.Username),
+				logSafe(p.WillTopic),
+				len(p.WillMessage))
+
+			p.WillFlag, p.WillTopic, p.WillMessage, p.WillQos, p.WillRetain =
+				false, "", nil, 0, false
 		}
 
 	case *packets.PublishPacket:
@@ -337,28 +374,68 @@ func (ip *InspectorPacket) setPublishPayload(b []byte) error {
 		// refused to parse -- see spliceV5PublishPayload.
 		ip.Raw.MQTT5Raw.Payload = b
 
+	case ip.Raw.MQTT5RawSub != nil:
+		// A hand-parsed v5 SUBSCRIBE has no payload to set -- a SUBSCRIBE has
+		// none at all. Saying so explicitly rather than falling into the tail
+		// below keeps this switch a real dispatch across every RawPacket member,
+		// which is what the struct's doc comment promises its readers.
+		return fmt.Errorf("cannot set publish payload: the packet is a hand-parsed v5 SUBSCRIBE, not a PUBLISH")
+
 	default:
-		return fmt.Errorf("cannot set publish payload: none of Raw.MQTT, Raw.MQTT5 or Raw.MQTT5Raw is set")
+		return fmt.Errorf("cannot set publish payload: no RawPacket member is set")
 	}
 
 	ip.WireRewritten = true
 	return nil
 }
 
-func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
+// RewritePayloadString re-encrypts the (possibly censored)
+// Meshtastic.PayloadString back into the packet and pushes the result onto the
+// wire through setPublishPayload.
+//
+// It returns a single error. The old (error, bool) form returned false on EVERY
+// path, so the bool carried no information, and its only caller discarded both
+// values -- which is how a failed censor could be reported as Rewrote while the
+// original bytes went to the broker (meshtk#22 class, review WR-08).
+//
+// The two nil guards are not defensive padding. Meshtastic.Cipher is assigned in
+// exactly one place -- inspectMeshtastic's DECRYPT branch -- so a packet that
+// arrived with a DECODED (unencrypted) payload reaches here with Cipher nil, and
+// the old code dereferenced it. That was review CR-01: a SIGSEGV in the proxy
+// read loop, and there is no recover() on that path, so ONE authenticated
+// plaintext text message killed the whole process and dropped every connected
+// radio -- not one connection.
+func (ip *InspectorPacket) RewritePayloadString() error {
 	if ip.Meshtastic.WasPKIEncrypted {
-		return fmt.Errorf("cannot rewrite packet is PKI encrypted"), false
+		return fmt.Errorf("cannot rewrite packet is PKI encrypted")
+	}
+	if ip.Meshtastic.Decoded == nil {
+		return fmt.Errorf("cannot rewrite: packet has no decoded Data")
+	}
+	if ip.Meshtastic.Cipher == nil {
+		return fmt.Errorf("cannot rewrite: no channel cipher for this packet")
 	}
 
-	// Preserve the original bitfield: 2.8 firmware drops decoded packets whose
-	// hop_start is 0 and bitfield is absent (pre-hop drop), so re-encoding a
-	// rewritten payload without it would make the message invisible to radios.
-	rewritten := &meshtastic.Data{
-		Portnum:  ip.Meshtastic.PortNum,
-		Payload:  []byte(ip.Meshtastic.PayloadString),
-		Bitfield: ip.Meshtastic.Decoded.Bitfield,
+	// Mutate the ALREADY-PARSED Data in place instead of rebuilding it from a
+	// handful of fields. proto.Marshal of a fresh struct emits only what was set,
+	// so the old three-field rebuild silently dropped want_response, dest,
+	// source, request_id, reply_id and emoji -- 2.8 tapbacks, threaded replies,
+	// delivery ACKs and DM routing -- off every rewritten text message on the
+	// fleet (review CR-03). Enumerating fields was the wrong fix shape: it has to
+	// be re-audited every time the Data message grows, and it cannot preserve
+	// protobuf unknown fields at all. Portnum and Bitfield come along for free
+	// because they were already on the parsed message, so the explicit Bitfield
+	// line meshtk#21 added (2.8 pre-hop drop) is subsumed, not removed.
+	//
+	// ORDERING IS LOAD-BEARING: marshal BEFORE reassigning PayloadVariant below.
+	// On a decoded packet the parsed Data is reachable through that same variant,
+	// so swapping it first would marshal a message the assignment just detached.
+	data := ip.Meshtastic.Decoded
+	data.Payload = []byte(ip.Meshtastic.PayloadString)
+	dataBytes, err := proto.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal rewritten Data: %w", err)
 	}
-	dataBytes, _ := proto.Marshal(rewritten)
 
 	// Prepare the encrypted payload
 	encrypted := make([]byte, len(dataBytes))
@@ -373,13 +450,9 @@ func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 
 	payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
 	if err != nil {
-		return fmt.Errorf("failed to marshal Meshtastic payload: %v", err), false
+		return fmt.Errorf("failed to marshal Meshtastic payload: %v", err)
 	}
-	if err := ip.setPublishPayload(payloadBytes); err != nil {
-		return err, false
-	}
-
-	return nil, false
+	return ip.setPublishPayload(payloadBytes)
 }
 
 // RemarshalEnvelope serializes the (possibly mutated) parsed ServiceEnvelope
@@ -409,8 +482,14 @@ func (ip *InspectorPacket) WriteLimiterLog(decision Decision, tokenCount float64
 
 	action_log += fmt.Sprintf(",tokenCount=%.02f, penalty=%v", tokenCount, penalty)
 
-	action_log += fmt.Sprintf(",clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%+v",
-		ip.Track.ClientID, ip.Track.Username, ip.MQTT.Type, ip.MQTT.Topics)
+	// Field names, field order and separators are UNCHANGED -- only the
+	// client-controlled values are wrapped. logSafe/logSafeList leave a clean
+	// value byte-identical, so this line's production shape does not move.
+	action_log += fmt.Sprintf(",clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%s",
+		logSafe(ip.Track.ClientID),
+		logSafe(ip.Track.Username),
+		ip.MQTT.Type,
+		logSafeList(ip.MQTT.Topics))
 
 	if ip.Meshtastic.WasUnmarshalled {
 		action_log += fmt.Sprintf(",mesh_type=%s, mesh_from=%08x, mesh_to=%08x, payload=%02x",
@@ -428,8 +507,13 @@ func (ip *InspectorPacket) WriteDecisionLog(result DecisionResult) string {
 		action_log = "action=BLOCK"
 	}
 
-	action_log += fmt.Sprintf(",ip=%s, clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%+v",
-		ip.Track.SocketAddress, ip.Track.ClientID, ip.Track.Username, ip.MQTT.Type, ip.MQTT.Topics)
+	// Same contract as WriteLimiterLog: names and order frozen, values wrapped.
+	action_log += fmt.Sprintf(",ip=%s, clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%s",
+		ip.Track.SocketAddress,
+		logSafe(ip.Track.ClientID),
+		logSafe(ip.Track.Username),
+		ip.MQTT.Type,
+		logSafeList(ip.MQTT.Topics))
 
 	if ip.Meshtastic.WasUnmarshalled {
 		action_log += fmt.Sprintf(",mesh_type=%s, mesh_from=%08x, mesh_to=%08x, payload=%02x",

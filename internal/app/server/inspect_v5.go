@@ -50,7 +50,9 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 	// bad-credential stream.
 	if c.Properties != nil && c.Properties.AuthMethod != "" {
 		n.InspectorLogger.Warnf("action=MQTT5_AUTH_METHOD, ip=%s, username=%s, auth_method=%s, reason=enhanced_auth_unsupported",
-			socketAddr, c.Username, c.Properties.AuthMethod)
+			socketAddr,
+			logSafe(c.Username),
+			logSafe(c.Properties.AuthMethod))
 		writeMqtt5Connack(clientConn, v5.ConnackBadAuthenticationMethod)
 		return false
 	}
@@ -81,12 +83,12 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 		valid, err := n.Authenticator.Verify(ctx, c.Username, c.Password)
 		if err != nil {
 			n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=error, err=%v",
-				socketAddr, c.Username, err)
+				socketAddr, logSafe(c.Username), err)
 			writeMqtt5Connack(clientConn, v5.ConnackNotAuthorized)
 			return false
 		} else if !valid {
 			n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=invalid",
-				socketAddr, c.Username)
+				socketAddr, logSafe(c.Username))
 			writeMqtt5Connack(clientConn, v5.ConnackNotAuthorized)
 			return false
 		}
@@ -97,6 +99,11 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 		c.Password = []byte(n.Config.Server.ProxyPassword)
 	}
 
+	// The next two blocks exist for the SAME reason: something the client fully
+	// controls would otherwise ride the CONNECT into mosquitto and bypass
+	// proxy-side inspection entirely. One blinds the topic rules; the other
+	// bypasses every rule there is.
+	//
 	// Uplink half of topic-alias suppression: telling the BROKER the client
 	// grants it no alias budget means downlink PUBLISHes always carry a real
 	// topic, so logDownlink and every topic-based rule can see it. (The
@@ -107,10 +114,54 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 		c.Properties.TopicAliasMaximum = nil
 	}
 
+	// Last Will strip (68-REVIEW CR-02). A Will topic and payload were
+	// re-encoded into the CONNECT and handed to mosquitto untouched; the BROKER
+	// publishes them on disconnect, so the payload never traverses
+	// handleV5PublishUplink, never reaches inspectV5Publish, never reaches
+	// PacketDecider.Decide, and is never seen by RewriteHopLimit,
+	// BlockInvalidEncryption or the payload censor. It is a client-chosen,
+	// uninspected uplink on any topic, replayable by reconnect-and-drop. It was
+	// PROVEN: a Will ServiceEnvelope with HopLimit 7 / HopStart 9 reached the
+	// broker inside a 140-byte forwarded CONNECT -- defeating the exact RF
+	// flood-radius control RewriteHopLimit's own comment says it exists for.
+	//
+	// STRIP RATHER THAN INSPECT, deliberately. A Will is published by the broker
+	// on disconnect, so its payload can NEVER traverse the uplink inspection
+	// chain no matter what is done at CONNECT time. Meshtastic firmware and
+	// mqttastic do not use MQTT Wills, so nothing the fleet does is lost. The
+	// alternative -- routing WillMessage through inspectMeshtastic plus
+	// PacketDecider -- would build a second, quieter inspection path, which is
+	// the defect class this whole change exists to close. The log line is what
+	// makes a real Will user visible rather than mysteriously broken.
+	//
+	// The log carries the payload LENGTH, never its content: the payload is
+	// client-controlled binary and belongs nowhere near a log line.
+	if c.WillFlag {
+		n.InspectorLogger.Warnf("action=WILL_STRIPPED, ip=%s, protocol_version=5, username=%s, will_topic=%s, will_bytes=%d",
+			socketAddr,
+			logSafe(connInfo.Username),
+			logSafe(c.WillTopic),
+			len(c.WillMessage))
+
+		// Cleared in ONE assignment so the packet is never observable with
+		// WillFlag true and a nil WillProperties -- the vendored v5 Pack
+		// dereferences WillProperties unconditionally inside its `if c.WillFlag`
+		// branch, so that intermediate state is a panic waiting to happen.
+		c.WillFlag, c.WillTopic, c.WillMessage, c.WillProperties, c.WillQOS, c.WillRetain =
+			false, "", nil, nil, 0, false
+	}
+
 	// Logged with the ORIGINAL username from connInfo, not the swapped broker
 	// identity -- the point of the line is measuring Android v5 adoption.
+	//
+	// Both client strings go through logSafe: this is the exact line WR-05
+	// forged a second copy of by embedding a newline in the client id, and it is
+	// also the line mqtt5_probe.py correlates a run on by matching the substring
+	// "client_id=<id>" -- which keeps working because a clean id is untouched.
 	n.InspectorLogger.Infof("action=MQTT5_CONNECT, ip=%s, username=%s, client_id=%s",
-		socketAddr, connInfo.Username, connInfo.ClientID)
+		socketAddr,
+		logSafe(connInfo.Username),
+		logSafe(connInfo.ClientID))
 	return true
 }
 
@@ -156,13 +207,30 @@ func (n *ServerCmd) inspectV5Subscribe(socketAddr string, cp *v5.ControlPacket) 
 }
 
 // inspectV5RawPublish is inspectV5Publish sourced from a HAND-PARSED view
-// instead of from the codec, for the frames paho.golang refuses to read. It
-// mirrors its sibling decision for decision, because the whole point is that a
-// property id outside the codec's table changes nothing about how the packet is
-// judged (CR-04).
+// instead of from the codec, for the frames paho.golang refuses to read. A
+// property id outside the codec's table must change nothing about how the packet
+// is judged (CR-04), so this builds the identical InspectorPacket and its caller
+// applies the identical guards.
 //
-// The rules engine, the decrypt path and inspectMeshtastic need no branch of
-// their own: they read ip.Raw.Meshtastic, which is filled here identically.
+// WHAT IS MIRRORED, precisely, rather than a bare claim of parity -- the bare
+// claim was WRONG for a whole release (68-REVIEW WR-01) and a precise list is
+// what makes the next omission visible:
+//
+//   - the empty-topic Block, with the same action and reason strings;
+//   - the Topic Alias Block, with the same action and reason strings (69-04);
+//   - PacketDecider.Decide via the SHARED decideV5Publish, so the Allow/Block
+//     switch cannot drift between the two paths at all;
+//   - Track, MQTT.Type, MQTT.Topics and Raw.Meshtastic, filled identically, so
+//     the rules engine, the decrypt path and inspectMeshtastic need no branch of
+//     their own -- they read ip.Raw.Meshtastic.
+//
+// THE ONE RESIDUAL, stated rather than hidden: the alias guard here rests on a
+// walk that gives up when it meets a property id it does not model, so an alias
+// hidden BEHIND such an id is not detected. That is reported as
+// action=MQTT5_ALIAS_SCAN_INDETERMINATE and never silently swallowed, and it is
+// bounded by 68-01 stripping TopicAliasMaximum in both directions -- the broker
+// grants no alias budget, so it would refuse the frame as a protocol error. The
+// residual costs one refinement; it never costs an inspection.
 func (n *ServerCmd) inspectV5RawPublish(socketAddr string, p *v5RawPublish) *InspectorPacket {
 	ip := &InspectorPacket{
 		Log:   n.InspectorLogger,

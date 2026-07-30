@@ -151,13 +151,29 @@ func rewriteRules() []Rule {
 		{
 			Name:        "RewriteHelloGoodbye",
 			Description: "Replace words in channel messages",
+			// Declining is the only honest outcome for a packet that arrived
+			// UNENCRYPTED: the censor's contract is re-encrypt-then-forward, and a
+			// decoded packet has no channel cipher to re-encrypt with, so there is
+			// nothing here to rewrite. The old matcher entered anyway and
+			// RewritePayloadString dereferenced the nil cipher -- a SIGSEGV in the
+			// read loop with no recover() above it, so one authenticated plaintext
+			// text message killed the whole process (review CR-01).
+			//
+			// Worth recording WHY that was fleet-wide rather than rare: the word
+			// replacement below is gated on the "public" username, but the rewrite
+			// CALL never was. Every text message from every user therefore
+			// traversed both the crash site (CR-01) and the field-dropping Data
+			// rebuild (CR-03), not just the censored ones.
 			Matcher: func(ip *InspectorPacket) bool {
-				// Check if the packet is a Meshtastic packet that's not PKI
+				// Check if the packet is a Meshtastic packet that's not PKI, and
+				// that we can actually re-encrypt what we are about to change.
 				if ip.Raw.Meshtastic == nil ||
 					ip.Raw.Meshtastic.Packet == nil ||
 					ip.Meshtastic.Decoded == nil ||
 					ip.Meshtastic.Decoded.Portnum != meshtastic.PortNum_TEXT_MESSAGE_APP ||
-					ip.Meshtastic.WasPKIEncrypted {
+					ip.Meshtastic.WasPKIEncrypted ||
+					!ip.Meshtastic.WasEncrypted ||
+					ip.Meshtastic.Cipher == nil {
 					return false
 				}
 
@@ -167,7 +183,14 @@ func rewriteRules() []Rule {
 					ip.Meshtastic.PayloadString = strings.ReplaceAll(ip.Meshtastic.PayloadString, "fuck", "🤬")
 				}
 
-				ip.RewritePayloadString()
+				// Consume the error, exactly as RewriteHopLimit does above.
+				// Returning true after a failed rewrite is the meshtk#22 silent
+				// no-op class: the rule reports Rewrote while the ORIGINAL bytes
+				// forward to the broker.
+				if err := ip.RewritePayloadString(); err != nil {
+					ip.Log.Errorf("payload censor failed: %v", err)
+					return false
+				}
 
 				return true
 			},

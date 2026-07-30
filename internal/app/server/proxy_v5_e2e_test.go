@@ -574,11 +574,16 @@ func (c *v5Client) expectFrame(t *testing.T, want byte, timeout time.Duration) [
 // ---------------------------------------------------------------------------
 
 // e2eEnvelope builds a DECODED NODEINFO ServiceEnvelope. Decoded, not
-// encrypted, for two reasons proven in 68-02: an encrypted payload with no
-// configured cipher trips BlockInvalidEncryption before the forward, and a
-// TEXT_MESSAGE payload reaches RewritePayloadString, which dereferences a nil
-// cipher and panics on a non-encrypted packet. NODEINFO exercises the hop
-// clamp, the decider and the ALLOW path with neither hazard.
+// encrypted, because an encrypted payload with no configured cipher trips
+// BlockInvalidEncryption before the forward -- so this fixture keeps the e2e
+// free of channel-key setup while still exercising the hop clamp, the decider
+// and the ALLOW path.
+//
+// This comment used to add that a TEXT_MESSAGE payload reaches
+// RewritePayloadString, which dereferences a nil cipher and panics on a
+// non-encrypted packet. That was true and is no longer: 68-REVIEW CR-01 is
+// closed by 69-01 (the matcher declines, the helper returns an error) and the
+// non-crash is asserted on both codecs in rules_rewrite_test.go.
 func e2eEnvelope(t *testing.T, gateway string, from, hopLimit, hopStart uint32) []byte {
 	t.Helper()
 	user, err := proto.Marshal(&meshtastic.User{Id: gateway, LongName: "DC34 e2e", ShortName: "E2E"})

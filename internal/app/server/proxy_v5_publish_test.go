@@ -65,8 +65,13 @@ func v5PublishServer(t *testing.T, username string) (*ServerCmd, *bytes.Buffer) 
 }
 
 // nodeInfoEnvelope is a decoded NODEINFO ServiceEnvelope -- the highest-volume
-// uplink on the real fleet and, unlike a TEXT_MESSAGE, one the rules engine
-// judges without needing a channel cipher.
+// uplink on the real fleet, and one the rules engine judges without any
+// channel-key setup in the fixture.
+//
+// That is now a convenience, not a hazard. This comment used to say a
+// TEXT_MESSAGE could not be used here because it reached RewritePayloadString
+// and dereferenced a nil cipher; that crash (68-REVIEW CR-01) is closed by
+// 69-01 and is covered on BOTH codecs in rules_rewrite_test.go.
 func nodeInfoEnvelope(t *testing.T, hopLimit, hopStart uint32) *meshtastic.ServiceEnvelope {
 	t.Helper()
 	user, err := proto.Marshal(&meshtastic.User{

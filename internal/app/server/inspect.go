@@ -345,20 +345,53 @@ func (ip *InspectorPacket) setPublishPayload(b []byte) error {
 	return nil
 }
 
-func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
+// RewritePayloadString re-encrypts the (possibly censored)
+// Meshtastic.PayloadString back into the packet and pushes the result onto the
+// wire through setPublishPayload.
+//
+// It returns a single error. The old (error, bool) form returned false on EVERY
+// path, so the bool carried no information, and its only caller discarded both
+// values -- which is how a failed censor could be reported as Rewrote while the
+// original bytes went to the broker (meshtk#22 class, review WR-08).
+//
+// The two nil guards are not defensive padding. Meshtastic.Cipher is assigned in
+// exactly one place -- inspectMeshtastic's DECRYPT branch -- so a packet that
+// arrived with a DECODED (unencrypted) payload reaches here with Cipher nil, and
+// the old code dereferenced it. That was review CR-01: a SIGSEGV in the proxy
+// read loop, and there is no recover() on that path, so ONE authenticated
+// plaintext text message killed the whole process and dropped every connected
+// radio -- not one connection.
+func (ip *InspectorPacket) RewritePayloadString() error {
 	if ip.Meshtastic.WasPKIEncrypted {
-		return fmt.Errorf("cannot rewrite packet is PKI encrypted"), false
+		return fmt.Errorf("cannot rewrite packet is PKI encrypted")
+	}
+	if ip.Meshtastic.Decoded == nil {
+		return fmt.Errorf("cannot rewrite: packet has no decoded Data")
+	}
+	if ip.Meshtastic.Cipher == nil {
+		return fmt.Errorf("cannot rewrite: no channel cipher for this packet")
 	}
 
-	// Preserve the original bitfield: 2.8 firmware drops decoded packets whose
-	// hop_start is 0 and bitfield is absent (pre-hop drop), so re-encoding a
-	// rewritten payload without it would make the message invisible to radios.
-	rewritten := &meshtastic.Data{
-		Portnum:  ip.Meshtastic.PortNum,
-		Payload:  []byte(ip.Meshtastic.PayloadString),
-		Bitfield: ip.Meshtastic.Decoded.Bitfield,
+	// Mutate the ALREADY-PARSED Data in place instead of rebuilding it from a
+	// handful of fields. proto.Marshal of a fresh struct emits only what was set,
+	// so the old three-field rebuild silently dropped want_response, dest,
+	// source, request_id, reply_id and emoji -- 2.8 tapbacks, threaded replies,
+	// delivery ACKs and DM routing -- off every rewritten text message on the
+	// fleet (review CR-03). Enumerating fields was the wrong fix shape: it has to
+	// be re-audited every time the Data message grows, and it cannot preserve
+	// protobuf unknown fields at all. Portnum and Bitfield come along for free
+	// because they were already on the parsed message, so the explicit Bitfield
+	// line meshtk#21 added (2.8 pre-hop drop) is subsumed, not removed.
+	//
+	// ORDERING IS LOAD-BEARING: marshal BEFORE reassigning PayloadVariant below.
+	// On a decoded packet the parsed Data is reachable through that same variant,
+	// so swapping it first would marshal a message the assignment just detached.
+	data := ip.Meshtastic.Decoded
+	data.Payload = []byte(ip.Meshtastic.PayloadString)
+	dataBytes, err := proto.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal rewritten Data: %w", err)
 	}
-	dataBytes, _ := proto.Marshal(rewritten)
 
 	// Prepare the encrypted payload
 	encrypted := make([]byte, len(dataBytes))
@@ -373,13 +406,9 @@ func (ip *InspectorPacket) RewritePayloadString() (error, bool) {
 
 	payloadBytes, err := proto.Marshal(ip.Raw.Meshtastic)
 	if err != nil {
-		return fmt.Errorf("failed to marshal Meshtastic payload: %v", err), false
+		return fmt.Errorf("failed to marshal Meshtastic payload: %v", err)
 	}
-	if err := ip.setPublishPayload(payloadBytes); err != nil {
-		return err, false
-	}
-
-	return nil, false
+	return ip.setPublishPayload(payloadBytes)
 }
 
 // RemarshalEnvelope serializes the (possibly mutated) parsed ServiceEnvelope

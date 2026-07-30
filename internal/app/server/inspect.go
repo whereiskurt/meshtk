@@ -133,12 +133,12 @@ func (ip *InspectorPacket) inspectRawPacket(n *ServerCmd, clientConn net.Conn) {
 			valid, err := n.Authenticator.Verify(ctx, p.Username, p.Password)
 			if err != nil {
 				n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=error, err=%v",
-					ip.Track.SocketAddress, p.Username, err)
+					ip.Track.SocketAddress, logSafe(p.Username), err)
 				writeConnackRejection(clientConn)
 				ip.AuthRejected = true
 			} else if !valid {
 				n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=invalid",
-					ip.Track.SocketAddress, p.Username)
+					ip.Track.SocketAddress, logSafe(p.Username))
 				writeConnackRejection(clientConn)
 				ip.AuthRejected = true
 			} else {
@@ -438,8 +438,14 @@ func (ip *InspectorPacket) WriteLimiterLog(decision Decision, tokenCount float64
 
 	action_log += fmt.Sprintf(",tokenCount=%.02f, penalty=%v", tokenCount, penalty)
 
-	action_log += fmt.Sprintf(",clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%+v",
-		ip.Track.ClientID, ip.Track.Username, ip.MQTT.Type, ip.MQTT.Topics)
+	// Field names, field order and separators are UNCHANGED -- only the
+	// client-controlled values are wrapped. logSafe/logSafeList leave a clean
+	// value byte-identical, so this line's production shape does not move.
+	action_log += fmt.Sprintf(",clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%s",
+		logSafe(ip.Track.ClientID),
+		logSafe(ip.Track.Username),
+		ip.MQTT.Type,
+		logSafeList(ip.MQTT.Topics))
 
 	if ip.Meshtastic.WasUnmarshalled {
 		action_log += fmt.Sprintf(",mesh_type=%s, mesh_from=%08x, mesh_to=%08x, payload=%02x",
@@ -457,8 +463,13 @@ func (ip *InspectorPacket) WriteDecisionLog(result DecisionResult) string {
 		action_log = "action=BLOCK"
 	}
 
-	action_log += fmt.Sprintf(",ip=%s, clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%+v",
-		ip.Track.SocketAddress, ip.Track.ClientID, ip.Track.Username, ip.MQTT.Type, ip.MQTT.Topics)
+	// Same contract as WriteLimiterLog: names and order frozen, values wrapped.
+	action_log += fmt.Sprintf(",ip=%s, clientID=%s, username=%s, mqtt_type=%s, mqtt_topic=%s",
+		ip.Track.SocketAddress,
+		logSafe(ip.Track.ClientID),
+		logSafe(ip.Track.Username),
+		ip.MQTT.Type,
+		logSafeList(ip.MQTT.Topics))
 
 	if ip.Meshtastic.WasUnmarshalled {
 		action_log += fmt.Sprintf(",mesh_type=%s, mesh_from=%08x, mesh_to=%08x, payload=%02x",

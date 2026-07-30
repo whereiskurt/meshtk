@@ -50,7 +50,9 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 	// bad-credential stream.
 	if c.Properties != nil && c.Properties.AuthMethod != "" {
 		n.InspectorLogger.Warnf("action=MQTT5_AUTH_METHOD, ip=%s, username=%s, auth_method=%s, reason=enhanced_auth_unsupported",
-			socketAddr, c.Username, c.Properties.AuthMethod)
+			socketAddr,
+			logSafe(c.Username),
+			logSafe(c.Properties.AuthMethod))
 		writeMqtt5Connack(clientConn, v5.ConnackBadAuthenticationMethod)
 		return false
 	}
@@ -81,12 +83,12 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 		valid, err := n.Authenticator.Verify(ctx, c.Username, c.Password)
 		if err != nil {
 			n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=error, err=%v",
-				socketAddr, c.Username, err)
+				socketAddr, logSafe(c.Username), err)
 			writeMqtt5Connack(clientConn, v5.ConnackNotAuthorized)
 			return false
 		} else if !valid {
 			n.InspectorLogger.Warnf("action=AUTH_REJECT, ip=%s, username=%s, reason=invalid",
-				socketAddr, c.Username)
+				socketAddr, logSafe(c.Username))
 			writeMqtt5Connack(clientConn, v5.ConnackNotAuthorized)
 			return false
 		}
@@ -109,8 +111,15 @@ func (n *ServerCmd) inspectV5Connect(clientConn net.Conn, socketAddr string, c *
 
 	// Logged with the ORIGINAL username from connInfo, not the swapped broker
 	// identity -- the point of the line is measuring Android v5 adoption.
+	//
+	// Both client strings go through logSafe: this is the exact line WR-05
+	// forged a second copy of by embedding a newline in the client id, and it is
+	// also the line mqtt5_probe.py correlates a run on by matching the substring
+	// "client_id=<id>" -- which keeps working because a clean id is untouched.
 	n.InspectorLogger.Infof("action=MQTT5_CONNECT, ip=%s, username=%s, client_id=%s",
-		socketAddr, connInfo.Username, connInfo.ClientID)
+		socketAddr,
+		logSafe(connInfo.Username),
+		logSafe(connInfo.ClientID))
 	return true
 }
 

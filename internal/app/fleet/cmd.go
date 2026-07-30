@@ -906,6 +906,14 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 						UnlockMessage:   message,
 					}
 					n.OTPUnlockMux[toFleetIdx].Unlock()
+
+					// Points: grant the owner this ghost's unlock flag (best-effort,
+					// idempotent server-side — a repeat unlock replays, never re-awards).
+					go func(gid string, radio uint32) {
+						if err := notifyUnlockAward(context.Background(), gid, radio); err != nil {
+							n.Config.Log.Debugf("unlock-award skipped (fleet ghost %s): %v", gid, err)
+						}
+					}(fleetConfig.Id, from)
 				}
 			}
 		} else {

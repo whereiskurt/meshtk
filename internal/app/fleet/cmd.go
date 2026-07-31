@@ -34,6 +34,22 @@ type OTPUnlock struct {
 	RevealURL string
 }
 
+// lyricsSession is one requester's showtime: when it started (the encore
+// cooldown clock) and the award claim link minted at song end.
+//
+// LyricsResponded holds *lyricsSession, not lyricsSession, deliberately: the
+// playback goroutine is launched with the record already in the map and mints
+// ~3.5 minutes later, so it must write the URL back into THAT record. A value
+// map would hand the goroutine a copy and the cache would never stick,
+// re-minting on every encore.
+type lyricsSession struct {
+	// at is when this requester's showtime started (cooldown clock).
+	at time.Time
+	// url caches the award claim link so an encore inside the cooldown window
+	// cannot farm a second nonce. Empty until the song ends.
+	url string
+}
+
 type FleetCmd struct {
 	Config     *config.Config
 	Nodes      []internal.NodeDB
@@ -43,13 +59,13 @@ type FleetCmd struct {
 		WasSuccess bool
 	}
 	OTPHandler      []*otp.TOTPConfig
-	Challenge       []*FlagChallengeRuntime // per-fleet covert flag challenge (nil if none)
-	OTPUnlocks      []map[uint32]*OTPUnlock // Map from radio ID to unlock info, per fleet
-	OTPUnlockMux    []sync.RWMutex          // Mutex to protect the OTPUnlocks map, per fleet
-	LyricsResponded []map[uint32]time.Time  // When each REQUESTER ('from') last got lyrics, per fleet (cooldown, not once-ever)
-	LyricsRespMux   []sync.RWMutex          // Mutex to protect the LyricsResponded map, per fleet
-	RecentReq       []map[string]time.Time  // Recent inbound DMs, for retransmit dedup, per fleet
-	RecentReqMux    []sync.Mutex            // Mutex to protect the RecentReq map, per fleet
+	Challenge       []*FlagChallengeRuntime     // per-fleet covert flag challenge (nil if none)
+	OTPUnlocks      []map[uint32]*OTPUnlock     // Map from radio ID to unlock info, per fleet
+	OTPUnlockMux    []sync.RWMutex              // Mutex to protect the OTPUnlocks map, per fleet
+	LyricsResponded []map[uint32]*lyricsSession // Each REQUESTER's ('from') showtime, per fleet (cooldown, not once-ever)
+	LyricsRespMux   []sync.RWMutex              // Mutex to protect the LyricsResponded map, per fleet
+	RecentReq       []map[string]time.Time      // Recent inbound DMs, for retransmit dedup, per fleet
+	RecentReqMux    []sync.Mutex                // Mutex to protect the RecentReq map, per fleet
 
 	// Pending holds one-shot replies that may have been published into a gap
 	// while the recipient was disconnected, keyed by recipient node. Flushed
@@ -176,7 +192,7 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		f.NodesMutex = append(f.NodesMutex, sync.Mutex{})
 		f.OTPUnlocks = append(f.OTPUnlocks, make(map[uint32]*OTPUnlock))
 		f.OTPUnlockMux = append(f.OTPUnlockMux, sync.RWMutex{})
-		f.LyricsResponded = append(f.LyricsResponded, make(map[uint32]time.Time))
+		f.LyricsResponded = append(f.LyricsResponded, make(map[uint32]*lyricsSession))
 		f.LyricsRespMux = append(f.LyricsRespMux, sync.RWMutex{})
 		f.RecentReq = append(f.RecentReq, make(map[string]time.Time))
 		f.RecentReqMux = append(f.RecentReqMux, sync.Mutex{})
@@ -986,18 +1002,25 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 	// from drowning the channel while letting a crowd get an encore, and the
 	// blocked case ANSWERS instead of ghosting the requester.
 	n.LyricsRespMux[toFleetIdx].RLock()
-	last, exists := n.LyricsResponded[toFleetIdx][from]
+	prev := n.LyricsResponded[toFleetIdx][from]
+	var last time.Time
+	if prev != nil {
+		last = prev.at
+	}
 	n.LyricsRespMux[toFleetIdx].RUnlock()
 
-	if exists && time.Since(last) < lyricsEncoreCooldown {
+	// A nil session reads exactly like an absent one: no showtime, no cooldown.
+	if prev != nil && time.Since(last) < lyricsEncoreCooldown {
 		n.Config.Log.Infof("Lyrics on cooldown for requester %d (%v since last); sending encore notice", from, time.Since(last).Round(time.Second))
 		n.sendPKIReply(toFleetIdx, to, from, topic, "🎤 One song per crowd every 10 minutes... come back for the encore.")
 		return
 	}
 
-	// Mark this requester's showtime
+	// Mark this requester's showtime. The playback goroutine below is handed
+	// THIS record and writes the award claim link back onto it at song end.
+	session := &lyricsSession{at: time.Now()}
 	n.LyricsRespMux[toFleetIdx].Lock()
-	n.LyricsResponded[toFleetIdx][from] = time.Now()
+	n.LyricsResponded[toFleetIdx][from] = session
 	n.LyricsRespMux[toFleetIdx].Unlock()
 
 	// Decode base64 lyrics

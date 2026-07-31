@@ -1065,9 +1065,15 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 				// presence of chatmode_unlocked marks this ghost LLM-capable.
 
 				// INPUT guardrail on every unlocked message.
+				// The reply is chosen by SWAPPING the argument, never by adding
+				// a branch with a second send: this function's reply-path
+				// census is pinned at 3 reliable / 0 plain sites, and an
+				// if/else here would break it. guardRefusalMessage keeps the
+				// canned refusal for a genuine block and degrades only on an
+				// outage.
 				if allowed, reason := n.guardText(context.Background(), message, guardInput); !allowed {
 					n.Config.Log.Infof("guardrail blocked INPUT from %d (%s)", from, reason)
-					n.sendPKIReplyReliable(toFleetIdx, to, from, topic, cannedRefusal)
+					n.sendPKIReplyReliable(toFleetIdx, to, from, topic, guardRefusalMessage(reason))
 					return
 				}
 
@@ -1330,8 +1336,11 @@ func (n *FleetCmd) handleLLMChat(toFleetIdx int, to, from uint32, topic string, 
 	}
 	// OUTPUT guardrail — LLM-generated replies only (the deterministic reveal in
 	// the unlocked branch is exempt so its flag code is never redacted).
-	if allowed, _ := n.guardText(context.Background(), reply, guardOutput); !allowed {
-		n.sendPKIReply(toFleetIdx, to, from, topic, cannedRefusal)
+	// The reason was being discarded here; bind it so an outage degrades
+	// visibly instead of masquerading as a refusal. Argument swap only — no
+	// second send.
+	if allowed, reason := n.guardText(context.Background(), reply, guardOutput); !allowed {
+		n.sendPKIReply(toFleetIdx, to, from, topic, guardRefusalMessage(reason))
 		return
 	}
 	msgs, dropped := splitMessages(reply)

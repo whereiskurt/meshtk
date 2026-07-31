@@ -28,3 +28,54 @@ func normalizeDashes(s string) string {
 
 	return s
 }
+
+// splitSentenceAware breaks an over-long line into pieces of at most limit
+// bytes, preferring the last sentence end inside the limit, then the last
+// comma, then the last space, and hard-cutting only for an unbroken run.
+func splitSentenceAware(text string, limit int) []string {
+	var out []string
+	rest := strings.TrimSpace(text)
+	for len(rest) > limit {
+		cut := lastIndexBefore(rest, limit, func(i int) bool {
+			c := rest[i]
+			return (c == '.' || c == '?' || c == '!') && i+1 < len(rest) && rest[i+1] == ' '
+		})
+		if cut > 0 {
+			cut++ // keep the punctuation with the piece it ends
+		}
+		if cut <= 0 {
+			cut = lastIndexBefore(rest, limit, func(i int) bool {
+				return rest[i] == ',' && i+1 < len(rest) && rest[i+1] == ' '
+			})
+			if cut > 0 {
+				cut++
+			}
+		}
+		if cut <= 0 {
+			cut = lastIndexBefore(rest, limit, func(i int) bool { return rest[i] == ' ' })
+		}
+		if cut <= 0 {
+			cut = limit
+		}
+		out = append(out, strings.TrimSpace(rest[:cut]))
+		rest = strings.TrimSpace(rest[cut:])
+	}
+	if rest != "" {
+		out = append(out, rest)
+	}
+	return out
+}
+
+// lastIndexBefore scans backwards from limit-1 for the highest index where
+// match holds, returning -1 if there is none.
+func lastIndexBefore(s string, limit int, match func(i int) bool) int {
+	if limit > len(s) {
+		limit = len(s)
+	}
+	for i := limit - 1; i > 0; i-- {
+		if match(i) {
+			return i
+		}
+	}
+	return -1
+}

@@ -100,3 +100,36 @@ func lastIndexBefore(s string, limit int, match func(i int) bool) int {
 	}
 	return -1
 }
+
+// maxChatMessages caps how many transmissions one LLM reply may become. Each
+// message is a separate PKI encrypt and a separate LoRa send, so this is an
+// airtime budget, not a style preference.
+const maxChatMessages = 7
+
+// chatHardLimit is the per-message ceiling. The style preamble asks the model
+// for 200 so its own lines never reach this; anything that does is a runaway
+// line and gets handed to splitSentenceAware.
+const chatHardLimit = 230
+
+// splitMessages turns one LLM reply into the messages to send. The model
+// authors its own breaks by emitting one message per line; this cleans up after
+// it. dropped reports how many messages the cap discarded, so the caller can
+// log it — a silent truncation would read as "the model was concise".
+func splitMessages(reply string) (msgs []string, dropped int) {
+	for _, line := range strings.Split(reply, "\n") {
+		line = normalizeDashes(line)
+		if line == "" {
+			continue
+		}
+		if len(line) <= chatHardLimit {
+			msgs = append(msgs, line)
+			continue
+		}
+		msgs = append(msgs, splitSentenceAware(line, chatHardLimit)...)
+	}
+	if len(msgs) > maxChatMessages {
+		dropped = len(msgs) - maxChatMessages
+		msgs = msgs[:maxChatMessages]
+	}
+	return msgs, dropped
+}

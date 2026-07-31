@@ -100,3 +100,66 @@ func TestSplitSentenceAwarePreservesContent(t *testing.T) {
 		t.Errorf("content not preserved:\n got %q\nwant %q", joined, in)
 	}
 }
+
+func TestSplitMessagesOnePerLine(t *testing.T) {
+	reply := "Condor here.\n\nWhat's good is nobody asks that anymore.\nI never broke crypto. I broke assumtions.\n*assumptions\n"
+	msgs, dropped := splitMessages(reply)
+	want := []string{
+		"Condor here.",
+		"What's good is nobody asks that anymore.",
+		"I never broke crypto. I broke assumtions.",
+		"*assumptions",
+	}
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0", dropped)
+	}
+	if len(msgs) != len(want) {
+		t.Fatalf("got %d msgs %q, want %d", len(msgs), msgs, len(want))
+	}
+	for i := range want {
+		if msgs[i] != want[i] {
+			t.Errorf("msg %d = %q, want %q", i, msgs[i], want[i])
+		}
+	}
+}
+
+func TestSplitMessagesNormalizesDashes(t *testing.T) {
+	msgs, _ := splitMessages("Yo—Condor here.")
+	if msgs[0] != "Yo, Condor here." {
+		t.Errorf("got %q, want %q", msgs[0], "Yo, Condor here.")
+	}
+}
+
+func TestSplitMessagesCapsAtSeven(t *testing.T) {
+	var lines []string
+	for i := 0; i < 10; i++ {
+		lines = append(lines, "line")
+	}
+	msgs, dropped := splitMessages(strings.Join(lines, "\n"))
+	if len(msgs) != maxChatMessages {
+		t.Errorf("got %d msgs, want %d", len(msgs), maxChatMessages)
+	}
+	if dropped != 3 {
+		t.Errorf("dropped = %d, want 3", dropped)
+	}
+}
+
+func TestSplitMessagesExpandsOverLongLine(t *testing.T) {
+	long := strings.Repeat("word ", 100) // 500 bytes, no sentence ends
+	msgs, _ := splitMessages(long)
+	if len(msgs) < 2 {
+		t.Fatalf("expected the long line to expand, got %d", len(msgs))
+	}
+	for _, m := range msgs {
+		if len(m) > chatHardLimit {
+			t.Errorf("msg exceeds hard limit at %d: %q", len(m), m)
+		}
+	}
+}
+
+func TestSplitMessagesEmptyReply(t *testing.T) {
+	msgs, dropped := splitMessages("\n  \n\n")
+	if len(msgs) != 0 || dropped != 0 {
+		t.Errorf("got %d msgs / %d dropped, want 0/0", len(msgs), dropped)
+	}
+}

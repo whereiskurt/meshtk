@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -181,6 +182,128 @@ func TestGetOrMintRevealURLMintsOncePerUnlock(t *testing.T) {
 	}
 	if n.OTPUnlocks[0][42].RevealURL != first {
 		t.Error("URL not cached on the unlock record")
+	}
+}
+
+// The award headline may be the ONLY message a requester gets (mint down and
+// no fallback configured), and there is no length check anywhere in the send
+// path — an over-length message is a silent drop, not a rejection.
+func TestAwardHeadlineFitsTheChatHardLimit(t *testing.T) {
+	if n := len(awardHeadline); n >= chatHardLimit {
+		t.Errorf("awardHeadline is %d bytes, must be under chatHardLimit (%d)", n, chatHardLimit)
+	}
+	if awardHeadline == "" {
+		t.Error("awardHeadline must not be empty; a silent song end is the bug this replaces")
+	}
+}
+
+func TestRickyChallengeDefaultsOverridesAndDisables(t *testing.T) {
+	// t.Setenv registers the restore; unsetting afterwards still restores.
+	t.Setenv("MESHTK_RICKY_CHALLENGE", "placeholder")
+	os.Unsetenv("MESHTK_RICKY_CHALLENGE")
+	if got := rickyChallenge(); got != "ricky" {
+		t.Errorf("unset challenge = %q, want %q", got, "ricky")
+	}
+
+	t.Setenv("MESHTK_RICKY_CHALLENGE", "encore")
+	if got := rickyChallenge(); got != "encore" {
+		t.Errorf("override = %q, want %q", got, "encore")
+	}
+
+	// Explicitly empty is the kill switch: a lyric fleet with no flag awards nothing.
+	t.Setenv("MESHTK_RICKY_CHALLENGE", "")
+	if got := rickyChallenge(); got != "" {
+		t.Errorf("explicit empty = %q, want %q (award disabled)", got, "")
+	}
+}
+
+func lyricsFleet() *FleetCmd {
+	return &FleetCmd{
+		LyricsResponded: []map[uint32]*lyricsSession{{}},
+		LyricsRespMux:   []sync.RWMutex{{}},
+	}
+}
+
+// At most one mint per radio per cooldown window: the URL caches on the lyric
+// session, so a second resolution inside the same showtime makes no HTTP call.
+func TestAwardClaimURLMintsOncePerSession(t *testing.T) {
+	var mints int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mints++
+		w.Write([]byte(`{"nonce":"n","url":"https://q.defcon.run/a/zzz111yyy222"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("MESHTK_RUN_INTERNAL_URL", srv.URL)
+	t.Setenv("MESHTK_INTERNAL_SECRET", "s")
+	t.Setenv("MESHTK_RICKY_FALLBACK_URL", "")
+
+	n := lyricsFleet()
+	session := &lyricsSession{at: time.Now()}
+	n.LyricsResponded[0][42] = session
+
+	first := n.awardClaimURL(context.Background(), 0, session, "ricky")
+	second := n.awardClaimURL(context.Background(), 0, session, "ricky")
+	if first != "https://q.defcon.run/a/zzz111yyy222" {
+		t.Errorf("wrong url: %q", first)
+	}
+	if first != second {
+		t.Errorf("encore got a DIFFERENT link: %q vs %q", first, second)
+	}
+	if mints != 1 {
+		t.Errorf("minted %d times, want 1 (no token farming)", mints)
+	}
+	if session.url != first {
+		t.Errorf("url not cached on the lyric session: %q", session.url)
+	}
+}
+
+// Mint failure must never leave a player empty-handed when a fallback exists,
+// and must never cache the fallback (a later showtime retries the real mint).
+func TestAwardClaimURLFallsBackWhenMintFails(t *testing.T) {
+	t.Setenv("MESHTK_RUN_INTERNAL_URL", "http://127.0.0.1:1") // refused
+	t.Setenv("MESHTK_INTERNAL_SECRET", "s")
+	t.Setenv("MESHTK_RICKY_FALLBACK_URL", "https://q.defcon.run/a/fallback1234")
+
+	n := lyricsFleet()
+	session := &lyricsSession{at: time.Now()}
+	n.LyricsResponded[0][42] = session
+
+	got := n.awardClaimURL(context.Background(), 0, session, "ricky")
+	if got != "https://q.defcon.run/a/fallback1234" {
+		t.Errorf("fallback url = %q", got)
+	}
+	if session.url != "" {
+		t.Errorf("fallback must not be cached on the session, got %q", session.url)
+	}
+}
+
+// No mint and no fallback: an EMPTY string, so the caller sends the headline
+// alone rather than a dead link — never a dead link, never silence.
+func TestAwardClaimURLReturnsEmptyWithNoMintAndNoFallback(t *testing.T) {
+	t.Setenv("MESHTK_RUN_INTERNAL_URL", "")
+	t.Setenv("MESHTK_INTERNAL_SECRET", "")
+	t.Setenv("MESHTK_RICKY_FALLBACK_URL", "")
+
+	n := lyricsFleet()
+	session := &lyricsSession{at: time.Now()}
+	if got := n.awardClaimURL(context.Background(), 0, session, "ricky"); got != "" {
+		t.Errorf("want empty url (headline-only degradation), got %q", got)
+	}
+}
+
+// A nil session is treated as an uncached one, not a panic: the playback
+// goroutine outlives nothing here, but a defensive nil must not crash the bot.
+func TestAwardClaimURLToleratesNilSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"url":"https://q.defcon.run/a/nilsession12"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("MESHTK_RUN_INTERNAL_URL", srv.URL)
+	t.Setenv("MESHTK_INTERNAL_SECRET", "s")
+
+	n := lyricsFleet()
+	if got := n.awardClaimURL(context.Background(), 0, nil, "ricky"); got != "https://q.defcon.run/a/nilsession12" {
+		t.Errorf("nil session url = %q", got)
 	}
 }
 

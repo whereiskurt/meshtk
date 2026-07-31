@@ -598,6 +598,73 @@ func sendSpread(count int, spacing time.Duration, sleep func(time.Duration), sen
 // once-per-lifetime (the old rule) blackholed every repeat request instead.
 const lyricsEncoreCooldown = 10 * time.Minute
 
+// defaultRickyChallenge is the Ctf row the end-of-song award claims.
+const defaultRickyChallenge = "ricky"
+
+// awardHeadline announces the end-of-song award. It must stand on its OWN:
+// when minting fails and no fallback is configured this is the only message
+// the requester gets, so it may not read as the first half of a sentence that
+// the link completes. Well under chatHardLimit (200) — there is no length
+// check anywhere in the send path, so over-length is a silent drop.
+const awardHeadline = "🏆 Never gonna let you down — you earned a flag!"
+
+// awardMintTimeout bounds how long the playback goroutine may sit on the mint
+// call. claimlink.go's transport already caps itself at 5s; this is the outer
+// guard so the goroutine can never park indefinitely if that changes.
+const awardMintTimeout = 10 * time.Second
+
+// rickyChallenge resolves which Ctf row the end-of-song award claims.
+// MESHTK_RICKY_CHALLENGE overrides it; setting that var to the EMPTY string is
+// the deliberate kill switch (a lyric fleet with no flag simply does not
+// award), which is why this reads LookupEnv rather than Getenv.
+func rickyChallenge() string {
+	if v, ok := os.LookupEnv("MESHTK_RICKY_CHALLENGE"); ok {
+		return v
+	}
+	return defaultRickyChallenge
+}
+
+// awardClaimURL returns the claim link for this showtime's award, minting AT
+// MOST ONCE per session: the url caches on the lyric session record, so an
+// encore inside the same showtime cannot farm a second nonce. Combined with
+// the 10-minute per-requester cooldown that bounds minting to one per radio
+// per window.
+//
+// It never returns an error, because there is nothing useful for the caller to
+// do with one: a mint failure degrades to MESHTK_RICKY_FALLBACK_URL, and an
+// unset fallback degrades to the empty string so the caller sends the headline
+// alone — never a dead link, never silence. The fallback is deliberately NOT
+// cached, so the next showtime retries the real mint.
+//
+// The url and the nonce are NEVER logged; the error log names only the failure
+// mode and the challenge.
+func (n *FleetCmd) awardClaimURL(ctx context.Context, toFleetIdx int, session *lyricsSession, challenge string) string {
+	n.LyricsRespMux[toFleetIdx].RLock()
+	cached := ""
+	if session != nil {
+		cached = session.url
+	}
+	n.LyricsRespMux[toFleetIdx].RUnlock()
+	if cached != "" {
+		return cached
+	}
+
+	url, err := mintClaimURLForChallenge(ctx, challenge)
+	if err != nil {
+		if n.Config != nil && n.Config.Log != nil {
+			n.Config.Log.Errorf("award claim-link mint failed for challenge %q (fleet %d): %v — using fallback", challenge, toFleetIdx, err)
+		}
+		return os.Getenv("MESHTK_RICKY_FALLBACK_URL")
+	}
+
+	n.LyricsRespMux[toFleetIdx].Lock()
+	if session != nil {
+		session.url = url
+	}
+	n.LyricsRespMux[toFleetIdx].Unlock()
+	return url
+}
+
 // requestDedupWindow collapses a radio's own retransmissions of the same DM.
 // Meshtastic resends an unacked direct message ~3 times, ~8s apart, so without
 // this every chatbot reply is multiplied by the retransmit count: 3 requests x
@@ -775,11 +842,11 @@ func staggerDelay(nextAt, now time.Time, spacing time.Duration) (delay time.Dura
 // staggered pendingFlushSpacing apart: a same-millisecond 2-line burst down the
 // BLE pipe regularly delivered exactly one line.
 // Do NOT use it for the lyric body in handleLyricsChat — ricky already emits
-// ~60 messages per request and retrying every line would flood the channel,
+// ~58 messages per request and retrying every line would flood the channel,
 // re-creating the drowning problem that hid this bug in the first place. The
-// single exception is the FINAL lyric line: it carries the flag, arrives ~2
-// minutes into playback (past the iOS proxy's ~60s reconnect cadence), and a
-// QoS0 publish into a reconnect gap is silently dropped.
+// exceptions are the three messages that actually matter: lyric line 01 (the
+// requester's only confirmation the show started) and the two award messages
+// at song end. The flag no longer rides a lyric line at all.
 func (n *FleetCmd) sendPKIReplyReliable(toFleetIdx int, to, from uint32, topic string, reply string) {
 	// `to` is the replying ghost, `from` is the recipient radio (swapped for the reply).
 	replyTopic, envelope, ok := n.buildPKIReply(toFleetIdx, to, from, topic, reply)
@@ -1114,17 +1181,38 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 				return
 			case <-time.After(entry.timestamp - time.Since(startTime)):
 				line := numberLyric(i, entry.text)
-				if i == len(lyricEntries)-1 {
-					// The final line carries the flag. By now the song has run
-					// ~2 minutes — past the iOS proxy's ~60s reconnect cadence —
-					// so this is the line most likely to land in a QoS0 gap.
-					// Reliable path: retry spread + pending flush on reconnect.
+				if i == 0 {
+					// Line 01 is the one lyric worth retrying: it is the
+					// requester's only confirmation the show started, and
+					// drops here are observed live — root-caused DOWNSTREAM of
+					// MQTT (the iOS proxy -> BLE hop), not to a QoS0 reconnect
+					// gap. Reliable path: retry spread + pending flush.
+					// Everything after it stays single-shot; see the census in
+					// TestLyricsChatReliableSiteCensus.
 					n.sendPKIReplyReliable(toFleetIdx, to, from, topic, line)
 				} else {
 					n.sendPKIReply(toFleetIdx, to, from, topic, line)
 				}
 				n.Config.Log.Debugf("Sent lyric at %v: %s", entry.timestamp, line)
 			}
+		}
+
+		// The song finished (the termination timer returns above instead, with
+		// no award). Mint the claim link and hand out the flag as TWO separate
+		// reliable messages: the link must arrive as its own message so a
+		// client renders it as a tappable target, and the per-message ceiling
+		// is chatHardLimit (200) with no length check in the send path.
+		challenge := rickyChallenge()
+		if challenge == "" {
+			return
+		}
+		actx, cancel := context.WithTimeout(context.Background(), awardMintTimeout)
+		url := n.awardClaimURL(actx, toFleetIdx, session, challenge)
+		cancel()
+
+		n.sendPKIReplyReliable(toFleetIdx, to, from, topic, awardHeadline)
+		if url != "" {
+			n.sendPKIReplyReliable(toFleetIdx, to, from, topic, url)
 		}
 	}()
 

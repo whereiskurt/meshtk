@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,18 +21,46 @@ import (
 // the exact string at build with: aws bedrock list-inference-profiles --region us-east-1
 // | grep -i haiku   (us-east-1 → "us." prefix; ca-central-1 may need its own profile).
 const bedrockModelID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-const llmMaxTokens = 150
+const llmMaxTokens = 2000
 const llmTemperature = 0.8
 
-const defaultSystemPrompt = "You are a helpful assistant on a mesh network. Keep responses under 230 characters."
+// chatStylePreamble is the shared output contract for every LLM ghost. Voice
+// lives in each persona's SystemPrompt; how the words arrive lives here, so
+// cadence is tuned in one place across the whole fleet.
+//
+// The 200-character ask sits under chatHardLimit (230) deliberately, so the
+// model's own lines never reach the fallback splitter.
+const chatStylePreamble = `You are texting on a mesh radio. Write like a person, not a chatbot.
+
+Put each message on its own line. A blank line is ignored. Send 3 to 7 messages.
+Keep every message under 200 characters. Most should be much shorter. A one or
+two word message is good.
+
+Never use an em dash or an en dash. Use a period, a comma, or start a new message.
+
+Type the way a person types on a phone: contractions, dropped apostrophes,
+lowercase after the opening message, short words instead of long ones.
+
+About one message in five should carry a small typo. Never put a typo in a URL,
+a code, or a number. Now and then, fix a typo by sending the corrected word on
+its own with a leading asterisk.
+
+Do not number your messages. No bullets, no markdown, no stage directions.`
+
+// composeSystemPrompt puts the shared cadence contract in front of the ghost's
+// own voice.
+func composeSystemPrompt(persona string) string {
+	if strings.TrimSpace(persona) == "" {
+		return chatStylePreamble
+	}
+	return chatStylePreamble + "\n\n" + persona
+}
 
 // generateReply routes to the Anthropic first-party API when MESHTK_ANTHROPIC_KEY
 // is set (operator-flippable backup), otherwise to Amazon Bedrock (task-role auth,
 // the prod default). OpenAI has been removed.
 func generateReply(ctx context.Context, message, systemPrompt string) (string, error) {
-	if systemPrompt == "" {
-		systemPrompt = defaultSystemPrompt
-	}
+	systemPrompt = composeSystemPrompt(systemPrompt)
 	if key := os.Getenv("MESHTK_ANTHROPIC_KEY"); key != "" {
 		return callClaudeAnthropic(ctx, message, systemPrompt, key)
 	}

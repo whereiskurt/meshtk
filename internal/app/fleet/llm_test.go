@@ -29,3 +29,35 @@ func TestAnthropicModelBodyShape(t *testing.T) {
 		}
 	}
 }
+
+func TestComposeSystemPromptIncludesBoth(t *testing.T) {
+	got := composeSystemPrompt("You are Condor.")
+	if !strings.Contains(got, "You are Condor.") {
+		t.Error("persona missing from composed prompt")
+	}
+	if !strings.Contains(got, "own line") {
+		t.Error("style preamble missing from composed prompt")
+	}
+}
+
+func TestComposeSystemPromptEmptyPersona(t *testing.T) {
+	if got := composeSystemPrompt("   "); got != chatStylePreamble {
+		t.Errorf("empty persona should yield the bare preamble, got %q", got)
+	}
+}
+
+// The preamble tells the model never to use an em dash. It would be a poor
+// teacher if it used one itself.
+func TestChatStylePreambleHasNoDashes(t *testing.T) {
+	if strings.ContainsAny(chatStylePreamble, "—–") {
+		t.Error("chatStylePreamble contains an em or en dash")
+	}
+}
+
+func TestLLMMaxTokensAllowsFullBurst(t *testing.T) {
+	// 7 messages of ~200 chars is roughly 400 tokens; the ceiling must clear
+	// that with room so the final message is never clipped mid-word.
+	if llmMaxTokens < 1000 {
+		t.Errorf("llmMaxTokens = %d, too low for a 7-message burst", llmMaxTokens)
+	}
+}

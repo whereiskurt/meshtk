@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -131,11 +132,15 @@ func TestStaggerDelaySpacesConsecutiveSends(t *testing.T) {
 // The first send is synchronous — the reply must not be delayed by the retry
 // machinery — and the handler must not be stalled for the full spread.
 func TestSendSpreadFirstSendIsSynchronous(t *testing.T) {
-	n := 0
+	// Counted atomically: sendSpread's retry goroutine is still sending while
+	// this test reads the count, so a plain int here is a genuine data race.
+	// It has been one since this test was written; it only started failing the
+	// gate when the end-of-song award made `go test -race` a routine check.
+	var n atomic.Int64
 	blockingSleep := func(time.Duration) { time.Sleep(10 * time.Millisecond) }
 	done := make(chan struct{})
 	go func() {
-		sendSpread(2, time.Second, blockingSleep, func() { n++ })
+		sendSpread(2, time.Second, blockingSleep, func() { n.Add(1) })
 		close(done)
 	}()
 	select {
@@ -143,7 +148,7 @@ func TestSendSpreadFirstSendIsSynchronous(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("sendSpread blocked on the retry goroutine")
 	}
-	if n < 1 {
+	if n.Load() < 1 {
 		t.Fatal("first send did not happen synchronously")
 	}
 }
@@ -190,18 +195,33 @@ func calleeNames(fd *ast.FuncDecl) map[string]int {
 	return out
 }
 
-// ricky's lyrics already emit ~60 messages per request; retrying them 3x would
-// produce ~180 and re-create the channel drowning that this work just fixed.
-// The FINAL line is the one exception: it carries the flag, and a QoS0 publish
-// into an iOS-proxy reconnect gap is silently dropped (observed live 2026-07-29
-// — a full song delivered through line 58, flag line 59 never reached the
-// radio). Exactly one reliable call site: the payoff line. The body stays
-// single-send.
-func TestLyricsChatFinalLineUsesReliableRetry(t *testing.T) {
+// The reliable-site census for handleLyricsChat is EXACTLY THREE, and each one
+// is deliberate:
+//
+//  1. lyric line 01 — the requester's only confirmation the show started.
+//     Drops here are observed live and were root-caused DOWNSTREAM of MQTT, at
+//     the iOS proxy -> BLE hop; that is a delivery loss a retry spread plus a
+//     pending flush actually covers, not a QoS0 reconnect gap.
+//  2. the award headline at song end.
+//  3. the single-use claim link, sent as its OWN message so a client renders
+//     it as a tappable target.
+//
+// Everything else — lyric lines 02 through 58 — stays single-send. Retrying
+// the body would turn roughly sixty sends into roughly one hundred eighty and
+// re-create the channel drowning a previous phase fixed; that is the whole
+// reason this count is pinned rather than left to judgement.
+//
+// This assertion moved from exactly-1 to exactly-3 deliberately. The old
+// single site was the FINAL lyric line, back when the flag rode a literal QR
+// path recited as line 59. The flag no longer rides a lyric line at all — it
+// arrives as a minted claim link after the song — so there is no longer any
+// special final line, and the two messages that carry the payoff are the ones
+// that must not be dropped.
+func TestLyricsChatReliableSiteCensus(t *testing.T) {
 	fd, _ := funcBody(t, "handleLyricsChat")
 	calls := calleeNames(fd)
-	if got := calls["sendPKIReplyReliable"]; got != 1 {
-		t.Errorf("handleLyricsChat calls sendPKIReplyReliable %d times, want exactly 1 (the final/flag line); lyric body must stay single-send", got)
+	if got := calls["sendPKIReplyReliable"]; got != 3 {
+		t.Errorf("handleLyricsChat calls sendPKIReplyReliable %d times, want exactly 3 (line 01, award headline, claim link); the ~58-line lyric body must stay single-send", got)
 	}
 	if calls["sendPKIReply"] == 0 {
 		t.Error("handleLyricsChat no longer calls sendPKIReply at all")

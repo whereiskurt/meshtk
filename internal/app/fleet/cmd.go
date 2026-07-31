@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"strconv"
@@ -76,6 +77,34 @@ type FleetCmd struct {
 	// fleet-wide generalization of crypto.go's pubKeyCache. Built once in
 	// NewFleets; nil if the store failed to build (falls back to nodes.json).
 	KeyResolver *keycache.KeyResolver
+
+	// BurstLocks serializes handleLLMChat's paced send goroutine per
+	// (fleet, requester radio): a follow-up question that arrives while a
+	// burst is still draining queues behind it instead of interleaving its
+	// messages on the wire. Keyed by burstKey, one *sync.Mutex per pair,
+	// created on first use via burstLockFor and kept for the process
+	// lifetime — see burstLockFor's comment for why that lifetime is fine.
+	BurstLocks sync.Map
+}
+
+// burstKey identifies one (fleet, requester radio) pair for BurstLocks.
+type burstKey struct {
+	fleetIdx int
+	from     uint32
+}
+
+// burstLockFor returns the mutex serializing chat bursts for (fleetIdx, from),
+// creating one on first use. The same key always returns the same *sync.Mutex;
+// different keys never share one, so two different radios talking to the same
+// ghost still burst concurrently while one radio's own follow-ups serialize.
+//
+// The mutex is never removed once created, so BurstLocks grows by one entry
+// per distinct radio seen for the life of the process. At a conference the
+// number of distinct radios is bounded (hundreds, not millions), so this is
+// an acceptable process-lifetime cost, not unbounded growth in practice.
+func (n *FleetCmd) burstLockFor(fleetIdx int, from uint32) *sync.Mutex {
+	actual, _ := n.BurstLocks.LoadOrStore(burstKey{fleetIdx: fleetIdx, from: from}, &sync.Mutex{})
+	return actual.(*sync.Mutex)
 }
 
 // FlagChallengeRuntime is the per-fleet, resolved covert-flag challenge: trigger
@@ -1093,68 +1122,43 @@ func (n *FleetCmd) handleLLMChat(toFleetIdx int, to, from uint32, topic string, 
 		n.sendPKIReply(toFleetIdx, to, from, topic, cannedRefusal)
 		return
 	}
-	for i, chunk := range n.splitIntoChunks(reply, 60) {
-		if i == 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
-		n.sendPKIReply(toFleetIdx, to, from, topic, chunk)
-		time.Sleep(500 * time.Millisecond)
+	msgs, dropped := splitMessages(reply)
+	if dropped > 0 {
+		n.Config.Log.Warnf("LLM reply exceeded %d messages, dropped %d", maxChatMessages, dropped)
 	}
-}
-
-// splitIntoChunks splits a string into chunks of specified size
-// It attempts to break at whitespace boundaries to avoid splitting words
-func (n *FleetCmd) splitIntoChunks(text string, chunkSize int) []string {
-	if len(text) == 0 {
-		return []string{}
+	if len(msgs) == 0 {
+		n.Config.Log.Errorf("LLM reply produced no sendable messages")
+		return
 	}
+	// Paced multi-message sends run on their own goroutine, mirroring
+	// handleLyricsChat above: this handler executes inline on paho's ordered
+	// dispatch goroutine (mqtt.go ConnectAndListen -> FleetNodeHandler,
+	// SetOrderMatters defaults to true), and paho's own contract is that a
+	// message handler must not block. A burst can take up to ~27s; blocking
+	// the dispatch goroutine that long stalls ACKs and, worse, can outlast
+	// isRetransmit's fixed 30s dedup window (cmd.go) so a queued device
+	// retransmit reads as a brand new request and fires a second full burst.
+	go func() {
+		// Serialize this burst against any other burst already draining for
+		// the same (fleet, requester radio). The lock is acquired HERE, inside
+		// the goroutine, never before `go func()` — taking it on the paho
+		// dispatch path would reintroduce the blocking bug this goroutine
+		// exists to fix. A second question from the same radio (different
+		// text, so isRetransmit does not catch it) now queues behind the
+		// first burst instead of interleaving its messages on the wire; a
+		// different radio talking to the same ghost is a different key and
+		// bursts concurrently.
+		lock := n.burstLockFor(toFleetIdx, from)
+		lock.Lock()
+		defer lock.Unlock()
 
-	var chunks []string
-	remaining := text
-
-	for len(remaining) > 0 {
-		// If the remaining text fits in one chunk, add it and we're done
-		if len(remaining) <= chunkSize {
-			chunks = append(chunks, remaining)
-			break
-		}
-
-		// Find the last whitespace within the chunk size limit
-		chunkEnd := chunkSize
-		for i := chunkSize - 1; i >= 0; i-- {
-			if remaining[i] == ' ' || remaining[i] == '\n' || remaining[i] == '\t' {
-				chunkEnd = i
-				break
+		time.Sleep(openingDelay(rand.Float64()))
+		for i, m := range msgs {
+			n.sendPKIReply(toFleetIdx, to, from, topic, m)
+			if i < len(msgs)-1 {
+				time.Sleep(applyJitter(baseDelay(len(m)), rand.Float64()))
 			}
 		}
-
-		// If no whitespace found, fall back to the original behavior
-		// This handles cases where a single word is longer than chunkSize
-		if chunkEnd == chunkSize {
-			// Check if we're at the start and there's no whitespace at all
-			// in the first chunkSize characters
-			foundSpace := false
-			for i := 0; i < chunkSize && i < len(remaining); i++ {
-				if remaining[i] == ' ' || remaining[i] == '\n' || remaining[i] == '\t' {
-					foundSpace = true
-					break
-				}
-			}
-			if !foundSpace {
-				// No whitespace found, just break at chunk size
-				chunks = append(chunks, remaining[:chunkSize])
-				remaining = remaining[chunkSize:]
-				continue
-			}
-		}
-
-		// Extract the chunk and trim any trailing whitespace
-		chunk := strings.TrimRight(remaining[:chunkEnd], " \n\t")
-		chunks = append(chunks, chunk)
-
-		// Move past the chunk and any leading whitespace
-		remaining = strings.TrimLeft(remaining[chunkEnd:], " \n\t")
-	}
-
-	return chunks
+		n.Config.Log.Infof("LLM chat burst completed for conversation from %d to %d (%d messages)", from, to, len(msgs))
+	}()
 }

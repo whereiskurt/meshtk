@@ -1102,11 +1102,22 @@ func (n *FleetCmd) handleLLMChat(toFleetIdx int, to, from uint32, topic string, 
 		n.Config.Log.Errorf("LLM reply produced no sendable messages")
 		return
 	}
-	time.Sleep(openingDelay(rand.Float64()))
-	for i, m := range msgs {
-		n.sendPKIReply(toFleetIdx, to, from, topic, m)
-		if i < len(msgs)-1 {
-			time.Sleep(applyJitter(baseDelay(len(m)), rand.Float64()))
+	// Paced multi-message sends run on their own goroutine, mirroring
+	// handleLyricsChat above: this handler executes inline on paho's ordered
+	// dispatch goroutine (mqtt.go ConnectAndListen -> FleetNodeHandler,
+	// SetOrderMatters defaults to true), and paho's own contract is that a
+	// message handler must not block. A burst can take up to ~27s; blocking
+	// the dispatch goroutine that long stalls ACKs and, worse, can outlast
+	// isRetransmit's fixed 30s dedup window (cmd.go) so a queued device
+	// retransmit reads as a brand new request and fires a second full burst.
+	go func() {
+		time.Sleep(openingDelay(rand.Float64()))
+		for i, m := range msgs {
+			n.sendPKIReply(toFleetIdx, to, from, topic, m)
+			if i < len(msgs)-1 {
+				time.Sleep(applyJitter(baseDelay(len(m)), rand.Float64()))
+			}
 		}
-	}
+		n.Config.Log.Infof("LLM chat burst completed for conversation from %d to %d (%d messages)", from, to, len(msgs))
+	}()
 }

@@ -1,6 +1,6 @@
 module github.com/whereiskurt/meshtk
 
-go 1.24.1
+go 1.25.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.43.0
@@ -17,7 +17,7 @@ require (
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.0
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/crypto v0.36.0
+	golang.org/x/crypto v0.54.0
 	google.golang.org/protobuf v1.36.5
 )
 
@@ -61,10 +61,10 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.9.0 // indirect
-	golang.org/x/net v0.38.0 // indirect
-	golang.org/x/sync v0.12.0
-	golang.org/x/sys v0.31.0 // indirect
-	golang.org/x/text v0.23.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.22.0
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/grpc v1.71.1
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

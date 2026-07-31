@@ -1,6 +1,10 @@
 package fleet
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func TestNormalizeDashes(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -63,5 +67,36 @@ func TestSplitSentenceAwareRespectsLimit(t *testing.T) {
 		if len(p) > 230 {
 			t.Errorf("part exceeds limit at %d: %q", len(p), p)
 		}
+	}
+}
+
+func TestSplitSentenceAwareGuardsNonPositiveLimit(t *testing.T) {
+	// Must not hang and must not panic.
+	if got := splitSentenceAware("some text", 0); len(got) == 0 {
+		t.Error("limit 0 should still return the text")
+	}
+	if got := splitSentenceAware("some text", -5); len(got) == 0 {
+		t.Error("negative limit should still return the text")
+	}
+}
+
+func TestSplitSentenceAwareHardCutKeepsRunesIntact(t *testing.T) {
+	// No spaces anywhere, so every break takes the hard-cut path, and the
+	// multi-byte runes make byte-slicing visible.
+	in := strings.Repeat("é", 40) // 80 bytes, zero spaces
+	for _, p := range splitSentenceAware(in, 25) {
+		if !utf8.ValidString(p) {
+			t.Errorf("hard cut produced invalid UTF-8: %q", p)
+		}
+	}
+}
+
+func TestSplitSentenceAwarePreservesContent(t *testing.T) {
+	// Guards against off-by-one slicing: the pieces must reconstruct the
+	// input, ignoring the whitespace the splitter trims at each break.
+	in := "The tech was never the hard part. People are. A badge and a clipboard got me through more doors than any exploit ever did, and that is not a joke about security theatre, it is just what happened every single time I tried it."
+	joined := strings.Join(splitSentenceAware(in, 60), " ")
+	if strings.Join(strings.Fields(joined), " ") != strings.Join(strings.Fields(in), " ") {
+		t.Errorf("content not preserved:\n got %q\nwant %q", joined, in)
 	}
 }

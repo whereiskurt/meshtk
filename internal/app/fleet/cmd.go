@@ -77,6 +77,34 @@ type FleetCmd struct {
 	// fleet-wide generalization of crypto.go's pubKeyCache. Built once in
 	// NewFleets; nil if the store failed to build (falls back to nodes.json).
 	KeyResolver *keycache.KeyResolver
+
+	// BurstLocks serializes handleLLMChat's paced send goroutine per
+	// (fleet, requester radio): a follow-up question that arrives while a
+	// burst is still draining queues behind it instead of interleaving its
+	// messages on the wire. Keyed by burstKey, one *sync.Mutex per pair,
+	// created on first use via burstLockFor and kept for the process
+	// lifetime — see burstLockFor's comment for why that lifetime is fine.
+	BurstLocks sync.Map
+}
+
+// burstKey identifies one (fleet, requester radio) pair for BurstLocks.
+type burstKey struct {
+	fleetIdx int
+	from     uint32
+}
+
+// burstLockFor returns the mutex serializing chat bursts for (fleetIdx, from),
+// creating one on first use. The same key always returns the same *sync.Mutex;
+// different keys never share one, so two different radios talking to the same
+// ghost still burst concurrently while one radio's own follow-ups serialize.
+//
+// The mutex is never removed once created, so BurstLocks grows by one entry
+// per distinct radio seen for the life of the process. At a conference the
+// number of distinct radios is bounded (hundreds, not millions), so this is
+// an acceptable process-lifetime cost, not unbounded growth in practice.
+func (n *FleetCmd) burstLockFor(fleetIdx int, from uint32) *sync.Mutex {
+	actual, _ := n.BurstLocks.LoadOrStore(burstKey{fleetIdx: fleetIdx, from: from}, &sync.Mutex{})
+	return actual.(*sync.Mutex)
 }
 
 // FlagChallengeRuntime is the per-fleet, resolved covert-flag challenge: trigger
@@ -1111,6 +1139,19 @@ func (n *FleetCmd) handleLLMChat(toFleetIdx int, to, from uint32, topic string, 
 	// isRetransmit's fixed 30s dedup window (cmd.go) so a queued device
 	// retransmit reads as a brand new request and fires a second full burst.
 	go func() {
+		// Serialize this burst against any other burst already draining for
+		// the same (fleet, requester radio). The lock is acquired HERE, inside
+		// the goroutine, never before `go func()` — taking it on the paho
+		// dispatch path would reintroduce the blocking bug this goroutine
+		// exists to fix. A second question from the same radio (different
+		// text, so isRetransmit does not catch it) now queues behind the
+		// first burst instead of interleaving its messages on the wire; a
+		// different radio talking to the same ghost is a different key and
+		// bursts concurrently.
+		lock := n.burstLockFor(toFleetIdx, from)
+		lock.Lock()
+		defer lock.Unlock()
+
 		time.Sleep(openingDelay(rand.Float64()))
 		for i, m := range msgs {
 			n.sendPKIReply(toFleetIdx, to, from, topic, m)

@@ -28,8 +28,9 @@ const llmTemperature = 0.8
 // lives in each persona's SystemPrompt; how the words arrive lives here, so
 // cadence is tuned in one place across the whole fleet.
 //
-// The 200-character ask sits under chatHardLimit (230) deliberately, so the
-// model's own lines never reach the fallback splitter.
+// The 200-character ask matches chatHardLimit (200) exactly, so a model that
+// honors the contract never reaches the fallback splitter; splitSentenceAware
+// only catches a line that runs over.
 const chatStylePreamble = `You are texting on a mesh radio. Write like a person, not a chatbot.
 
 Put each message on its own line. A blank line is ignored. Send 3 to 7 messages.

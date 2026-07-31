@@ -64,8 +64,8 @@ func TestSplitSentenceAwareHardCutsUnbrokenRun(t *testing.T) {
 
 func TestSplitSentenceAwareRespectsLimit(t *testing.T) {
 	long := "The tech was never the hard part. People are. A badge and a clipboard got me through more doors than any exploit ever did, and that is not a joke about security theatre, it is just what happened every single time I tried it."
-	for _, p := range splitSentenceAware(long, 230) {
-		if len(p) > 230 {
+	for _, p := range splitSentenceAware(long, 200) {
+		if len(p) > 200 {
 			t.Errorf("part exceeds limit at %d: %q", len(p), p)
 		}
 	}
@@ -173,7 +173,7 @@ func TestBaseDelayClamps(t *testing.T) {
 		{0, 600 * time.Millisecond},    // floor
 		{10, 600 * time.Millisecond},   // 450+140=590, still floored
 		{130, 2270 * time.Millisecond}, // 450 + 130*14
-		{230, 3500 * time.Millisecond}, // 450+3220=3670, ceilinged
+		{200, 3250 * time.Millisecond}, // 450+2800=3250, headroom under the 3500ms ceiling at the new chatHardLimit
 		{5000, 3500 * time.Millisecond},
 	}
 	for _, c := range cases {

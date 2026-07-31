@@ -107,10 +107,17 @@ func lastIndexBefore(s string, limit int, match func(i int) bool) int {
 // airtime budget, not a style preference.
 const maxChatMessages = 7
 
-// chatHardLimit is the per-message ceiling. The style preamble asks the model
-// for 200 so its own lines never reach this; anything that does is a runaway
-// line and gets handed to splitSentenceAware.
-const chatHardLimit = 230
+// chatHardLimit is the per-message ceiling, chosen to leave real headroom
+// under meshtastic.Constants_DATA_PAYLOAD_LEN (233). A 230-byte text -- the
+// old limit -- became a Data protobuf of roughly 237 bytes after portnum and
+// framing, and PKC added another ~12 bytes on top for nonce and auth tag: that
+// already blew the 233-byte payload budget before encryption even ran. There
+// is no length check anywhere in the send path, so an over-length message is
+// a silent-drop risk, not a rejected one. 200 bytes leaves comfortable
+// headroom instead. The style preamble asks the model for the same 200, so a
+// model that honors the contract never reaches this limit; anything that does
+// is a runaway line and gets handed to splitSentenceAware.
+const chatHardLimit = 200
 
 // splitMessages turns one LLM reply into the messages to send. The model
 // authors its own breaks by emitting one message per line; this cleans up after

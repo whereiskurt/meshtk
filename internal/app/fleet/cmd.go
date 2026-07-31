@@ -101,6 +101,23 @@ type FleetCmd struct {
 	// created on first use via burstLockFor and kept for the process
 	// lifetime — see burstLockFor's comment for why that lifetime is fine.
 	BurstLocks sync.Map
+
+	// LyricSlots caps CONCURRENT lyric performances process-wide. The encore
+	// cooldown is per REQUESTER, so N distinct radios legitimately start N
+	// concurrent songs and nothing bounds the sum. Per-radio load is fine
+	// (~58 messages over ~214s, roughly one every 3.6s); what is not fine is
+	// the aggregate, because the thing being consumed is RF airtime shared by
+	// listeners who never asked for a song. Fifty uncapped talkers is ~13.8
+	// messages/second of 200-byte packets, which collapses a LoRa channel long
+	// before the server notices anything is wrong. Twelve slots bounds it to
+	// 12 x 58 / 214s = ~3.3 messages/second.
+	//
+	// Deliberately ONE channel, not one per fleet: airtime knows nothing about
+	// fleet indices, and a per-fleet cap would multiply by the fleet count.
+	// Sized once at construction so the cap is a process-wide invariant rather
+	// than something a mid-flight env change can move. Nil means unlimited,
+	// which is what a bare &FleetCmd{} in a unit test gets.
+	LyricSlots chan struct{}
 }
 
 // burstKey identifies one (fleet, requester radio) pair for BurstLocks.
@@ -235,6 +252,9 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		}
 		f.Challenge = append(f.Challenge, rt)
 	}
+
+	// Sized once, here, so the concurrency cap is a process-wide invariant.
+	f.LyricSlots = make(chan struct{}, lyricsMaxConcurrent())
 
 	f.Pending = make(map[uint32][]*pendingReply)
 	f.LastSeen = make(map[uint32]time.Time)
@@ -597,6 +617,70 @@ func sendSpread(count int, spacing time.Duration, sleep func(time.Duration), sen
 // is ~60 messages, so unbounded repeats would re-create the channel drowning;
 // once-per-lifetime (the old rule) blackholed every repeat request instead.
 const lyricsEncoreCooldown = 10 * time.Minute
+
+// defaultLyricsMaxConcurrent is how many performances may run at once when the
+// operator has not said otherwise. See FleetCmd.LyricSlots for the arithmetic.
+const defaultLyricsMaxConcurrent = 12
+
+// stageFullReply answers a requester who arrived while every slot was taken.
+// An over-cap request is REFUSED, never queued — a backlog would outlive the
+// requester's interest and then burst at a radio that stopped listening — and
+// it is refused with words rather than silence, because a blackholed request
+// is indistinguishable from a dead bot.
+const stageFullReply = "🎤 Stage is full — catch the next set in a few."
+
+// lyricsMaxConcurrent reads the operator override for the concurrency cap.
+//
+// Missing, blank, non-numeric and non-positive all resolve to the default, and
+// os.Getenv is the right read here precisely BECAUSE unset and explicitly-empty
+// must behave identically: unlike the ricky challenge name, this knob has no
+// kill-switch semantics — a zero cap would refuse every request and silence
+// ricky entirely, which is a failure mode nobody would ask for on purpose.
+func lyricsMaxConcurrent() int {
+	raw := strings.TrimSpace(os.Getenv("MESHTK_LYRICS_MAX_CONCURRENT"))
+	if raw == "" {
+		return defaultLyricsMaxConcurrent
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		return defaultLyricsMaxConcurrent
+	}
+	return v
+}
+
+// acquireLyricSlot takes one performance slot, or reports false immediately if
+// the stage is full. The select/default is what makes this non-blocking; a bare
+// channel send would queue the caller inside the packet handler.
+//
+// A nil channel means unlimited: the existing tests construct bare FleetCmd
+// values, and degrading to the old unbounded behaviour is far better than
+// panicking or silently refusing every request.
+func (n *FleetCmd) acquireLyricSlot() bool {
+	if n.LyricSlots == nil {
+		return true
+	}
+	select {
+	case n.LyricSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// releaseLyricSlot hands a slot back. Every exit path out of handleLyricsChat
+// must call it — a leaked slot is permanent and silent, costing one twelfth of
+// the stage for the life of the process. The drain is non-blocking so an
+// over-release (or a release with no matching acquire) is harmless rather than
+// a deadlock.
+func (n *FleetCmd) releaseLyricSlot() {
+	if n.LyricSlots == nil {
+		return
+	}
+	select {
+	case <-n.LyricSlots:
+	default:
+	}
+}
 
 // defaultRickyChallenge is the Ctf row the end-of-song award claims.
 const defaultRickyChallenge = "ricky"
@@ -1083,6 +1167,16 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 		return
 	}
 
+	// Take a global performance slot BEFORE marking the cooldown. The order is
+	// the whole point: marking first and refusing second would lock this
+	// requester out for ten minutes and hand them no song at all. Refused here,
+	// they keep a clean slate and can retry the moment a slot frees.
+	if !n.acquireLyricSlot() {
+		n.Config.Log.Infof("Lyric stage at capacity; refusing requester %d (cooldown NOT marked)", from)
+		n.sendPKIReply(toFleetIdx, to, from, topic, stageFullReply)
+		return
+	}
+
 	// Mark this requester's showtime. The playback goroutine below is handed
 	// THIS record and writes the award claim link back onto it at song end.
 	session := &lyricsSession{at: time.Now()}
@@ -1093,6 +1187,7 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 	// Decode base64 lyrics
 	lyricsBytes, err := base64.StdEncoding.DecodeString(lyricsB64)
 	if err != nil {
+		n.releaseLyricSlot()
 		n.Config.Log.Errorf("Failed to decode base64 lyrics: %v", err)
 		n.sendPKIReply(toFleetIdx, to, from, topic, "I'm feeling shy.")
 		return
@@ -1150,6 +1245,7 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 	}
 
 	if len(lyricEntries) == 0 {
+		n.releaseLyricSlot()
 		n.Config.Log.Errorf("No valid lyric entries found")
 		n.sendPKIReply(toFleetIdx, to, from, topic, "It's a short one.")
 		return
@@ -1158,6 +1254,11 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 	// Start goroutine to send lyrics at scheduled times
 	go func() {
 		startTime := time.Now()
+		// The slot is held for the WHOLE performance and handed back here, so
+		// one defer covers every way this goroutine can end: the loop running
+		// to completion, the termination timer firing mid-song, and the
+		// early return when the award is disabled.
+		defer n.releaseLyricSlot()
 		defer func() {
 			n.Config.Log.Infof("Lyrics playback completed for conversation from %d to %d", from, to)
 		}()

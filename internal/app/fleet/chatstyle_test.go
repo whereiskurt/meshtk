@@ -3,6 +3,7 @@ package fleet
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -161,5 +162,47 @@ func TestSplitMessagesEmptyReply(t *testing.T) {
 	msgs, dropped := splitMessages("\n  \n\n")
 	if len(msgs) != 0 || dropped != 0 {
 		t.Errorf("got %d msgs / %d dropped, want 0/0", len(msgs), dropped)
+	}
+}
+
+func TestBaseDelayClamps(t *testing.T) {
+	cases := []struct {
+		msgLen int
+		want   time.Duration
+	}{
+		{0, 600 * time.Millisecond},    // floor
+		{10, 600 * time.Millisecond},   // 450+140=590, still floored
+		{130, 2270 * time.Millisecond}, // 450 + 130*14
+		{230, 3500 * time.Millisecond}, // 450+3220=3670, ceilinged
+		{5000, 3500 * time.Millisecond},
+	}
+	for _, c := range cases {
+		if got := baseDelay(c.msgLen); got != c.want {
+			t.Errorf("baseDelay(%d) = %v, want %v", c.msgLen, got, c.want)
+		}
+	}
+}
+
+// Bounds rather than equality on purpose: 0.8+0.4*1 lands on a float64 knife
+// edge where the product can round either side of 1.2e9 ns, and an exact
+// assertion would be flaky rather than wrong.
+func TestApplyJitterSpansTwentyPercent(t *testing.T) {
+	d := 1000 * time.Millisecond
+	within := func(name string, got, want time.Duration) {
+		if got < want-time.Millisecond || got > want+time.Millisecond {
+			t.Errorf("%s = %v, want ~%v", name, got, want)
+		}
+	}
+	within("applyJitter(1s, 0)", applyJitter(d, 0), 800*time.Millisecond)
+	within("applyJitter(1s, 1)", applyJitter(d, 1), 1200*time.Millisecond)
+	within("applyJitter(1s, 0.5)", applyJitter(d, 0.5), 1000*time.Millisecond)
+}
+
+func TestOpeningDelayRange(t *testing.T) {
+	if got := openingDelay(0); got != 700*time.Millisecond {
+		t.Errorf("openingDelay(0) = %v, want 700ms", got)
+	}
+	if got := openingDelay(1); got != 1500*time.Millisecond {
+		t.Errorf("openingDelay(1) = %v, want 1500ms", got)
 	}
 }

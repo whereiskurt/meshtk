@@ -3,6 +3,7 @@ package fleet
 import (
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -132,4 +133,29 @@ func splitMessages(reply string) (msgs []string, dropped int) {
 		msgs = msgs[:maxChatMessages]
 	}
 	return msgs, dropped
+}
+
+// baseDelay scales the pause after a message by that message's length, so a
+// long message reads as having taken longer to thumb out.
+func baseDelay(msgLen int) time.Duration {
+	d := 450*time.Millisecond + time.Duration(msgLen)*14*time.Millisecond
+	if d < 600*time.Millisecond {
+		return 600 * time.Millisecond
+	}
+	if d > 3500*time.Millisecond {
+		return 3500 * time.Millisecond
+	}
+	return d
+}
+
+// applyJitter spreads d by plus or minus 20%. r is expected in [0,1); the
+// caller supplies it so the arithmetic stays deterministic under test.
+func applyJitter(d time.Duration, r float64) time.Duration {
+	return time.Duration(float64(d) * (0.8 + 0.4*r))
+}
+
+// openingDelay is the beat before the first message lands, so the ghost reads
+// as having seen the question rather than having pre-computed the answer.
+func openingDelay(r float64) time.Duration {
+	return 700*time.Millisecond + time.Duration(r*800)*time.Millisecond
 }

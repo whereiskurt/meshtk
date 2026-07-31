@@ -13,7 +13,18 @@ var dashRun = regexp.MustCompile(`\s*[\x{2014}\x{2013}]\s*`)
 // reply opening "Yo—Condor here" is the single most bot-looking thing we ship,
 // and it costs nothing to make it unrepresentable.
 func normalizeDashes(s string) string {
-	s = strings.TrimSpace(dashRun.ReplaceAllString(s, ", "))
-	s = strings.TrimPrefix(s, ", ")
-	return strings.TrimRight(s, ", ")
+	s = strings.TrimSpace(s)
+	s = dashRun.ReplaceAllString(s, ", ")
+
+	// Remove leading ", " repeatedly (for multiple leading dashes).
+	for strings.HasPrefix(s, ", ") {
+		s = strings.TrimPrefix(s, ", ")
+	}
+
+	// Remove trailing ", " repeatedly (for multiple trailing dashes).
+	for strings.HasSuffix(s, ", ") {
+		s = strings.TrimSuffix(s, ", ")
+	}
+
+	return s
 }

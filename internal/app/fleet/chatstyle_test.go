@@ -11,6 +11,8 @@ func TestNormalizeDashes(t *testing.T) {
 		{"trailing—", "trailing"},
 		{"no dashes here", "no dashes here"},
 		{"  padded  ", "padded"},
+		{"Copy that, standing by,", "Copy that, standing by,"},
+		{"——leading", "leading"},
 	}
 	for _, c := range cases {
 		if got := normalizeDashes(c.in); got != c.want {

@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.56.0
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.56.1
 	github.com/eclipse/paho.golang v0.22.0
-	github.com/eclipse/paho.mqtt.golang v1.5.0
+	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/maypok86/otter/v2 v2.3.0
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/sirupsen/logrus v1.9.3
@@ -18,7 +18,7 @@ require (
 	github.com/spf13/viper v1.20.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.54.0
-	google.golang.org/protobuf v1.36.5
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -41,14 +41,14 @@ require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250115164207-1a7da9e5054f // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )
 
 require (
 	github.com/aws/aws-sdk-go v1.55.7
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
-	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
@@ -65,6 +65,6 @@ require (
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	google.golang.org/grpc v1.71.1
+	google.golang.org/grpc v1.82.1
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -34,6 +34,22 @@ type OTPUnlock struct {
 	RevealURL string
 }
 
+// lyricsSession is one requester's showtime: when it started (the encore
+// cooldown clock) and the award claim link minted at song end.
+//
+// LyricsResponded holds *lyricsSession, not lyricsSession, deliberately: the
+// playback goroutine is launched with the record already in the map and mints
+// ~3.5 minutes later, so it must write the URL back into THAT record. A value
+// map would hand the goroutine a copy and the cache would never stick,
+// re-minting on every encore.
+type lyricsSession struct {
+	// at is when this requester's showtime started (cooldown clock).
+	at time.Time
+	// url caches the award claim link so an encore inside the cooldown window
+	// cannot farm a second nonce. Empty until the song ends.
+	url string
+}
+
 type FleetCmd struct {
 	Config     *config.Config
 	Nodes      []internal.NodeDB
@@ -43,13 +59,13 @@ type FleetCmd struct {
 		WasSuccess bool
 	}
 	OTPHandler      []*otp.TOTPConfig
-	Challenge       []*FlagChallengeRuntime // per-fleet covert flag challenge (nil if none)
-	OTPUnlocks      []map[uint32]*OTPUnlock // Map from radio ID to unlock info, per fleet
-	OTPUnlockMux    []sync.RWMutex          // Mutex to protect the OTPUnlocks map, per fleet
-	LyricsResponded []map[uint32]time.Time  // When each REQUESTER ('from') last got lyrics, per fleet (cooldown, not once-ever)
-	LyricsRespMux   []sync.RWMutex          // Mutex to protect the LyricsResponded map, per fleet
-	RecentReq       []map[string]time.Time  // Recent inbound DMs, for retransmit dedup, per fleet
-	RecentReqMux    []sync.Mutex            // Mutex to protect the RecentReq map, per fleet
+	Challenge       []*FlagChallengeRuntime     // per-fleet covert flag challenge (nil if none)
+	OTPUnlocks      []map[uint32]*OTPUnlock     // Map from radio ID to unlock info, per fleet
+	OTPUnlockMux    []sync.RWMutex              // Mutex to protect the OTPUnlocks map, per fleet
+	LyricsResponded []map[uint32]*lyricsSession // Each REQUESTER's ('from') showtime, per fleet (cooldown, not once-ever)
+	LyricsRespMux   []sync.RWMutex              // Mutex to protect the LyricsResponded map, per fleet
+	RecentReq       []map[string]time.Time      // Recent inbound DMs, for retransmit dedup, per fleet
+	RecentReqMux    []sync.Mutex                // Mutex to protect the RecentReq map, per fleet
 
 	// Pending holds one-shot replies that may have been published into a gap
 	// while the recipient was disconnected, keyed by recipient node. Flushed
@@ -85,6 +101,23 @@ type FleetCmd struct {
 	// created on first use via burstLockFor and kept for the process
 	// lifetime — see burstLockFor's comment for why that lifetime is fine.
 	BurstLocks sync.Map
+
+	// LyricSlots caps CONCURRENT lyric performances process-wide. The encore
+	// cooldown is per REQUESTER, so N distinct radios legitimately start N
+	// concurrent songs and nothing bounds the sum. Per-radio load is fine
+	// (~58 messages over ~214s, roughly one every 3.6s); what is not fine is
+	// the aggregate, because the thing being consumed is RF airtime shared by
+	// listeners who never asked for a song. Fifty uncapped talkers is ~13.8
+	// messages/second of 200-byte packets, which collapses a LoRa channel long
+	// before the server notices anything is wrong. Twelve slots bounds it to
+	// 12 x 58 / 214s = ~3.3 messages/second.
+	//
+	// Deliberately ONE channel, not one per fleet: airtime knows nothing about
+	// fleet indices, and a per-fleet cap would multiply by the fleet count.
+	// Sized once at construction so the cap is a process-wide invariant rather
+	// than something a mid-flight env change can move. Nil means unlimited,
+	// which is what a bare &FleetCmd{} in a unit test gets.
+	LyricSlots chan struct{}
 }
 
 // burstKey identifies one (fleet, requester radio) pair for BurstLocks.
@@ -176,7 +209,7 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		f.NodesMutex = append(f.NodesMutex, sync.Mutex{})
 		f.OTPUnlocks = append(f.OTPUnlocks, make(map[uint32]*OTPUnlock))
 		f.OTPUnlockMux = append(f.OTPUnlockMux, sync.RWMutex{})
-		f.LyricsResponded = append(f.LyricsResponded, make(map[uint32]time.Time))
+		f.LyricsResponded = append(f.LyricsResponded, make(map[uint32]*lyricsSession))
 		f.LyricsRespMux = append(f.LyricsRespMux, sync.RWMutex{})
 		f.RecentReq = append(f.RecentReq, make(map[string]time.Time))
 		f.RecentReqMux = append(f.RecentReqMux, sync.Mutex{})
@@ -219,6 +252,9 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		}
 		f.Challenge = append(f.Challenge, rt)
 	}
+
+	// Sized once, here, so the concurrency cap is a process-wide invariant.
+	f.LyricSlots = make(chan struct{}, lyricsMaxConcurrent())
 
 	f.Pending = make(map[uint32][]*pendingReply)
 	f.LastSeen = make(map[uint32]time.Time)
@@ -582,6 +618,137 @@ func sendSpread(count int, spacing time.Duration, sleep func(time.Duration), sen
 // once-per-lifetime (the old rule) blackholed every repeat request instead.
 const lyricsEncoreCooldown = 10 * time.Minute
 
+// defaultLyricsMaxConcurrent is how many performances may run at once when the
+// operator has not said otherwise. See FleetCmd.LyricSlots for the arithmetic.
+const defaultLyricsMaxConcurrent = 12
+
+// stageFullReply answers a requester who arrived while every slot was taken.
+// An over-cap request is REFUSED, never queued — a backlog would outlive the
+// requester's interest and then burst at a radio that stopped listening — and
+// it is refused with words rather than silence, because a blackholed request
+// is indistinguishable from a dead bot.
+const stageFullReply = "🎤 Stage is full — catch the next set in a few."
+
+// lyricsMaxConcurrent reads the operator override for the concurrency cap.
+//
+// Missing, blank, non-numeric and non-positive all resolve to the default, and
+// os.Getenv is the right read here precisely BECAUSE unset and explicitly-empty
+// must behave identically: unlike the ricky challenge name, this knob has no
+// kill-switch semantics — a zero cap would refuse every request and silence
+// ricky entirely, which is a failure mode nobody would ask for on purpose.
+func lyricsMaxConcurrent() int {
+	raw := strings.TrimSpace(os.Getenv("MESHTK_LYRICS_MAX_CONCURRENT"))
+	if raw == "" {
+		return defaultLyricsMaxConcurrent
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		return defaultLyricsMaxConcurrent
+	}
+	return v
+}
+
+// acquireLyricSlot takes one performance slot, or reports false immediately if
+// the stage is full. The select/default is what makes this non-blocking; a bare
+// channel send would queue the caller inside the packet handler.
+//
+// A nil channel means unlimited: the existing tests construct bare FleetCmd
+// values, and degrading to the old unbounded behaviour is far better than
+// panicking or silently refusing every request.
+func (n *FleetCmd) acquireLyricSlot() bool {
+	if n.LyricSlots == nil {
+		return true
+	}
+	select {
+	case n.LyricSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// releaseLyricSlot hands a slot back. Every exit path out of handleLyricsChat
+// must call it — a leaked slot is permanent and silent, costing one twelfth of
+// the stage for the life of the process. The drain is non-blocking so an
+// over-release (or a release with no matching acquire) is harmless rather than
+// a deadlock.
+func (n *FleetCmd) releaseLyricSlot() {
+	if n.LyricSlots == nil {
+		return
+	}
+	select {
+	case <-n.LyricSlots:
+	default:
+	}
+}
+
+// defaultRickyChallenge is the Ctf row the end-of-song award claims.
+const defaultRickyChallenge = "ricky"
+
+// awardHeadline announces the end-of-song award. It must stand on its OWN:
+// when minting fails and no fallback is configured this is the only message
+// the requester gets, so it may not read as the first half of a sentence that
+// the link completes. Well under chatHardLimit (200) — there is no length
+// check anywhere in the send path, so over-length is a silent drop.
+const awardHeadline = "🏆 Never gonna let you down — you earned a flag!"
+
+// awardMintTimeout bounds how long the playback goroutine may sit on the mint
+// call. claimlink.go's transport already caps itself at 5s; this is the outer
+// guard so the goroutine can never park indefinitely if that changes.
+const awardMintTimeout = 10 * time.Second
+
+// rickyChallenge resolves which Ctf row the end-of-song award claims.
+// MESHTK_RICKY_CHALLENGE overrides it; setting that var to the EMPTY string is
+// the deliberate kill switch (a lyric fleet with no flag simply does not
+// award), which is why this reads LookupEnv rather than Getenv.
+func rickyChallenge() string {
+	if v, ok := os.LookupEnv("MESHTK_RICKY_CHALLENGE"); ok {
+		return v
+	}
+	return defaultRickyChallenge
+}
+
+// awardClaimURL returns the claim link for this showtime's award, minting AT
+// MOST ONCE per session: the url caches on the lyric session record, so an
+// encore inside the same showtime cannot farm a second nonce. Combined with
+// the 10-minute per-requester cooldown that bounds minting to one per radio
+// per window.
+//
+// It never returns an error, because there is nothing useful for the caller to
+// do with one: a mint failure degrades to MESHTK_RICKY_FALLBACK_URL, and an
+// unset fallback degrades to the empty string so the caller sends the headline
+// alone — never a dead link, never silence. The fallback is deliberately NOT
+// cached, so the next showtime retries the real mint.
+//
+// The url and the nonce are NEVER logged; the error log names only the failure
+// mode and the challenge.
+func (n *FleetCmd) awardClaimURL(ctx context.Context, toFleetIdx int, session *lyricsSession, challenge string) string {
+	n.LyricsRespMux[toFleetIdx].RLock()
+	cached := ""
+	if session != nil {
+		cached = session.url
+	}
+	n.LyricsRespMux[toFleetIdx].RUnlock()
+	if cached != "" {
+		return cached
+	}
+
+	url, err := mintClaimURLForChallenge(ctx, challenge)
+	if err != nil {
+		if n.Config != nil && n.Config.Log != nil {
+			n.Config.Log.Errorf("award claim-link mint failed for challenge %q (fleet %d): %v — using fallback", challenge, toFleetIdx, err)
+		}
+		return os.Getenv("MESHTK_RICKY_FALLBACK_URL")
+	}
+
+	n.LyricsRespMux[toFleetIdx].Lock()
+	if session != nil {
+		session.url = url
+	}
+	n.LyricsRespMux[toFleetIdx].Unlock()
+	return url
+}
+
 // requestDedupWindow collapses a radio's own retransmissions of the same DM.
 // Meshtastic resends an unacked direct message ~3 times, ~8s apart, so without
 // this every chatbot reply is multiplied by the retransmit count: 3 requests x
@@ -759,11 +926,11 @@ func staggerDelay(nextAt, now time.Time, spacing time.Duration) (delay time.Dura
 // staggered pendingFlushSpacing apart: a same-millisecond 2-line burst down the
 // BLE pipe regularly delivered exactly one line.
 // Do NOT use it for the lyric body in handleLyricsChat — ricky already emits
-// ~60 messages per request and retrying every line would flood the channel,
+// ~58 messages per request and retrying every line would flood the channel,
 // re-creating the drowning problem that hid this bug in the first place. The
-// single exception is the FINAL lyric line: it carries the flag, arrives ~2
-// minutes into playback (past the iOS proxy's ~60s reconnect cadence), and a
-// QoS0 publish into a reconnect gap is silently dropped.
+// exceptions are the three messages that actually matter: lyric line 01 (the
+// requester's only confirmation the show started) and the two award messages
+// at song end. The flag no longer rides a lyric line at all.
 func (n *FleetCmd) sendPKIReplyReliable(toFleetIdx int, to, from uint32, topic string, reply string) {
 	// `to` is the replying ghost, `from` is the recipient radio (swapped for the reply).
 	replyTopic, envelope, ok := n.buildPKIReply(toFleetIdx, to, from, topic, reply)
@@ -898,9 +1065,15 @@ func (n *FleetCmd) FleetNodeHandler(to, from uint32, topic string, portNum mesht
 				// presence of chatmode_unlocked marks this ghost LLM-capable.
 
 				// INPUT guardrail on every unlocked message.
+				// The reply is chosen by SWAPPING the argument, never by adding
+				// a branch with a second send: this function's reply-path
+				// census is pinned at 3 reliable / 0 plain sites, and an
+				// if/else here would break it. guardRefusalMessage keeps the
+				// canned refusal for a genuine block and degrades only on an
+				// outage.
 				if allowed, reason := n.guardText(context.Background(), message, guardInput); !allowed {
 					n.Config.Log.Infof("guardrail blocked INPUT from %d (%s)", from, reason)
-					n.sendPKIReplyReliable(toFleetIdx, to, from, topic, cannedRefusal)
+					n.sendPKIReplyReliable(toFleetIdx, to, from, topic, guardRefusalMessage(reason))
 					return
 				}
 
@@ -986,23 +1159,41 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 	// from drowning the channel while letting a crowd get an encore, and the
 	// blocked case ANSWERS instead of ghosting the requester.
 	n.LyricsRespMux[toFleetIdx].RLock()
-	last, exists := n.LyricsResponded[toFleetIdx][from]
+	prev := n.LyricsResponded[toFleetIdx][from]
+	var last time.Time
+	if prev != nil {
+		last = prev.at
+	}
 	n.LyricsRespMux[toFleetIdx].RUnlock()
 
-	if exists && time.Since(last) < lyricsEncoreCooldown {
+	// A nil session reads exactly like an absent one: no showtime, no cooldown.
+	if prev != nil && time.Since(last) < lyricsEncoreCooldown {
 		n.Config.Log.Infof("Lyrics on cooldown for requester %d (%v since last); sending encore notice", from, time.Since(last).Round(time.Second))
 		n.sendPKIReply(toFleetIdx, to, from, topic, "🎤 One song per crowd every 10 minutes... come back for the encore.")
 		return
 	}
 
-	// Mark this requester's showtime
+	// Take a global performance slot BEFORE marking the cooldown. The order is
+	// the whole point: marking first and refusing second would lock this
+	// requester out for ten minutes and hand them no song at all. Refused here,
+	// they keep a clean slate and can retry the moment a slot frees.
+	if !n.acquireLyricSlot() {
+		n.Config.Log.Infof("Lyric stage at capacity; refusing requester %d (cooldown NOT marked)", from)
+		n.sendPKIReply(toFleetIdx, to, from, topic, stageFullReply)
+		return
+	}
+
+	// Mark this requester's showtime. The playback goroutine below is handed
+	// THIS record and writes the award claim link back onto it at song end.
+	session := &lyricsSession{at: time.Now()}
 	n.LyricsRespMux[toFleetIdx].Lock()
-	n.LyricsResponded[toFleetIdx][from] = time.Now()
+	n.LyricsResponded[toFleetIdx][from] = session
 	n.LyricsRespMux[toFleetIdx].Unlock()
 
 	// Decode base64 lyrics
 	lyricsBytes, err := base64.StdEncoding.DecodeString(lyricsB64)
 	if err != nil {
+		n.releaseLyricSlot()
 		n.Config.Log.Errorf("Failed to decode base64 lyrics: %v", err)
 		n.sendPKIReply(toFleetIdx, to, from, topic, "I'm feeling shy.")
 		return
@@ -1060,6 +1251,7 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 	}
 
 	if len(lyricEntries) == 0 {
+		n.releaseLyricSlot()
 		n.Config.Log.Errorf("No valid lyric entries found")
 		n.sendPKIReply(toFleetIdx, to, from, topic, "It's a short one.")
 		return
@@ -1068,6 +1260,11 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 	// Start goroutine to send lyrics at scheduled times
 	go func() {
 		startTime := time.Now()
+		// The slot is held for the WHOLE performance and handed back here, so
+		// one defer covers every way this goroutine can end: the loop running
+		// to completion, the termination timer firing mid-song, and the
+		// early return when the award is disabled.
+		defer n.releaseLyricSlot()
 		defer func() {
 			n.Config.Log.Infof("Lyrics playback completed for conversation from %d to %d", from, to)
 		}()
@@ -1091,17 +1288,38 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 				return
 			case <-time.After(entry.timestamp - time.Since(startTime)):
 				line := numberLyric(i, entry.text)
-				if i == len(lyricEntries)-1 {
-					// The final line carries the flag. By now the song has run
-					// ~2 minutes — past the iOS proxy's ~60s reconnect cadence —
-					// so this is the line most likely to land in a QoS0 gap.
-					// Reliable path: retry spread + pending flush on reconnect.
+				if i == 0 {
+					// Line 01 is the one lyric worth retrying: it is the
+					// requester's only confirmation the show started, and
+					// drops here are observed live — root-caused DOWNSTREAM of
+					// MQTT (the iOS proxy -> BLE hop), not to a QoS0 reconnect
+					// gap. Reliable path: retry spread + pending flush.
+					// Everything after it stays single-shot; see the census in
+					// TestLyricsChatReliableSiteCensus.
 					n.sendPKIReplyReliable(toFleetIdx, to, from, topic, line)
 				} else {
 					n.sendPKIReply(toFleetIdx, to, from, topic, line)
 				}
 				n.Config.Log.Debugf("Sent lyric at %v: %s", entry.timestamp, line)
 			}
+		}
+
+		// The song finished (the termination timer returns above instead, with
+		// no award). Mint the claim link and hand out the flag as TWO separate
+		// reliable messages: the link must arrive as its own message so a
+		// client renders it as a tappable target, and the per-message ceiling
+		// is chatHardLimit (200) with no length check in the send path.
+		challenge := rickyChallenge()
+		if challenge == "" {
+			return
+		}
+		actx, cancel := context.WithTimeout(context.Background(), awardMintTimeout)
+		url := n.awardClaimURL(actx, toFleetIdx, session, challenge)
+		cancel()
+
+		n.sendPKIReplyReliable(toFleetIdx, to, from, topic, awardHeadline)
+		if url != "" {
+			n.sendPKIReplyReliable(toFleetIdx, to, from, topic, url)
 		}
 	}()
 
@@ -1118,8 +1336,11 @@ func (n *FleetCmd) handleLLMChat(toFleetIdx int, to, from uint32, topic string, 
 	}
 	// OUTPUT guardrail — LLM-generated replies only (the deterministic reveal in
 	// the unlocked branch is exempt so its flag code is never redacted).
-	if allowed, _ := n.guardText(context.Background(), reply, guardOutput); !allowed {
-		n.sendPKIReply(toFleetIdx, to, from, topic, cannedRefusal)
+	// The reason was being discarded here; bind it so an outage degrades
+	// visibly instead of masquerading as a refusal. Argument swap only — no
+	// second send.
+	if allowed, reason := n.guardText(context.Background(), reply, guardOutput); !allowed {
+		n.sendPKIReply(toFleetIdx, to, from, topic, guardRefusalMessage(reason))
 		return
 	}
 	msgs, dropped := splitMessages(reply)

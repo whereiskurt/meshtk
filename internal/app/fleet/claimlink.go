@@ -13,29 +13,37 @@ import (
 
 // Single-use flag-claim links: instead of revealing the derived flag code
 // inline (shareable forever), the bot asks run.human to mint a short-ttl
-// single-use claim nonce and DMs the claim URL. Contract:
+// single-use claim nonce and DMs the claim URL. Two request shapes, one
+// endpoint:
 //
 //	POST {MESHTK_RUN_INTERNAL_URL}/api/internal/ctf/mint
 //	     x-internal-secret: {MESHTK_INTERNAL_SECRET}
-//	     {"ghost":"ghost.goldstein"}
-//	→ 200 {"nonce":"…","url":"https://…/ctf/claim?nonce=…"}
+//	     {"ghost":"ghost.goldstein"}   ← persona unlock reveal
+//	     {"challenge":"ricky"}         ← award for a named Ctf row
+//	→ 200 {"nonce":"…","url":"https://…"}
 //
-// One link per radio per unlock session (cached on the OTPUnlock record, so it
-// expires with the unlock). Any mint failure falls back to the pre-existing
-// static-code reveal — a reveal never silently dies. The url/nonce is NEVER
-// logged.
+// The challenge shape needs NO raw flag code to exist anywhere: run.human
+// parks the challenge row's own stored answerHash as the pending submission,
+// and judgeSolve compares hash-to-hash for a static answerType. So the bot
+// never holds, derives, or transmits a claimable secret — only a nonce URL
+// that dies on first claim.
+//
+// The persona link is one per radio per unlock session (cached on the
+// OTPUnlock record, so it expires with the unlock) and any mint failure falls
+// back to the pre-existing static-code reveal — a reveal never silently dies.
+// The url/nonce is NEVER logged.
 
-// mintClaimURL asks run.human for a fresh single-use claim link for ghostId.
-// Unconfigured env or any transport/decode failure returns an error (the
-// caller falls back to the static reveal).
-func mintClaimURL(ctx context.Context, ghostId string) (string, error) {
+// mintClaim POSTs an already-marshalled mint body and returns the minted url.
+// Both request shapes share this transport; only the body differs.
+// Unconfigured env or any transport/decode failure returns an error (callers
+// fall back — to the static reveal, or to a configured fallback url).
+func mintClaim(ctx context.Context, payload []byte) (string, error) {
 	base := os.Getenv("MESHTK_RUN_INTERNAL_URL")
 	secret := os.Getenv("MESHTK_INTERNAL_SECRET")
 	if base == "" || secret == "" {
 		return "", errors.New("claim-link mint not configured")
 	}
 
-	payload, _ := json.Marshal(map[string]string{"ghost": ghostId})
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, "POST", base+"/api/internal/ctf/mint", bytes.NewReader(payload))
@@ -62,6 +70,21 @@ func mintClaimURL(ctx context.Context, ghostId string) (string, error) {
 		return "", errors.New("mint returned no url")
 	}
 	return out.URL, nil
+}
+
+// mintClaimURL asks run.human for a fresh single-use claim link for ghostId.
+func mintClaimURL(ctx context.Context, ghostId string) (string, error) {
+	payload, _ := json.Marshal(map[string]string{"ghost": ghostId})
+	return mintClaim(ctx, payload)
+}
+
+// mintClaimURLForChallenge asks run.human for a fresh single-use claim link
+// for a named Ctf row. Used by awards that have no ghost unlock session to
+// hang a cache off — ricky's end-of-song award caches on the lyric session
+// instead.
+func mintClaimURLForChallenge(ctx context.Context, challenge string) (string, error) {
+	payload, _ := json.Marshal(map[string]string{"challenge": challenge})
+	return mintClaim(ctx, payload)
 }
 
 // getOrMintRevealURL returns this radio's claim link for the current unlock

@@ -67,6 +67,16 @@ type FleetCmd struct {
 	RecentReq       []map[string]time.Time      // Recent inbound DMs, for retransmit dedup, per fleet
 	RecentReqMux    []sync.Mutex                // Mutex to protect the RecentReq map, per fleet
 
+	// LLMBuckets holds one token bucket per (fleet, requester radio), bounding
+	// the paid Bedrock calls a single radio can drive against one ghost. Same
+	// per-fleet shape as RecentReq above, and pruned on access the same way so
+	// it cannot grow without bound over a multi-day fleet lifetime.
+	LLMBuckets []map[uint32]*llmBucket
+
+	// LLMBucketMux protects the bucket map, one mutex per fleet. Allocated
+	// alongside the maps in NewFleets; the limiter bounds-checks both slices.
+	LLMBucketMux []sync.Mutex
+
 	// Pending holds one-shot replies that may have been published into a gap
 	// while the recipient was disconnected, keyed by recipient node. Flushed
 	// when we next see that node transmit. Process-wide, not per fleet: the
@@ -118,6 +128,17 @@ type FleetCmd struct {
 	// than something a mid-flight env change can move. Nil means unlimited,
 	// which is what a bare &FleetCmd{} in a unit test gets.
 	LyricSlots chan struct{}
+
+	// LLMCallsPerHour caps paid Bedrock Converse calls per radio per hour.
+	// Resolved ONCE at construction, for the same reason LyricSlots is sized
+	// once: the ceiling should be a process-wide invariant rather than
+	// something a mid-flight env change can move.
+	//
+	// A bare &FleetCmd{} leaves this at 0 and never reaches it, because the
+	// limiter's nil-slice guard returns first — such a value degrades to
+	// unlimited rather than refusing everything. Zero on a CONSTRUCTED fleet is
+	// the deliberate operator kill switch; see llmCallsPerHour.
+	LLMCallsPerHour int
 }
 
 // burstKey identifies one (fleet, requester radio) pair for BurstLocks.
@@ -213,6 +234,8 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 		f.LyricsRespMux = append(f.LyricsRespMux, sync.RWMutex{})
 		f.RecentReq = append(f.RecentReq, make(map[string]time.Time))
 		f.RecentReqMux = append(f.RecentReqMux, sync.Mutex{})
+		f.LLMBuckets = append(f.LLMBuckets, make(map[uint32]*llmBucket))
+		f.LLMBucketMux = append(f.LLMBucketMux, sync.Mutex{})
 
 		otpURL := f.Config.Fleet[i].OtpUrl
 		if otpURL != "" && ghostSecret != "" {
@@ -255,6 +278,10 @@ func NewFleets(c *config.Config) (f *FleetCmd) {
 
 	// Sized once, here, so the concurrency cap is a process-wide invariant.
 	f.LyricSlots = make(chan struct{}, lyricsMaxConcurrent())
+
+	// Resolved once, here, for the same reason: a mid-flight env change must
+	// not be able to move the per-radio model-call ceiling.
+	f.LLMCallsPerHour = llmCallsPerHour()
 
 	f.Pending = make(map[uint32][]*pendingReply)
 	f.LastSeen = make(map[uint32]time.Time)
@@ -1328,6 +1355,27 @@ func (n *FleetCmd) handleLyricsChat(toFleetIdx int, to, from uint32, topic strin
 
 func (n *FleetCmd) handleLLMChat(toFleetIdx int, to, from uint32, topic string, userMessage string, systemPrompt string) {
 	n.Config.Log.Infof("LLM chat (fleet %d) msg: %s", toFleetIdx, userMessage)
+
+	// Bound what one radio can spend BEFORE the paid call, never after: an
+	// over-cap request has to make zero Converse calls, or the ceiling has
+	// bought nothing. The refusal is one plain send and a return — never
+	// queued (a backlog would outlive the requester's interest and then burst
+	// at a radio that stopped listening, the same reasoning as stageFullReply),
+	// never wrapped in a goroutine, and it never re-enters the limiter, so it
+	// cannot recurse or amplify.
+	//
+	// Warnf, not Errorf: a tripped ceiling is the system working, not a fault,
+	// and the 73-02 alarm is count-gated on volume so one refusal must not read
+	// as an incident. The log carries the marker token that alarm's plain-text
+	// metric filter keys on, plus the fleet and the radio — and deliberately
+	// NOT the message, which is the attacker-controlled text this whole
+	// mechanism exists because of.
+	if !n.allowLLMCall(toFleetIdx, from) {
+		n.Config.Log.Warnf("MESHTK_LLM_RATE_LIMIT per-radio model-call ceiling reached (fleet %d, radio %d); refused without a model call", toFleetIdx, from)
+		n.sendPKIReply(toFleetIdx, to, from, topic, llmRateLimitReply)
+		return
+	}
+
 	reply, err := generateReply(context.Background(), userMessage, systemPrompt)
 	if err != nil {
 		n.Config.Log.Errorf("LLM generate failed: %v", err)

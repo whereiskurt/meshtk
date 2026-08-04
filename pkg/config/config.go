@@ -55,6 +55,26 @@ type Config struct {
 
 	NodeDbPath string `default:"./meshtk.db"`
 
+	// Durable S3 home for the node database, and the operator's reset control.
+	//
+	// nodes.json lives on an ephemeral container filesystem, so a task restart
+	// drops it to whatever re-announces. Measured 2026-08-04: 9 of 81 nodes
+	// transmitted anything in 15 minutes, i.e. a restart empties the map for
+	// hours, silently.
+	//
+	// ⚠️ ENV NAMES HAVE NO UNDERSCORES. viper binds these via
+	// SetEnvKeyReplacer(".","_") + AutomaticEnv, so the key `nodesnapshotbucket`
+	// reads MESHTK_NODESNAPSHOTBUCKET. MESHTK_NODE_SNAPSHOT_BUCKET silently does
+	// NOT bind — the same trap that leaves MESHTK_S3_LOGS_BUCKET dead today and
+	// ships every inspector log to the hardcoded default bucket instead of the
+	// terraform-managed one. Same reason MESHTK_NODEDBPATH is spelled the way it
+	// is above.
+	//
+	// Empty bucket = snapshots disabled. Nothing else changes.
+	NodeSnapshotBucket string `default:""`
+	NodeSnapshotKey    string `default:"snapshots/nodes/nodes.json"`
+	NodeSnapshotMins   int    `default:"5"`
+
 	WasSuccess bool
 }
 
@@ -126,16 +146,16 @@ type Fleet struct {
 	// identities and pubkeys far more than it needs fresh coordinates, and a
 	// BLE-proxied radio drops what it cannot keep up with. 0 or 1 = every tic
 	// (unchanged behaviour).
-	MovementEveryTics  int        `json:"MovementEveryTics" default:"1"`
-	RampUpSecs         int        `default:"120"`
-	RampSteadySecs     int        `default:"60"`
-	RampDownSecs       int        `default:"120"`
-	Movement           []Movement `json:"Movement"`
-	ChatBot            []ChatBot  `json:"ChatBot"`
-	ShortNameTmpl      string     `default:"M{fleetId}{nodeId}"`
-	LongNameTmpl       string     `default:"mtk-{{.fleetId}}{{.nodeId}}-{{shortseed}}"`
-	OtpUrl       string `default:""`
-	SystemPrompt string `default:""` // persona ONLY: voice, mannerisms, catch-phrases.
+	MovementEveryTics int        `json:"MovementEveryTics" default:"1"`
+	RampUpSecs        int        `default:"120"`
+	RampSteadySecs    int        `default:"60"`
+	RampDownSecs      int        `default:"120"`
+	Movement          []Movement `json:"Movement"`
+	ChatBot           []ChatBot  `json:"ChatBot"`
+	ShortNameTmpl     string     `default:"M{fleetId}{nodeId}"`
+	LongNameTmpl      string     `default:"mtk-{{.fleetId}}{{.nodeId}}-{{shortseed}}"`
+	OtpUrl            string     `default:""`
+	SystemPrompt      string     `default:""` // persona ONLY: voice, mannerisms, catch-phrases.
 	// Covert flag mechanic (trigger + reveal + decoy code) is delivered OUT of the
 	// committed config via the MESHTK_FLAG_CHALLENGES env blob — see config.FlagChallenge
 	// and internal/app/fleet. Nothing flag-related lives on this struct anymore.

@@ -14,6 +14,7 @@ import (
 	"github.com/whereiskurt/meshtk/internal/app/help"
 	internal "github.com/whereiskurt/meshtk/internal/mqtt"
 	"github.com/whereiskurt/meshtk/pkg/config"
+	"github.com/whereiskurt/meshtk/pkg/network"
 )
 
 type NodeInfoCmd struct {
@@ -151,6 +152,17 @@ func (n *NodeInfoCmd) DoBroadcast() {
 
 func (n *NodeInfoCmd) initNodeDb() {
 	n.Nodes.LoadFile(n.Config.NodeDbPath)
+
+	// ONE store for both the restore and the ticker: NewS3Mover builds a session
+	// and validates credentials (with a paragraph of diagnostics on failure), so
+	// constructing it per-caller would double that work and the log noise.
+	store := n.newSnapshotStore()
+
+	// Restore BEFORE the write loop starts. The loop below overwrites the local
+	// file every 5s, so a restore that lost the race would be erased by an empty
+	// database within one tick.
+	n.restoreNodeSnapshot(store)
+
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -159,6 +171,93 @@ func (n *NodeInfoCmd) initNodeDb() {
 			n.restorePubKeys()
 			n.Nodes.WriteFile(n.Config.NodeDbPath)
 			n.NodesMutex.Unlock()
+		}
+	}()
+
+	n.startNodeSnapshot(store)
+}
+
+// newSnapshotStore builds the S3-backed snapshot store, or nil when snapshots
+// are not configured. Reuses network.S3Mover purely for its session and
+// task-role credential handling.
+func (n *NodeInfoCmd) newSnapshotStore() internal.SnapshotStore {
+	bucket := n.Config.NodeSnapshotBucket
+	if bucket == "" {
+		return nil
+	}
+	region := n.Config.Server.S3BucketRegion
+	if region == "" {
+		region = "us-east-1"
+	}
+	mover, err := network.NewS3Mover(region, region, bucket)
+	if err != nil {
+		n.Config.Log.Errorf("node snapshot disabled: cannot init S3 for bucket %q: %v", bucket, err)
+		return nil
+	}
+	return internal.NewS3SnapshotStore(mover.S3Client, bucket, n.Config.NodeSnapshotKey)
+}
+
+// restoreNodeSnapshot seeds a cold database from S3. A failure here is logged
+// and tolerated: starting with an empty map is exactly today's behaviour, so a
+// broken restore must never keep meshobserv from coming up at all.
+func (n *NodeInfoCmd) restoreNodeSnapshot(store internal.SnapshotStore) {
+	if store == nil {
+		return
+	}
+	n.NodesMutex.Lock()
+	defer n.NodesMutex.Unlock()
+
+	restored, err := internal.RestoreSnapshot(&n.Nodes, store)
+	if err != nil {
+		n.Config.Log.Warnf("node snapshot restore failed, starting from local state: %v", err)
+		return
+	}
+	if restored {
+		n.Config.Log.Infof("node snapshot restored: %d nodes from s3://%s/%s",
+			len(n.Nodes), n.Config.NodeSnapshotBucket, n.Config.NodeSnapshotKey)
+	}
+}
+
+// startNodeSnapshot runs the periodic snapshot cycle. See mqtt.Snapshotter.Tick
+// for why the cycle reads before it writes and why the operator reset is
+// edge-triggered.
+func (n *NodeInfoCmd) startNodeSnapshot(store internal.SnapshotStore) {
+	if store == nil {
+		return
+	}
+	mins := n.Config.NodeSnapshotMins
+	if mins <= 0 {
+		mins = 5
+	}
+	snapper := internal.NewSnapshotter(store)
+
+	go func() {
+		ticker := time.NewTicker(time.Duration(mins) * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			n.NodesMutex.Lock()
+			n.restorePubKeys()
+			res, err := snapper.Tick(&n.Nodes)
+			count := len(n.Nodes)
+			if res.Reset {
+				// Also clear the local file immediately; otherwise the 5s write
+				// loop is the only thing that syncs it and an operator watching
+				// nodes.json would see the old contents linger.
+				n.Nodes.WriteFile(n.Config.NodeDbPath)
+			}
+			n.NodesMutex.Unlock()
+
+			switch {
+			case err != nil:
+				n.Config.Log.Warnf("node snapshot failed: %v", err)
+			case res.Reset:
+				// Loud on purpose: an operator wiped the node database. This
+				// must be greppable, not inferred from a node count dropping.
+				n.Config.Log.Warnf("node snapshot RESET by operator (empty {} at s3://%s/%s); node database cleared",
+					n.Config.NodeSnapshotBucket, n.Config.NodeSnapshotKey)
+			default:
+				n.Config.Log.Debugf("node snapshot written: %d nodes", count)
+			}
 		}
 	}()
 }

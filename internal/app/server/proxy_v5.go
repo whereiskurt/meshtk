@@ -192,6 +192,22 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 		return
 	}
 
+	// Same SESSION_START / SESSION_END contract the 3.1.1 loop emits -- the
+	// field names and reason strings are shared deliberately, so one CloudWatch
+	// query covers both protocol paths. Opened only after the CONNECT is
+	// accepted, matching 3.1.1: rejected logins have their own MQTT5_* lines.
+	sess := &sessionLog{
+		socketAddr:  socketAddr,
+		clientID:    c.ClientID,
+		username:    c.Username,
+		keepalive:   c.KeepAlive,
+		readTimeout: readTimeout,
+		started:     time.Now(),
+		reason:      reasonReadError,
+	}
+	sess.logStart(n)
+	defer sess.logEnd(n)
+
 	backendConn, err := net.DialTimeout("tcp", n.Config.Server.ProxyForwardAddress, 10*time.Second)
 	if err != nil {
 		n.Config.Log.Errorf("failed to connect to backend: %v", err)
@@ -230,8 +246,18 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 
 			frame, pktType, err := readFrame(request)
 			if err != nil {
+				// See the 3.1.1 loop: the EOF that follows a DISCONNECT is the
+				// client tidying up, not vanishing.
+				if !sess.sawDisconnect {
+					sess.reason = closeReason(err)
+				}
 				backendConn.Close()
 				return
+			}
+
+			if pktType == v5.DISCONNECT {
+				sess.reason = reasonClientDisconnect
+				sess.sawDisconnect = true
 			}
 
 			// EVERY frame refreshes the tracker entry, before any type

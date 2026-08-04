@@ -36,7 +36,14 @@ const socketPenalty = time.Duration(2000) * time.Millisecond
 // without a packet. proxyReadTimeout implements that, with a floor so a tiny
 // negotiated keepalive cannot reintroduce the same teardown loop, and a default
 // for clients whose CONNECT we never saw.
-const (
+//
+// These are vars, not consts, for ONE reason: a test has to be able to lower
+// the floor to prove that an expired proxy deadline surfaces as
+// reason=read_timeout. Waiting out the real 60s floor in a unit test is not an
+// option, and that assertion is what tells an operator whether a reconnect
+// cadence is ours or the client's. Treat them as constants everywhere else --
+// nothing in production writes to them.
+var (
 	defaultProxyReadTimeout = 180 * time.Second
 	minProxyReadTimeout     = 60 * time.Second
 )
@@ -219,6 +226,11 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 	// handleBackend used to clobber it from the downlink side.
 	readTimeout := defaultProxyReadTimeout
 
+	// Owned by this goroutine; logEnd fires from the defer on every exit path
+	// so a session can never vanish without saying why it ended.
+	sess := &sessionLog{socketAddr: socketAddr, started: time.Now(), reason: reasonReadError}
+	defer sess.logEnd(n)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -229,12 +241,31 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			packet, err := packets.ReadPacket(request)
 			if err != nil {
+				// The EOF that FOLLOWS a DISCONNECT is the client tidying up,
+				// not the client vanishing -- never let it overwrite the
+				// verdict the DISCONNECT already gave us.
+				if !sess.sawDisconnect {
+					sess.reason = closeReason(err)
+				}
 				backendConn.Close()
 				return
 			}
 
+			// A real DISCONNECT is the one clean exit MQTT defines, and it must
+			// be recognised HERE, off the packet. The loop keeps forwarding
+			// after it and the socket only reports EOF on the NEXT read, so
+			// classifying by read error alone files every well-behaved client
+			// under client_eof -- destroying the very signal that made "1 clean
+			// disconnect in 726 sessions" worth noticing.
+			if _, ok := packet.(*packets.DisconnectPacket); ok {
+				sess.reason = reasonClientDisconnect
+				sess.sawDisconnect = true
+			}
+
 			if cp, ok := packet.(*packets.ConnectPacket); ok {
 				readTimeout = proxyReadTimeout(cp.Keepalive)
+				sess.keepalive = cp.Keepalive
+				sess.readTimeout = readTimeout
 			}
 
 			ip := &InspectorPacket{
@@ -247,6 +278,15 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 
 			if ip.AuthRejected {
 				return
+			}
+
+			// AFTER inspection, which is what populates clientID/username on
+			// the tracker -- emitting before it would log an anonymous line
+			// and lose the attribution the whole pair exists for.
+			if _, ok := packet.(*packets.ConnectPacket); ok {
+				sess.clientID = ip.Track.ClientID
+				sess.username = ip.Track.Username
+				sess.logStart(n)
 			}
 
 			// TODO: Build this out as an actual ALLOW_LIST

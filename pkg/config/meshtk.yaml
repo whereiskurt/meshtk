@@ -2,6 +2,19 @@ NodeDbPath: "./nodes.default.json"
 LogFolder: "logs/"
 AckMode: "faithful"
 
+# Durable S3 home for the node database (meshobserv), and the operator reset.
+#
+# THESE KEYS MUST EXIST HERE, not only as `default:` struct tags on Config.
+# viper's AutomaticEnv resolves only keys the MERGED CONFIG already knows, and
+# this embedded yaml is that config -- a struct tag registers nothing. A field
+# missing from this file is unreachable by env var no matter how it is spelled,
+# which is exactly how MESHTK_NODESNAPSHOTBUCKET shipped to production set-but-
+# unread on 2026-08-05, silently disabling snapshots. pkg/config/envbind_test.go
+# now fails if that regresses.
+NodeSnapshotBucket: ""
+NodeSnapshotKey: "snapshots/nodes/nodes.json"
+NodeSnapshotMins: 5
+
 Mqtt:
   BrokerUri: "tcp://mqtt.meshtastic.org:1883"
   Username: "meshdev"

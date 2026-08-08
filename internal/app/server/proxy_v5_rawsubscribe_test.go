@@ -352,7 +352,7 @@ func TestV5RawSubscribeRelayedByteIdentical(t *testing.T) {
 
 	var backend bytes.Buffer
 	var client bytes.Buffer
-	if !n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, frame) {
+	if n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, frame) != uplinkForwarded {
 		t.Fatal("the connection was dropped for a SUBSCRIBE the rules allow")
 	}
 	if !bytes.Equal(backend.Bytes(), frame) {
@@ -379,7 +379,7 @@ func TestV5CodecSubscribeStillRelayedByteIdentical(t *testing.T) {
 
 	var backend bytes.Buffer
 	var client bytes.Buffer
-	if !n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, frame) {
+	if n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, frame) != uplinkForwarded {
 		t.Fatal("the connection was dropped for a parseable SUBSCRIBE")
 	}
 	if !bytes.Equal(backend.Bytes(), frame) {
@@ -413,7 +413,7 @@ func TestV5SubscribeHeaderFailRefused(t *testing.T) {
 
 			var backend bytes.Buffer
 			var client bytes.Buffer
-			if n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, tc.frame) {
+			if n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, tc.frame) == uplinkForwarded {
 				t.Fatal("a malformed SUBSCRIBE was accepted; the connection should end")
 			}
 			if backend.Len() != 0 {
@@ -451,7 +451,7 @@ func TestV5CodecParseableEmptyFilterListStillRelays(t *testing.T) {
 
 	n, logs := v5RawSubServer(t)
 	var backend, client bytes.Buffer
-	if !n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, frame) {
+	if n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, frame) != uplinkForwarded {
 		t.Fatal("a codec-parseable SUBSCRIBE was refused; the fail-closed path widened beyond the hand parser")
 	}
 	if !bytes.Equal(backend.Bytes(), frame) {
@@ -489,7 +489,7 @@ func TestV5SubscribeHeaderFailLogCannotBeForged(t *testing.T) {
 
 	frame := mustHexNoT("8207" + "1234" + "00" + "0005" + "6162")
 	var backend, client bytes.Buffer
-	if n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, frame) {
+	if n.handleV5SubscribeUplink(writerConn{&client}, writerConn{&backend}, v5ParityAddr, frame) == uplinkForwarded {
 		t.Fatal("a malformed SUBSCRIBE was accepted")
 	}
 

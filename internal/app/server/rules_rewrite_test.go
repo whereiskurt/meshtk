@@ -345,7 +345,7 @@ func TestDataFieldsSurviveRewriteOnV5Uplink(t *testing.T) {
 	var backend bytes.Buffer
 	ok := false
 	mustNotPanic(t, "handleV5PublishUplink on an encrypted TEXT_MESSAGE", func() {
-		ok = n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame)
+		ok = n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) == uplinkForwarded
 	})
 	if !ok {
 		t.Fatal("connection dropped for a packet the rules allow")
@@ -446,7 +446,7 @@ func TestDecodedTextMessageSurvivesBothCodecs(t *testing.T) {
 		var backend bytes.Buffer
 		ok := false
 		mustNotPanic(t, "handleV5PublishUplink on a decoded TEXT_MESSAGE", func() {
-			ok = n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame)
+			ok = n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) == uplinkForwarded
 		})
 		if !ok {
 			t.Fatal("connection dropped for a decoded text message the rules allow")

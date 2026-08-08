@@ -162,7 +162,7 @@ func TestV5PublishRewriteReachesTheWire(t *testing.T) {
 	frame := v5PublishFrame(t, nodeInfoEnvelope(t, 7, 9))
 
 	var backend bytes.Buffer
-	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) != uplinkForwarded {
 		t.Fatal("connection dropped for a packet the rules allow")
 	}
 
@@ -215,7 +215,7 @@ func TestV5PublishUnchangedIsByteIdentical(t *testing.T) {
 	frame := v5PublishFrame(t, nodeInfoEnvelope(t, 3, 3))
 
 	var backend bytes.Buffer
-	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) != uplinkForwarded {
 		t.Fatal("connection dropped for a packet the rules allow")
 	}
 	if !bytes.Equal(backend.Bytes(), frame) {
@@ -235,7 +235,7 @@ func TestV5TopicAliasBlocked(t *testing.T) {
 	frame := mustHex(t, aliasFixture)
 
 	var backend bytes.Buffer
-	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) == uplinkForwarded {
 		t.Fatal("an aliased PUBLISH was allowed through")
 	}
 	if backend.Len() != 0 {
@@ -347,7 +347,7 @@ func TestV5TopicAliasBlockedOnHandParsedPath(t *testing.T) {
 		marshalEnvelope(t, nodeInfoEnvelope(t, 3, 3)))
 
 	var backend bytes.Buffer
-	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) == uplinkForwarded {
 		t.Fatal("a PUBLISH carrying a Topic Alias was allowed on the hand-parsed path (WR-01)")
 	}
 	if backend.Len() != 0 {
@@ -376,7 +376,7 @@ func TestV5AliasIndeterminateStillFullyInspected(t *testing.T) {
 		marshalEnvelope(t, nodeInfoEnvelope(t, 7, 9)))
 
 	var backend bytes.Buffer
-	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) != uplinkForwarded {
 		t.Fatal("an indeterminate alias walk Blocked the connection; the walk must never decide")
 	}
 
@@ -464,7 +464,7 @@ func TestV5AliasIndeterminateLogCannotBeForged(t *testing.T) {
 		marshalEnvelope(t, nodeInfoEnvelope(t, 7, 9)))
 
 	var backend bytes.Buffer
-	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) != uplinkForwarded {
 		t.Fatal("connection dropped for a packet the rules allow")
 	}
 
@@ -512,7 +512,7 @@ func TestV5PublishInspectedThenForwardedByteIdentical(t *testing.T) {
 
 	n, logs := v5PublishServer(t, "publisher")
 	var backend bytes.Buffer
-	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) != uplinkForwarded {
 		t.Fatal("connection dropped over an unparseable PUBLISH")
 	}
 	if !bytes.Equal(backend.Bytes(), frame) {

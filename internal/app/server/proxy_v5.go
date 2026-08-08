@@ -271,18 +271,19 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 
 			switch pktType {
 			case v5.PUBLISH:
-				// Inspection, rules, rewrites and forwarding all happen inside;
-				// a false return means the connection must be dropped, exactly
-				// as handleProxy returns on a Block decision.
-				if !n.handleV5PublishUplink(backendConn, socketAddr, frame) {
+				// Inspection, rules, rewrites and forwarding all happen inside.
+				// Only uplinkFatal ends the session: a Blocked packet is
+				// uplinkDropped and the loop reads the next frame, matching
+				// handleProxy's `continue` on the 3.1.1 path.
+				if n.handleV5PublishUplink(backendConn, socketAddr, frame) == uplinkFatal {
 					return
 				}
 
 			case v5.SUBSCRIBE:
-				// Inspection, rules and forwarding all happen inside; a false
-				// return means the connection must be dropped, exactly as the
-				// PUBLISH arm above and as handleProxy's 3.1.1 loop do.
-				if !n.handleV5SubscribeUplink(conn, backendConn, socketAddr, frame) {
+				// Inspection, rules and forwarding all happen inside, with the
+				// same verdict contract as the PUBLISH arm above and the same
+				// survive-a-Block behaviour as handleProxy's 3.1.1 loop.
+				if n.handleV5SubscribeUplink(conn, backendConn, socketAddr, frame) == uplinkFatal {
 					return
 				}
 
@@ -315,11 +316,41 @@ func (n *ServerCmd) handleProxyV5(conn net.Conn, request *bufio.Reader, socketAd
 	}
 }
 
+// uplinkVerdict is what one inspected uplink frame means for the SESSION, which
+// is deliberately NOT the same question as what it means for the frame.
+//
+// This used to be a bool named "may the connection continue", and a rule Block
+// answered it `false` -- so refusing one packet hung up on the radio. In
+// production that cost user SHA 555 disconnects in 24h: their radios still had
+// uplink enabled on the DEF CON event channels, whose PSKs we do not hold, so
+// every one of those packets tripped BlockInvalidEncryption and took the whole
+// MQTT session with it (2026-08-08; six other users in the same state).
+//
+// A bool cannot hold the distinction, which is why it kept collapsing. The
+// three outcomes are now named, and the 3.1.1 loop's `continue` on Block is the
+// same decision spelled the other way.
+type uplinkVerdict int
+
+const (
+	// uplinkForwarded: relayed to the broker, session healthy.
+	uplinkForwarded uplinkVerdict = iota
+
+	// uplinkDropped: a rule Blocked the packet. It does NOT reach the broker,
+	// and the session CONTINUES. A radio that hears RF we cannot decrypt is not
+	// a radio that must be disconnected.
+	uplinkDropped
+
+	// uplinkFatal: the session cannot continue -- a frame whose own length
+	// prefixes contradict its bytes (the stream is de-synced and there is no
+	// safe place to resume), a spec-violating topic alias, or a dead backend.
+	uplinkFatal
+)
+
 // handleV5PublishUplink inspects one captured v5 PUBLISH frame and forwards it
-// to the broker, mirroring handleProxy's decide/forward sequence. It returns
-// false when the connection must be dropped -- a Block decision or a dead
-// backend -- which is what handleProxy's `return` does on the 3.1.1 path.
-func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr string, frame []byte) bool {
+// to the broker, mirroring handleProxy's decide/forward sequence. A Block
+// returns uplinkDropped and the session survives, exactly as handleProxy's
+// `continue` does on the 3.1.1 path; only uplinkFatal drops the connection.
+func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr string, frame []byte) uplinkVerdict {
 	// Parse a COPY of the captured bytes, never the socket, so the raw frame
 	// survives a parse failure.
 	cp, err := v5.ReadPacket(bytes.NewReader(frame))
@@ -350,7 +381,7 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 			n.InspectorLogger.Warnf("action=MQTT5_PUBLISH_HEADER_FAIL, ip=%s, reason=%v", socketAddr, perr)
 			n.Config.Log.Warnf("[proxy] BLOCK from=!%08x to=!%08x reason=%q user=%s ip=%s",
 				0, 0, "unreadable v5 PUBLISH header", "", socketAddr)
-			return false
+			return uplinkFatal
 		}
 
 		// The SAME guard as the parseable path below, and it has to be the same
@@ -367,7 +398,7 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 		// production greps and every piece of prior evidence keep working.
 		if rp.Topic == "" || rp.HasTopicAlias {
 			n.InspectorLogger.Warnf("action=BLOCK, ip=%s, reason=topic_alias_uplink", socketAddr)
-			return false
+			return uplinkFatal
 		}
 
 		ip := n.inspectV5RawPublish(socketAddr, rp)
@@ -401,7 +432,7 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 		}
 
 		if !n.decideV5Publish(ip) {
-			return false
+			return uplinkDropped
 		}
 
 		// Forward exactly once, same contract as below. The splice preserves the
@@ -413,16 +444,16 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 			spliced, serr := spliceV5PublishPayload(frame, rp, rp.Payload)
 			if serr != nil {
 				n.Config.Log.Errorf("failed to splice rewritten v5 PUBLISH payload: %v", serr)
-				return false
+				return uplinkFatal
 			}
 			out = spliced
 		}
-		return n.writeToBackend(backendConn, out)
+		return forwardVerdict(n.writeToBackend(backendConn, out))
 	}
 	p, ok := cp.Content.(*v5.Publish)
 	if !ok {
 		n.InspectorLogger.Warnf("action=MQTT5_PARSE_FAIL, ip=%s, mqtt_type=PUBLISH, reason=PUBLISH frame parsed as %T", socketAddr, cp.Content)
-		return n.writeToBackend(backendConn, frame)
+		return forwardVerdict(n.writeToBackend(backendConn, frame))
 	}
 
 	// Topic-alias guard. 68-01 already makes aliasing impossible by stripping
@@ -432,12 +463,12 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 	// alias and fanned the packet out perfectly normally.
 	if (p.Properties != nil && p.Properties.TopicAlias != nil) || p.Topic == "" {
 		n.InspectorLogger.Warnf("action=BLOCK, ip=%s, reason=topic_alias_uplink", socketAddr)
-		return false
+		return uplinkFatal
 	}
 
 	ip := n.inspectV5Publish(socketAddr, cp)
 	if !n.decideV5Publish(ip) {
-		return false
+		return uplinkDropped
 	}
 
 	// Forward EXACTLY ONCE, and the choice is explicit. A rule that mutated the
@@ -451,12 +482,12 @@ func (n *ServerCmd) handleV5PublishUplink(backendConn net.Conn, socketAddr strin
 		var buf bytes.Buffer
 		if _, err := cp.WriteTo(&buf); err != nil {
 			n.Config.Log.Errorf("failed to serialize v5 PUBLISH: %v", err)
-			return false
+			return uplinkFatal
 		}
 		out = buf.Bytes()
 	}
 
-	return n.writeToBackend(backendConn, out)
+	return forwardVerdict(n.writeToBackend(backendConn, out))
 }
 
 // connectFromV5Packet asserts that a packet the codec parsed off a CONNECT
@@ -486,9 +517,18 @@ func (n *ServerCmd) connectFromV5Packet(conn net.Conn, socketAddr string, cp *v5
 }
 
 // handleV5SubscribeUplink inspects one captured v5 SUBSCRIBE frame and relays it
-// to the broker, mirroring handleV5PublishUplink's shape. It returns false when
-// the connection must be dropped -- a Block decision, an unreadable header or a
-// dead backend.
+// to the broker, mirroring handleV5PublishUplink's shape but NOT its Block
+// verdict: a refused SUBSCRIBE is uplinkFatal, where a refused PUBLISH is
+// uplinkDropped.
+//
+// The asymmetry is deliberate and it is about what the client is left holding.
+// A dropped PUBLISH costs a QoS-0 packet nobody is waiting on -- Meshtastic
+// publishes at QoS 0 -- and the session carries on. A dropped SUBSCRIBE would
+// leave the client blocked forever on a SUBACK that can never arrive, since the
+// frame never reaches the broker that would answer it; a closed socket at least
+// tells it something happened. Measured support: all 2,813 Blocks in 24h of
+// production (2026-08-08) were PUBLISH and not one was a SUBSCRIBE, so keeping
+// this arm as it was changes nothing observed while removing a hang.
 //
 // INSPECTION HERE IS INDEPENDENT OF WHICH PARSER SUCCEEDED, and that is the
 // whole point of the function. Until 69-05 a SUBSCRIBE the codec refused to
@@ -502,7 +542,7 @@ func (n *ServerCmd) connectFromV5Packet(conn net.Conn, socketAddr string, cp *v5
 // subscription-identifier round-trip hazard that keeps the downlink path from
 // re-encoding, and on the hand-parsed path it could not preserve the very
 // property bytes the codec refused to read.
-func (n *ServerCmd) handleV5SubscribeUplink(conn net.Conn, backendConn net.Conn, socketAddr string, frame []byte) bool {
+func (n *ServerCmd) handleV5SubscribeUplink(conn net.Conn, backendConn net.Conn, socketAddr string, frame []byte) uplinkVerdict {
 	// Parse a COPY of the captured bytes, never the socket, so the raw frame
 	// survives a parse failure.
 	sp, perr := v5.ReadPacket(bytes.NewReader(frame))
@@ -538,22 +578,34 @@ func (n *ServerCmd) handleV5SubscribeUplink(conn net.Conn, backendConn net.Conn,
 				len(frame),
 				herr)
 			writeMqtt5Disconnect(conn, v5.DisconnectMalformedPacket)
-			return false
+			return uplinkFatal
 		}
 
 		// The SAME decide/log switch the parseable path runs, not a second
 		// softer one -- two copies would be two chances for the exempt path to
 		// drift into a quieter decision than the one the fleet is judged by.
 		if !n.decideV5Subscribe(n.inspectV5RawSubscribe(socketAddr, rs)) {
-			return false
+			return uplinkFatal
 		}
-		return n.writeToBackend(backendConn, frame)
+		return forwardVerdict(n.writeToBackend(backendConn, frame))
 	}
 
 	if !n.decideV5Subscribe(n.inspectV5Subscribe(socketAddr, sp)) {
-		return false
+		return uplinkFatal
 	}
-	return n.writeToBackend(backendConn, frame)
+	return forwardVerdict(n.writeToBackend(backendConn, frame))
+}
+
+// forwardVerdict maps writeToBackend's "is the connection still usable" bool
+// onto the verdict. A dead backend is the one forwarding failure that really is
+// fatal: the client would keep publishing into a session whose broker link is
+// gone, which is exactly the silent half-open state SESSION_END exists to make
+// visible.
+func forwardVerdict(ok bool) uplinkVerdict {
+	if ok {
+		return uplinkForwarded
+	}
+	return uplinkFatal
 }
 
 // decideV5Subscribe runs the decide/log sequence for one v5 uplink SUBSCRIBE and

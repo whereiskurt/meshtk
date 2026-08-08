@@ -660,7 +660,7 @@ func TestV5UnmodelledPropertyPublishIsClamped(t *testing.T) {
 	frame := unmodelledPropertyFrame(t, v5PubTopic, payload)
 
 	var backend bytes.Buffer
-	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) != uplinkForwarded {
 		t.Fatal("connection dropped for a packet the rules allow")
 	}
 
@@ -724,7 +724,7 @@ func TestV5UnmodelledPropertyPublishBlockRuleFires(t *testing.T) {
 	frame := unmodelledPropertyFrame(t, v5PubTopic, payload)
 
 	var backend bytes.Buffer
-	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) == uplinkForwarded {
 		t.Fatal("an undecryptable envelope in an unmodelled-property frame was allowed through")
 	}
 	if backend.Len() != 0 {
@@ -743,7 +743,7 @@ func TestV5UnmodelledPropertyPublishEmptyTopicBlocked(t *testing.T) {
 	frame := unmodelledPropertyFrame(t, "", marshalEnvelope(t, nodeInfoEnvelope(t, 3, 3)))
 
 	var backend bytes.Buffer
-	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) == uplinkForwarded {
 		t.Fatal("an empty-topic PUBLISH was allowed through")
 	}
 	if backend.Len() != 0 {
@@ -762,7 +762,7 @@ func TestV5UnmodelledPropertyPublishUnchangedIsByteIdentical(t *testing.T) {
 	frame := unmodelledPropertyFrame(t, v5PubTopic, marshalEnvelope(t, nodeInfoEnvelope(t, 3, 3)))
 
 	var backend bytes.Buffer
-	if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) != uplinkForwarded {
 		t.Fatal("connection dropped for a packet the rules allow")
 	}
 	if !bytes.Equal(backend.Bytes(), frame) {
@@ -785,7 +785,7 @@ func TestV5MalformedPublishFailsClosed(t *testing.T) {
 
 	n, logs := v5PublishServer(t, "publisher")
 	var backend bytes.Buffer
-	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+	if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) == uplinkForwarded {
 		t.Fatal("an unreadable PUBLISH was relayed instead of refused")
 	}
 	if backend.Len() != 0 {
@@ -809,7 +809,7 @@ func TestV5ParseablePublishPathUnchanged(t *testing.T) {
 		frame := v5PublishFrame(t, nodeInfoEnvelope(t, 7, 9))
 
 		var backend bytes.Buffer
-		if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) != uplinkForwarded {
 			t.Fatal("connection dropped for a packet the rules allow")
 		}
 		out := backend.Bytes()
@@ -840,7 +840,7 @@ func TestV5ParseablePublishPathUnchanged(t *testing.T) {
 		frame := v5PublishFrame(t, nodeInfoEnvelope(t, 3, 3))
 
 		var backend bytes.Buffer
-		if !n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) != uplinkForwarded {
 			t.Fatal("connection dropped for a packet the rules allow")
 		}
 		if !bytes.Equal(backend.Bytes(), frame) {
@@ -853,7 +853,7 @@ func TestV5ParseablePublishPathUnchanged(t *testing.T) {
 		frame := mustHex(t, "300b00000323000368656c6c6f")
 
 		var backend bytes.Buffer
-		if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) {
+		if n.handleV5PublishUplink(writerConn{&backend}, v5PubAddr, frame) == uplinkForwarded {
 			t.Fatal("an aliased PUBLISH was allowed through")
 		}
 		if backend.Len() != 0 {

@@ -327,7 +327,19 @@ func (n *ServerCmd) handleProxy(conn net.Conn) {
 					}
 					n.Config.Log.Warnf("[proxy] BLOCK from=!%08x to=!%08x reason=%q user=%s ip=%s",
 						ip.Meshtastic.From, ip.Meshtastic.To, result.Reason, ip.Track.Username, ip.Track.SocketAddress)
-					return
+					// Drop the PACKET, keep the SESSION. This used to `return`,
+					// and handleProxy's deferred conn.Close() then hung up on the
+					// radio -- so one undecryptable packet cost a whole MQTT
+					// session, subscriptions and downlink included.
+					//
+					// A radio with uplink still enabled on a channel whose PSK we
+					// do not hold (the DEF CON event channels) publishes those
+					// constantly, so the teardown repeated for as long as the
+					// radio was in RF range of that traffic: 555 disconnects in
+					// 24h for one user, mean session life 42.8s, seven users
+					// affected (2026-08-08). Blocking the packet is the whole of
+					// what the rule asks for; the connection was collateral.
+					continue
 				default:
 					if n.Config.Server.ShouldLogAllows || n.Config.Server.ShouldLogBlocks {
 						ip.WriteDecisionLog(result)
